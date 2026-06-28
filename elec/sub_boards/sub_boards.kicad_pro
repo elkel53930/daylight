@@ -43,21 +43,15 @@
         },
         "silk_line_width": 0.1,
         "silk_text_italic": false,
-        "silk_text_size_h": 0.75,
-        "silk_text_size_v": 0.75,
+        "silk_text_size_h": 1.0,
+        "silk_text_size_v": 1.0,
         "silk_text_thickness": 0.1,
         "silk_text_upright": false,
         "zones": {
-          "min_clearance": 0.0
+          "min_clearance": 0.5
         }
       },
-      "diff_pair_dimensions": [
-        {
-          "gap": 0.0,
-          "via_gap": 0.0,
-          "width": 0.0
-        }
-      ],
+      "diff_pair_dimensions": [],
       "drc_exclusions": [],
       "meta": {
         "version": 2
@@ -123,23 +117,23 @@
       },
       "rules": {
         "max_error": 0.005,
-        "min_clearance": 0.1,
-        "min_connection": 0.1,
-        "min_copper_edge_clearance": 0.2,
+        "min_clearance": 0.0,
+        "min_connection": 0.0,
+        "min_copper_edge_clearance": 0.5,
         "min_groove_width": 0.0,
-        "min_hole_clearance": 0.35,
+        "min_hole_clearance": 0.25,
         "min_hole_to_hole": 0.25,
         "min_microvia_diameter": 0.2,
         "min_microvia_drill": 0.1,
-        "min_resolved_spokes": 1,
+        "min_resolved_spokes": 2,
         "min_silk_clearance": 0.0,
-        "min_text_height": 0.75,
+        "min_text_height": 0.8,
         "min_text_thickness": 0.08,
-        "min_through_hole_diameter": 0.2,
-        "min_track_width": 0.1,
-        "min_via_annular_width": 0.05,
+        "min_through_hole_diameter": 0.3,
+        "min_track_width": 0.0,
+        "min_via_annular_width": 0.1,
         "min_via_diameter": 0.5,
-        "solder_mask_to_copper_clearance": 0.005,
+        "solder_mask_to_copper_clearance": 0.0,
         "use_height_for_length_calcs": true
       },
       "teardrop_options": [
@@ -186,9 +180,7 @@
           "td_width_to_size_filter_ratio": 0.9
         }
       ],
-      "track_widths": [
-        0.0
-      ],
+      "track_widths": [],
       "tuning_pattern_settings": {
         "diff_pair_defaults": {
           "corner_radius_percentage": 80,
@@ -215,12 +207,7 @@
           "spacing": 0.6
         }
       },
-      "via_dimensions": [
-        {
-          "diameter": 0.0,
-          "drill": 0.0
-        }
-      ],
+      "via_dimensions": [],
       "zones_allow_external_fillets": false
     },
     "ipc2581": {
@@ -464,14 +451,14 @@
     "pinned_symbol_libs": []
   },
   "meta": {
-    "filename": "main_board.kicad_pro",
+    "filename": "sub_boards.kicad_pro",
     "version": 3
   },
   "net_settings": {
     "classes": [
       {
         "bus_width": 12,
-        "clearance": 0.15,
+        "clearance": 0.2,
         "diff_pair_gap": 0.25,
         "diff_pair_via_gap": 0.25,
         "diff_pair_width": 0.2,
@@ -482,7 +469,7 @@
         "pcb_color": "rgba(0, 0, 0, 0.000)",
         "priority": 2147483647,
         "schematic_color": "rgba(0, 0, 0, 0.000)",
-        "track_width": 0.15,
+        "track_width": 0.2,
         "via_diameter": 0.6,
         "via_drill": 0.3,
         "wire_width": 6
@@ -499,8 +486,8 @@
     "last_paths": {
       "gencad": "",
       "idf": "",
-      "netlist": "main_board.net",
-      "plot": "GB/",
+      "netlist": "sub_boards.net",
+      "plot": "",
       "pos_files": "",
       "specctra_dsn": "",
       "step": "",
@@ -573,38 +560,14 @@
           "label": "Datasheet",
           "name": "Datasheet",
           "show": true
-        },
-        {
-          "group_by": false,
-          "label": "フィールド4",
-          "name": "フィールド4",
-          "show": false
-        },
-        {
-          "group_by": false,
-          "label": "Field5",
-          "name": "Field5",
-          "show": false
-        },
-        {
-          "group_by": false,
-          "label": "説明",
-          "name": "Description",
-          "show": true
-        },
-        {
-          "group_by": false,
-          "label": "#",
-          "name": "${ITEM_NUMBER}",
-          "show": false
         }
       ],
       "filter_string": "",
       "group_symbols": true,
       "include_excluded_from_bom": true,
-      "name": "",
+      "name": "Default Editing",
       "sort_asc": true,
-      "sort_field": "Reference"
+      "sort_field": "リファレンス"
     },
     "connection_grid_size": 50.0,
     "drawing": {
@@ -635,7 +598,7 @@
     },
     "net_format_name": "KiCad",
     "page_layout_descr_file": "",
-    "plot_directory": "daylight",
+    "plot_directory": "",
     "space_save_all_events": true,
     "spice_current_sheet_as_root": false,
     "spice_external_command": "spice \"%I\"",
@@ -648,12 +611,8 @@
   },
   "sheets": [
     [
-      "d2cf6a41-8170-4aa9-b19e-2c9825cc9c77",
+      "d5abadbb-7de1-45ef-bf83-ffcbea26f0f6",
       "Root"
-    ],
-    [
-      "829ce076-7c19-4bad-87be-13e3998cb698",
-      "Power"
     ]
   ],
   "text_variables": {}
