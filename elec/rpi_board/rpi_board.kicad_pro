@@ -139,7 +139,7 @@
         "min_track_width": 0.0,
         "min_via_annular_width": 0.1,
         "min_via_diameter": 0.25,
-        "solder_mask_to_copper_clearance": 0.0,
+        "solder_mask_to_copper_clearance": 0.005,
         "use_height_for_length_calcs": true
       },
       "teardrop_options": [
@@ -495,9 +495,23 @@
         "microvia_drill": 0.15,
         "name": "CSI",
         "pcb_color": "rgba(0, 0, 0, 0.000)",
-        "priority": 0,
+        "priority": 1,
         "schematic_color": "rgba(0, 0, 0, 0.000)",
         "track_width": 0.123952,
+        "via_diameter": 0.45,
+        "via_drill": 0.25
+      },
+      {
+        "clearance": 0.2,
+        "diff_pair_gap": 0.2,
+        "diff_pair_width": 0.158242,
+        "microvia_diameter": 0.3,
+        "microvia_drill": 0.15,
+        "name": "USB",
+        "pcb_color": "rgba(0, 0, 0, 0.000)",
+        "priority": 0,
+        "schematic_color": "rgba(0, 0, 0, 0.000)",
+        "track_width": 0.158242,
         "via_diameter": 0.45,
         "via_drill": 0.25
       }
@@ -515,6 +529,10 @@
       {
         "netclass": "CSI",
         "pattern": "/CAM1_C*"
+      },
+      {
+        "netclass": "USB",
+        "pattern": "/USB*"
       }
     ]
   },
@@ -523,7 +541,7 @@
       "gencad": "",
       "idf": "",
       "netlist": "rpi_board.net",
-      "plot": "",
+      "plot": "pdf/",
       "pos_files": "",
       "specctra_dsn": "",
       "step": "",

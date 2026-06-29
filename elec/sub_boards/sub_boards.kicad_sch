@@ -1367,6 +1367,300 @@
 			)
 			(embedded_fonts no)
 		)
+		(symbol "Device:Speaker"
+			(pin_names
+				(offset 0)
+				(hide yes)
+			)
+			(exclude_from_sim no)
+			(in_bom yes)
+			(on_board yes)
+			(property "Reference" "LS"
+				(at 1.27 5.715 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify right)
+				)
+			)
+			(property "Value" "Speaker"
+				(at 1.27 3.81 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(justify right)
+				)
+			)
+			(property "Footprint" ""
+				(at 0 -5.08 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(property "Datasheet" "~"
+				(at -0.254 -1.27 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(property "Description" "Speaker"
+				(at 0 0 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(property "ki_keywords" "speaker sound"
+				(at 0 0 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(symbol "Speaker_0_0"
+				(rectangle
+					(start -2.54 1.27)
+					(end 1.016 -3.81)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(polyline
+					(pts
+						(xy 1.016 1.27) (xy 3.556 3.81) (xy 3.556 -6.35) (xy 1.016 -3.81)
+					)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+			)
+			(symbol "Speaker_1_1"
+				(pin input line
+					(at -5.08 0 0)
+					(length 2.54)
+					(name "1"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "1"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin input line
+					(at -5.08 -2.54 0)
+					(length 2.54)
+					(name "2"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "2"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+			)
+			(embedded_fonts no)
+		)
+		(symbol "Diode:BAS516"
+			(pin_numbers
+				(hide yes)
+			)
+			(pin_names
+				(hide yes)
+			)
+			(exclude_from_sim no)
+			(in_bom yes)
+			(on_board yes)
+			(property "Reference" "D"
+				(at 0 2.54 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Value" "BAS516"
+				(at 0 -2.54 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Footprint" "Diode_SMD:D_SOD-523"
+				(at 0 -4.445 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(property "Datasheet" "https://assets.nexperia.com/documents/data-sheet/BAS16_SER.pdf"
+				(at 0 0 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(property "Description" "100V, 0.25A, High-speed Switching Diode, SOD-523"
+				(at 0 0 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(property "Sim.Device" "D"
+				(at 0 0 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(property "Sim.Pins" "1=K 2=A"
+				(at 0 0 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(property "ki_keywords" "diode"
+				(at 0 0 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(property "ki_fp_filters" "D*SOD?523*"
+				(at 0 0 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(symbol "BAS516_0_1"
+				(polyline
+					(pts
+						(xy -1.27 1.27) (xy -1.27 -1.27)
+					)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(polyline
+					(pts
+						(xy 1.27 1.27) (xy 1.27 -1.27) (xy -1.27 0) (xy 1.27 1.27)
+					)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(polyline
+					(pts
+						(xy 1.27 0) (xy -1.27 0)
+					)
+					(stroke
+						(width 0)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+			)
+			(symbol "BAS516_1_1"
+				(pin passive line
+					(at -3.81 0 0)
+					(length 2.54)
+					(name "K"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "1"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at 3.81 0 180)
+					(length 2.54)
+					(name "A"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "2"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+			)
+			(embedded_fonts no)
+		)
 		(symbol "Mechanical:MountingHole"
 			(pin_names
 				(offset 1.016)
@@ -2519,6 +2813,12 @@
 		(uuid "2f21bd07-5e82-4ad8-83d1-3b9f8c2af7d7")
 	)
 	(junction
+		(at 83.82 160.02)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "3047faeb-3868-4082-8c45-64ba0dd9ba77")
+	)
+	(junction
 		(at 105.41 111.76)
 		(diameter 0)
 		(color 0 0 0 0)
@@ -2565,6 +2865,12 @@
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "a80bd467-4600-4146-ba09-0d6723d95c81")
+	)
+	(junction
+		(at 78.74 167.64)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "bc37fb31-db04-48c5-85f4-9b097343fc8c")
 	)
 	(junction
 		(at 209.55 128.27)
@@ -2682,6 +2988,16 @@
 	)
 	(wire
 		(pts
+			(xy 83.82 156.21) (xy 83.82 160.02)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "1bd0d417-a94f-4016-8a86-ed131d66c278")
+	)
+	(wire
+		(pts
 			(xy 48.26 90.17) (xy 50.8 90.17)
 		)
 		(stroke
@@ -2732,6 +3048,16 @@
 	)
 	(wire
 		(pts
+			(xy 78.74 160.02) (xy 83.82 160.02)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "2e09b105-c0f5-4334-8ab2-f3fa7ec46be6")
+	)
+	(wire
+		(pts
 			(xy 96.52 74.93) (xy 96.52 82.55)
 		)
 		(stroke
@@ -2762,6 +3088,16 @@
 	)
 	(wire
 		(pts
+			(xy 83.82 165.1) (xy 83.82 167.64)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "36004a44-a0b8-4eed-a8e3-95a46ed005d8")
+	)
+	(wire
+		(pts
 			(xy 50.8 102.87) (xy 50.8 100.33)
 		)
 		(stroke
@@ -2779,6 +3115,16 @@
 			(type default)
 		)
 		(uuid "3b6e362a-7d2b-4963-bb12-84c7e35438b7")
+	)
+	(wire
+		(pts
+			(xy 83.82 160.02) (xy 83.82 162.56)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "3cbab6b8-fcc1-4665-9bd5-f669ed5c72ef")
 	)
 	(wire
 		(pts
@@ -2862,7 +3208,7 @@
 	)
 	(wire
 		(pts
-			(xy 129.54 109.22) (xy 133.35 109.22)
+			(xy 129.54 161.29) (xy 133.35 161.29)
 		)
 		(stroke
 			(width 0)
@@ -3012,7 +3358,7 @@
 	)
 	(wire
 		(pts
-			(xy 129.54 105.41) (xy 129.54 109.22)
+			(xy 129.54 157.48) (xy 129.54 161.29)
 		)
 		(stroke
 			(width 0)
@@ -3029,6 +3375,16 @@
 			(type default)
 		)
 		(uuid "8377316a-36de-43a9-b4f0-996264e7f4c1")
+	)
+	(wire
+		(pts
+			(xy 83.82 167.64) (xy 78.74 167.64)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "8e16ce0b-8577-4406-afe5-1c35c41c0552")
 	)
 	(wire
 		(pts
@@ -3062,7 +3418,7 @@
 	)
 	(wire
 		(pts
-			(xy 129.54 114.3) (xy 133.35 114.3)
+			(xy 129.54 166.37) (xy 133.35 166.37)
 		)
 		(stroke
 			(width 0)
@@ -3229,6 +3585,16 @@
 			(type default)
 		)
 		(uuid "c3d8b63c-3828-4d6c-a577-f163067e6543")
+	)
+	(wire
+		(pts
+			(xy 67.31 167.64) (xy 78.74 167.64)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "c5960908-0419-40cf-90bb-27b89349e5e0")
 	)
 	(wire
 		(pts
@@ -3611,7 +3977,7 @@
 		(uuid "82d982ee-b51b-44f9-a669-5e156fbf0bf1")
 	)
 	(label "BUZZER"
-		(at 129.54 114.3 180)
+		(at 129.54 166.37 180)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -3659,6 +4025,16 @@
 			(justify right bottom)
 		)
 		(uuid "bcd0e30f-02e7-4458-9592-7be887b406dc")
+	)
+	(label "BUZZER"
+		(at 67.31 167.64 180)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify right bottom)
+		)
+		(uuid "c6c09051-bbf3-44e1-a633-24a1faa0b2e1")
 	)
 	(label "ENCR_MISO"
 		(at 189.23 110.49 0)
@@ -3732,7 +4108,7 @@
 	)
 	(symbol
 		(lib_id "power:+3.3V")
-		(at 129.54 105.41 0)
+		(at 129.54 157.48 0)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom yes)
@@ -3741,7 +4117,7 @@
 		(fields_autoplaced yes)
 		(uuid "0aac27f7-6c59-428a-b6ba-a35800df29d8")
 		(property "Reference" "#PWR02"
-			(at 129.54 109.22 0)
+			(at 129.54 161.29 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -3750,7 +4126,7 @@
 			)
 		)
 		(property "Value" "+3.3V"
-			(at 129.54 100.33 0)
+			(at 129.54 152.4 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -3758,7 +4134,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 129.54 105.41 0)
+			(at 129.54 157.48 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -3767,7 +4143,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 129.54 105.41 0)
+			(at 129.54 157.48 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -3776,7 +4152,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"+3.3V\""
-			(at 129.54 105.41 0)
+			(at 129.54 157.48 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -3970,6 +4346,92 @@
 			(project "sub_boards"
 				(path "/d5abadbb-7de1-45ef-bf83-ffcbea26f0f6"
 					(reference "U9")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Diode:BAS516")
+		(at 78.74 163.83 270)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(uuid "1f0650de-c52e-4e55-93d7-27e56af4ea00")
+		(property "Reference" "D3"
+			(at 76.2 163.195 90)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify right)
+			)
+		)
+		(property "Value" "BAS516"
+			(at 76.2 165.735 90)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify right)
+			)
+		)
+		(property "Footprint" "Diode_SMD:D_SOD-523"
+			(at 74.295 163.83 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" "https://assets.nexperia.com/documents/data-sheet/BAS16_SER.pdf"
+			(at 78.74 163.83 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" ""
+			(at 78.74 163.83 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Sim.Device" "D"
+			(at 78.74 163.83 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Sim.Pins" "1=K 2=A"
+			(at 78.74 163.83 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(pin "1"
+			(uuid "e1eff4ed-5d67-4e06-bfe3-b66772d9cd94")
+		)
+		(pin "2"
+			(uuid "6001a46a-e006-4839-a7d4-b17660291c74")
+		)
+		(instances
+			(project "sub_boards"
+				(path "/d5abadbb-7de1-45ef-bf83-ffcbea26f0f6"
+					(reference "D3")
 					(unit 1)
 				)
 			)
@@ -4252,6 +4714,72 @@
 			(project "sub_boards"
 				(path "/d5abadbb-7de1-45ef-bf83-ffcbea26f0f6"
 					(reference "#PWR04")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "power:+3.3V")
+		(at 83.82 156.21 0)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "50edc6dc-d4e0-4df7-8c5f-1a889f9faa6d")
+		(property "Reference" "#PWR06"
+			(at 83.82 160.02 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Value" "+3.3V"
+			(at 83.82 151.13 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" ""
+			(at 83.82 156.21 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" ""
+			(at 83.82 156.21 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" "Power symbol creates a global label with name \"+3.3V\""
+			(at 83.82 156.21 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(pin "1"
+			(uuid "9f0b3a9f-53ec-4ac5-9f0c-c2837ff85b62")
+		)
+		(instances
+			(project "sub_boards"
+				(path "/d5abadbb-7de1-45ef-bf83-ffcbea26f0f6"
+					(reference "#PWR06")
 					(unit 1)
 				)
 			)
@@ -4602,6 +5130,75 @@
 			(project "sub_boards"
 				(path "/d5abadbb-7de1-45ef-bf83-ffcbea26f0f6"
 					(reference "#PWR01")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Device:Speaker")
+		(at 88.9 162.56 0)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "8bb58c2f-7b31-4ef6-9c80-5cb1101056d0")
+		(property "Reference" "LS1"
+			(at 93.98 163.195 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "SMT-0440-T-2-R"
+			(at 93.98 165.735 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "Library:SMT-0440-T-2-R"
+			(at 88.9 167.64 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" "~"
+			(at 88.646 163.83 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" ""
+			(at 88.9 162.56 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "c13019df-0137-42fa-a517-8bab87e02d52")
+		)
+		(pin "2"
+			(uuid "1ac978b5-82e1-44d6-ad80-5c91b5d3c431")
+		)
+		(instances
+			(project "sub_boards"
+				(path "/d5abadbb-7de1-45ef-bf83-ffcbea26f0f6"
+					(reference "LS1")
 					(unit 1)
 				)
 			)
@@ -5152,7 +5749,7 @@
 	)
 	(symbol
 		(lib_id "Device:Buzzer")
-		(at 135.89 111.76 0)
+		(at 135.89 163.83 0)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom yes)
@@ -5161,7 +5758,7 @@
 		(fields_autoplaced yes)
 		(uuid "fb472612-c338-46fe-92ae-bb862d4f563f")
 		(property "Reference" "BZ1"
-			(at 139.7 110.4899 0)
+			(at 139.7 162.5599 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -5170,7 +5767,7 @@
 			)
 		)
 		(property "Value" "Buzzer"
-			(at 139.7 113.0299 0)
+			(at 139.7 165.0999 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -5179,7 +5776,7 @@
 			)
 		)
 		(property "Footprint" "Buzzer_Beeper:Buzzer_12x9.5RM7.6"
-			(at 135.255 109.22 90)
+			(at 135.255 161.29 90)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -5188,7 +5785,7 @@
 			)
 		)
 		(property "Datasheet" "~"
-			(at 135.255 109.22 90)
+			(at 135.255 161.29 90)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -5197,7 +5794,7 @@
 			)
 		)
 		(property "Description" "Buzzer, polarized"
-			(at 135.89 111.76 0)
+			(at 135.89 163.83 0)
 			(effects
 				(font
 					(size 1.27 1.27)
