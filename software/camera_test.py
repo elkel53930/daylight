@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-camera_test.py — CSIカメラから1フレーム取得して OLED (96x64) に表示する。
+camera_test.py — CSIカメラの映像をリアルタイムで OLED (96x64) に表示する。
 
 使い方:
-    python3 camera_test.py [--loop] [--interval 0.1]
+    python3 camera_test.py [--once] [--interval 0.1]
 
 オプション:
-    --loop              繰り返し表示（Ctrl+C で停止）
-    --interval SECONDS  ループ間隔（秒）。デフォルト 0.1
+    --once              1フレームだけ表示して終了
+    --interval SECONDS  フレーム間隔（秒）。デフォルト 0.1
 """
 
 import argparse
@@ -36,8 +36,8 @@ def capture_frame(cam: Picamera2) -> Image.Image:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="CSI camera → OLED display test")
-    parser.add_argument("--loop", action="store_true", help="連続表示")
-    parser.add_argument("--interval", type=float, default=0.1, help="ループ間隔（秒）")
+    parser.add_argument("--once", action="store_true", help="1フレームだけ表示して終了")
+    parser.add_argument("--interval", type=float, default=0.1, help="フレーム間隔（秒）")
     args = parser.parse_args()
 
     cam = Picamera2()
@@ -52,7 +52,11 @@ def main() -> None:
     with UIClient() as client:
         client.connect(priority=5)
 
-        if args.loop:
+        if args.once:
+            img = capture_frame(cam)
+            client.display(img)
+            print("Displayed 1 frame on OLED")
+        else:
             print("Streaming to OLED (Ctrl+C to stop) ...")
             try:
                 while True:
@@ -63,10 +67,6 @@ def main() -> None:
                 print()
             finally:
                 client.clear()
-        else:
-            img = capture_frame(cam)
-            client.display(img)
-            print("Displayed 1 frame on OLED")
 
     cam.stop()
 
