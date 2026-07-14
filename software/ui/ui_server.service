@@ -1,0 +1,17 @@
+[Unit]
+Description=Raspberry Pi UI Server (OLED / Buttons / Buzzer)
+After=network.target
+
+[Service]
+Type=simple
+Environment=UI_SOCKET_PATH=/run/ui_server.sock
+ExecStart=/usr/bin/python3 /opt/ui/ui_server.py
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+RuntimeDirectory=ui_server
+RuntimeDirectoryMode=0755
+
+[Install]
+WantedBy=multi-user.target
