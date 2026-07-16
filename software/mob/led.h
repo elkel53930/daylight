@@ -14,9 +14,9 @@ public:
 
     void green_on();
     void green_off();
-    void red_on();
-    void red_off();
-
+    void red_on();   // T互換
+    void red_off();  // T互換
+    
     // 赤と緑を交互に切り替え (呼ぶたびに状態が反転)
     void toggle_rx();
 
