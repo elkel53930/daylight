@@ -144,9 +144,9 @@ static inline float slew_rate_limit(float current, float target, float max_delta
 }
 
 // グローバルなクラスは、上から順に初期化される
-LED led;
+Led led;
 WallSensor wall_sensor;
-IMU imu(get_shared_spi());
+IMU imu(get_imu_spi());
 Motor motor;
 Encoder encoder;
 Battery battery;
@@ -298,7 +298,7 @@ void handleSetMotorSpeedCommand(const SetMotorSpeedCommand& cmd) {
 
 void handleForwardCommand(const ForwardCommand& cmd) {
     // FWD: 加速して指定速度へ、距離到達でDONE（停止しない）
-    // led.red_on();  // FWD開始時に赤色LED点灯（D では シリアル受信で自動制御）
+    led.red_on();  // FWD開始時に赤色LED点灯
     fwd_active = true;
     stop_active = false;
     turn_active = false;
@@ -613,7 +613,7 @@ void updateForward(float dt_s) {
 
     if (remain_mm <= 0.0f) {
         fwd_active = false;
-        // led.red_off();  // FWD完了時に赤色LED消灯（D では シリアル受信で自動制御）
+        led.red_off();  // FWD完了時に赤色LED消灯
         enqueue_msg_line("DONE\n");
     } else {
         float v_next = fwd_v_cmd_mmps;
@@ -924,7 +924,7 @@ void setup() {
     btStop();
 
     // 共有SPIとペリフェラルの初期化
-    init_shared_spi();
+    init_imu_spi();
     motor.begin();
     encoder.begin();
     imu.begin();
@@ -933,7 +933,7 @@ void setup() {
     led.begin();
     
     // 起動時に赤色LEDを消灯
-    // led.red_off();  // D: 確認用（実装対象）
+    led.red_off();
 
     // コマンドキューの作成
     cmd_queue = xQueueCreate(16, sizeof(Command));
