@@ -6,6 +6,7 @@
 #include "encoder.h"
 #include "imu.h"
 #include "motor.h"
+#include "led.h"
 
 // ============================================================
 // グローバルインスタンス
@@ -15,6 +16,7 @@ Battery    battery;
 Encoder    encoder;
 IMU        imu(get_imu_spi());
 Motor      motor;
+Led        led;
 
 // ============================================================
 // setup / loop
@@ -36,6 +38,7 @@ void setup() {
     encoder.begin();
     imu.begin();
     motor.begin();
+    led.begin();
 
     // IMU疎通確認
     uint8_t who = imu.read_who_am_i();
@@ -46,57 +49,67 @@ void setup() {
 }
 
 void loop() {
-    if (!Serial.available()) {
-        delay(1);
-        return;
-    }
+    static String cmd_buf = "";
 
-    String cmd = Serial.readStringUntil('\n');
-    cmd.trim();
+    while (Serial.available()) {
+        char c = (char)Serial.read();
+        led.toggle_rx();
+        if (c == '\n') {
+            cmd_buf.trim();
+            String cmd = cmd_buf;
+            cmd_buf = "";
 
-    if (cmd.startsWith("MOT,")) {
-        // モーター速度設定: MOT,<right>,<left>  (-1023〜+1023)
-        int c1 = cmd.indexOf(',');
-        int c2 = cmd.indexOf(',', c1 + 1);
-        if (c1 > 0 && c2 > c1) {
-            int16_t r = (int16_t)cmd.substring(c1 + 1, c2).toInt();
-            int16_t l = (int16_t)cmd.substring(c2 + 1).toInt();
-            motor.set_right(r);
-            motor.set_left(l);
-            Serial.printf("#MOT R=%d L=%d\n", r, l);
-        } else {
-            Serial.printf("#Invalid MOT format\n");
+            // ---- コマンド処理 ----
+
+            if (cmd.startsWith("MOT,")) {
+                // モーター速度設定: MOT,<right>,<left>  (-1023〜+1023)
+                int c1 = cmd.indexOf(',');
+                int c2 = cmd.indexOf(',', c1 + 1);
+                if (c1 > 0 && c2 > c1) {
+                    int16_t r = (int16_t)cmd.substring(c1 + 1, c2).toInt();
+                    int16_t l = (int16_t)cmd.substring(c2 + 1).toInt();
+                    motor.set_right(r);
+                    motor.set_left(l);
+                    Serial.printf("#MOT R=%d L=%d\n", r, l);
+                } else {
+                    Serial.printf("#Invalid MOT format\n");
+                }
+
+            } else if (cmd.startsWith("WALL,")) {
+                // 壁センサLED有効/無効: WALL,1 or WALL,0
+                int c1 = cmd.indexOf(',');
+                if (c1 > 0) {
+                    bool en = cmd.substring(c1 + 1).toInt() != 0;
+                    wall_sensor.set_enabled(en);
+                    Serial.printf("#WALL enabled=%d\n", en ? 1 : 0);
+                } else {
+                    Serial.printf("#Invalid WALL format\n");
+                }
+
+            } else if (cmd == "SEN") {
+                // センサデータ一括取得
+                // 書式: SEN,<gyro_z rad/s>,<batt V>,<wall_r>,<wall_f>,<wall_l>,<enc_r>,<enc_l>
+                float gyro_z  = imu.convert_gyro_z_to_radps(imu.read_gyro_z());
+                float vbatt   = battery.read_voltage();
+                uint16_t wr   = wall_sensor.right();
+                uint16_t wf   = wall_sensor.front();
+                uint16_t wl   = wall_sensor.left();
+                uint16_t enc_r, enc_l;
+                encoder.read_both_angles(enc_r, enc_l);
+                Serial.printf("SEN,%.4f,%.2f,%u,%u,%u,%u,%u\n",
+                              gyro_z, vbatt, wr, wf, wl, enc_r, enc_l);
+
+            } else if (cmd == "STOP") {
+                motor.stop();
+                Serial.printf("#STOP\n");
+
+            } else if (cmd.length() > 0) {
+                motor.stop();
+                Serial.printf("#Unknown cmd: %s\n", cmd.c_str());
+            }
+
+        } else if (c != '\r') {
+            cmd_buf += c;
         }
-
-    } else if (cmd.startsWith("WALL,")) {
-        // 壁センサLED有効/無効: WALL,1 or WALL,0
-        int c1 = cmd.indexOf(',');
-        if (c1 > 0) {
-            bool en = cmd.substring(c1 + 1).toInt() != 0;
-            wall_sensor.set_enabled(en);
-            Serial.printf("#WALL enabled=%d\n", en ? 1 : 0);
-        } else {
-            Serial.printf("#Invalid WALL format\n");
-        }
-
-    } else if (cmd == "SEN") {
-        // センサデータ一括取得
-        // 書式: SEN,<gyro_z rad/s>,<batt V>,<wall_r>,<wall_f>,<wall_l>,<enc_r>,<enc_l>
-        float gyro_z  = imu.convert_gyro_z_to_radps(imu.read_gyro_z());
-        float vbatt   = battery.read_voltage();
-        uint16_t wr   = wall_sensor.right();
-        uint16_t wf   = wall_sensor.front();
-        uint16_t wl   = wall_sensor.left();
-        uint16_t enc_r, enc_l;
-        encoder.read_both_angles(enc_r, enc_l);
-        Serial.printf("SEN,%.4f,%.2f,%u,%u,%u,%u,%u\n",
-                      gyro_z, vbatt, wr, wf, wl, enc_r, enc_l);
-
-    } else if (cmd == "STOP") {
-        motor.stop();
-        Serial.printf("#STOP\n");
-
-    } else {
-        Serial.printf("#Unknown cmd: %s\n", cmd.c_str());
     }
 }

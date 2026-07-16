@@ -2,9 +2,10 @@
 #define MOTOR_H
 
 #include <Arduino.h>
+#include "driver/mcpwm_prelude.h"
 
-// モータードライバ
-//   PWM周波数: 40kHz, 10bit分解能 (0–1023)
+// モータードライバ (MCPWM)
+//   PWM周波数: ~39kHz (40 MHz / 1024 ticks), 速度分解能 0–1023
 //   速度指定: -1023 〜 +1023 (負=逆転)
 //
 //   PWM L    = IO21
@@ -27,11 +28,19 @@ private:
     static constexpr int LEFT_PWM_PIN  = 21;
     static constexpr int LEFT_DIR_PIN  = 47;
 
-    static constexpr int     PWM_FREQUENCY = 40000;  // 40kHz
-    static constexpr uint8_t PWM_RESOLUTION = 10;    // 10bit (0–1023)
-    static constexpr int16_t PWM_MAX = (1 << PWM_RESOLUTION) - 1;  // 1023
+    static constexpr uint32_t TIMER_RESOLUTION_HZ = 40000000;  // 40 MHz
+    static constexpr uint32_t PERIOD_TICKS         = 1024;      // ~39 kHz
+    static constexpr int16_t  PWM_MAX              = 1023;
 
-    void set_motor(int16_t speed, int pwm_pin, int dir_pin);
+    mcpwm_timer_handle_t _timer;
+    mcpwm_oper_handle_t  _oper_right;
+    mcpwm_oper_handle_t  _oper_left;
+    mcpwm_cmpr_handle_t  _cmpr_right;
+    mcpwm_cmpr_handle_t  _cmpr_left;
+    mcpwm_gen_handle_t   _gen_right;
+    mcpwm_gen_handle_t   _gen_left;
+
+    void set_motor(int16_t speed, mcpwm_cmpr_handle_t cmpr, int dir_pin);
 };
 
 #endif
