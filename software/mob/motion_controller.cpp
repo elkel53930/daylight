@@ -46,13 +46,9 @@ void MotionController::backward(float speed_mps) {
     set_targets_mps(-fabsf(speed_mps), -fabsf(speed_mps));
 }
 
-bool MotionController::turn_in_place(float speed_mps, float target_angle_rad) {
-    if (!turn_active_) {
-        turn_active_ = true;
-        turn_target_rad_ = target_angle_rad;
-        turn_start_angle_rad_ = sensors_.get_angle();
-    }
-
+void MotionController::turn_in_place(float speed_mps, float target_angle_rad) {
+    // 完了判定は呼び出し側（mob.ino の updateTurn 等）が絶対角度で行うため、
+    // ここでは指定された向きに車輪速度目標をセットするだけでよい。
     mode_ = Mode::TURN;
 
     const float s = fabsf(speed_mps);
@@ -61,17 +57,6 @@ bool MotionController::turn_in_place(float speed_mps, float target_angle_rad) {
     } else {
         set_targets_mps(-s, +s);
     }
-
-    const float current = sensors_.get_angle();
-    const float turned = current - turn_start_angle_rad_;
-    if ((target_angle_rad >= 0 && turned >= target_angle_rad) ||
-        (target_angle_rad < 0 && turned <= target_angle_rad)) {
-        stop();
-        turn_active_ = false;
-        return true;
-    }
-
-    return false;
 }
 
 void MotionController::stop() {

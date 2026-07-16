@@ -560,7 +560,7 @@ bool updateLatch(float dt_s) {
         case LatchMode::TURN_L:
         case LatchMode::TURN_R: {
             const float s = LATCH_TURN_SPEED_MPS;
-            (void)motion.turn_in_place(s, latch_turn_target_rad);
+            motion.turn_in_place(s, latch_turn_target_rad);
             target_vr_mps = (latch_mode == LatchMode::TURN_L) ? +s : -s;
             target_vl_mps = (latch_mode == LatchMode::TURN_L) ? -s : +s;
             return true;
@@ -587,7 +587,7 @@ bool updateJog(float dt_s) {
         target_vr_mps = 0.0f;
         target_vl_mps = 0.0f;
         motion.stop();
-        Serial.printf("DONE\n");
+        enqueue_msg_line("DONE\n");
         return true;
     }
 
@@ -800,7 +800,7 @@ void updateTurn(float dt_s) {
         turn_speed_cmd_mps = slew_rate_limit(turn_speed_cmd_mps, v_target, dv_max);
 
         const float target_rel = err; // 現在から見た残り角度
-        (void)motion.turn_in_place(turn_speed_cmd_mps, target_rel);
+        motion.turn_in_place(turn_speed_cmd_mps, target_rel);
 
         // デバッグ用
         target_vr_mps = (err >= 0.0f) ? +turn_speed_cmd_mps : -turn_speed_cmd_mps;
@@ -858,7 +858,10 @@ bool updateQstp(float dt_s) {
 
     target_vr_mps = vr;
     target_vl_mps = vl;
-    motion.forward((vr + vl) * 0.5f, 0.0f);
+    // 上で計算したvr/vlの差分をそのままlateral_correctionとして渡す
+    // （motion.forward()内部で speed±corr に展開されるため、平均速度＋補正量で渡す）
+    const float lateral_correction = angle_correction + rate_correction - wall_correction;
+    motion.forward(v_cmd_mps, lateral_correction);
     
     return true;
 }

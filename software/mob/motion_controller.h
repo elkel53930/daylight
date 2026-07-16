@@ -24,9 +24,10 @@ public:
     // Start/continue backward motion.
     void backward(float speed_mps);
 
-    // Start a turn in place. Positive angle: turn left (CCW) by convention.
-    // Returns true when the target angle is reached.
-    bool turn_in_place(float speed_mps, float target_angle_rad);
+    // Start/continue a turn in place. Positive angle: turn left (CCW) by convention.
+    // Completion is judged by the caller (absolute angle vs. tolerance); this
+    // only sets the per-wheel speed targets for the requested direction.
+    void turn_in_place(float speed_mps, float target_angle_rad);
 
     // Stop everything.
     void stop();
@@ -47,11 +48,6 @@ private:
     // Targets
     float vr_ref_mps_ = 0.0f;
     float vl_ref_mps_ = 0.0f;
-
-    // Turn state
-    bool turn_active_ = false;
-    float turn_target_rad_ = 0.0f;
-    float turn_start_angle_rad_ = 0.0f;
 
     // Lateral correction gain (rad/s per unit lateral error)
     float k_lateral_ = 1.0f;
