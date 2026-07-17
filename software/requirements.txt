@@ -10,4 +10,5 @@ luma.oled
 msgpack
 pyserial
 PyYAML
+pyserial
 requests
