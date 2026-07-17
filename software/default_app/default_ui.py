@@ -120,6 +120,12 @@ class DefaultUI:
                     self._loop_once()
                 except ConnectionError as exc:
                     logger.info("UI connection lost (%s); will reconnect", exc)
+                    # ui_client only clears its internal socket on an explicit
+                    # PREEMPTED message; a raw transport error (e.g. a broken
+                    # pipe) leaves it set, which would make the next
+                    # connect() call raise "Already connected" forever. Force
+                    # a clean slate here regardless of which case this was.
+                    self._client.disconnect()
                     self._connected = False
                 except _ShutdownRequested:
                     break

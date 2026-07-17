@@ -10,12 +10,13 @@ Melody syntax (see ui_client.play() / ui_server's BuzzerManager):
 Each character plays for ~150ms.
 """
 
-# Short click feedback for button presses: a low tone for "move" (L) and a
-# higher tone for "decide/execute" (R), so the two are distinguishable by ear.
-BUTTON_CLICK_MELODY = {"left": "c", "right": "e"}
+# Short click feedback for button presses: "left" plays on L (move), "right"
+# plays on R (decide/execute). Give them different notes if you want the two
+# to be distinguishable by ear.
+BUTTON_CLICK_MELODY = {"left": "E", "right": "E"}
 
 # Notification chime played when handing the UI off to a launched application.
-APP_LAUNCH_MELODY = "ce"
+APP_LAUNCH_MELODY = "CEG"
 
 # Warning sound repeated at intervals while the battery is low.
-LOW_BATTERY_MELODY = "cc"
+LOW_BATTERY_MELODY = "AA"

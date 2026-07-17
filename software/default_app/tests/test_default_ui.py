@@ -5,6 +5,7 @@ manager, etc.) are injected as mocks so no real hardware or socket is used.
 """
 
 import sys
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
@@ -13,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from default_ui import DefaultUI, UIState, BACK  # noqa: E402
 from application_manager import AppEntry  # noqa: E402
+from melodies import APP_LAUNCH_MELODY, BUTTON_CLICK_MELODY  # noqa: E402
 
 
 def _make_ui(**overrides) -> DefaultUI:
@@ -53,17 +55,15 @@ class TestButtonEdgeDetection(unittest.TestCase):
         ui._handle_button("left", "pressed", lambda: calls.append(1))
         self.assertEqual(len(calls), 2)
 
-    def test_press_plays_a_short_click(self):
+    def test_left_press_plays_its_configured_click_melody(self):
         ui = _make_ui()
         ui._handle_button("left", "pressed", lambda: None)
-        ui._client.play.assert_called_once_with("c")
+        ui._client.play.assert_called_once_with(BUTTON_CLICK_MELODY["left"])
 
-    def test_left_and_right_use_different_click_tones(self):
+    def test_right_press_plays_its_configured_click_melody(self):
         ui = _make_ui()
-        ui._handle_button("left", "pressed", lambda: None)
         ui._handle_button("right", "pressed", lambda: None)
-        ui._client.play.assert_any_call("c")
-        ui._client.play.assert_any_call("e")
+        ui._client.play.assert_called_once_with(BUTTON_CLICK_MELODY["right"])
 
     def test_no_click_while_held_or_released(self):
         ui = _make_ui()
@@ -130,7 +130,7 @@ class TestApplicationMenu(unittest.TestCase):
         ui._on_right()  # select "Maze" -> launch
 
         app_manager.launch.assert_called_once_with(entry)
-        ui._client.play.assert_any_call("ce")
+        ui._client.play.assert_any_call(APP_LAUNCH_MELODY)
         ui._client.disconnect.assert_called_once()
         app_manager.wait.assert_called_once_with(process)
         self.assertEqual(ui._state, UIState.MAIN)
@@ -149,7 +149,7 @@ class TestApplicationMenu(unittest.TestCase):
         ui._on_right()  # select "Maze" -> launch
 
         client = ui._client
-        launch_play_index = client.method_calls.index(call.play("ce"))
+        launch_play_index = client.method_calls.index(call.play(APP_LAUNCH_MELODY))
         disconnect_index = client.method_calls.index(call.disconnect())
         self.assertLess(launch_play_index, disconnect_index)
 
@@ -253,6 +253,58 @@ class TestPreemptedHandling(unittest.TestCase):
         # connect() called once for the initial connection and once more
         # after the simulated PREEMPTED disconnect.
         self.assertGreaterEqual(client.connect.call_count, 2)
+
+    def test_run_recovers_from_a_raw_transport_error(self):
+        """
+        Regression test for a real bug found on hardware: unlike an explicit
+        PREEMPTED response, a raw transport error (e.g. a broken pipe) does
+        NOT clear ui_client's internal socket. If DefaultUI didn't force a
+        disconnect() itself on any ConnectionError, the next connect() call
+        would raise "Already connected" forever — an unrecoverable loop.
+        This fake client reproduces that exact state-tracking behavior.
+        """
+
+        class _StatefulFakeClient:
+            def __init__(self):
+                self.sock_open = False
+                self.play = MagicMock()
+                self.display = MagicMock()
+                self._get_buttons_calls = 0
+
+            def connect(self, priority):
+                if self.sock_open:
+                    raise ConnectionError("Already connected")
+                self.sock_open = True
+
+            def disconnect(self):
+                self.sock_open = False
+
+            def get_buttons(self):
+                self._get_buttons_calls += 1
+                if self._get_buttons_calls == 2:
+                    # Simulate a broken pipe: raises without clearing
+                    # sock_open, unlike an explicit PREEMPTED response.
+                    raise ConnectionError("[Errno 32] Broken pipe")
+                if self._get_buttons_calls >= 4:
+                    ui._running = False
+                return {"left": "released", "right": "released"}
+
+        client = _StatefulFakeClient()
+        ui = _make_ui(ui_client=client)
+
+        # signal.signal() only works in the main thread, so it must be
+        # stubbed out here — that part of run() is covered separately by
+        # TestSignalShutdown.
+        with patch("default_ui.time.sleep"), patch("default_ui.signal.signal"):
+            thread = threading.Thread(target=ui.run, daemon=True)
+            thread.start()
+            thread.join(timeout=2.0)
+
+        self.assertFalse(
+            thread.is_alive(),
+            "run() never returned — stuck retrying connect() forever",
+        )
+        self.assertFalse(ui._running)
 
 
 class TestSignalShutdown(unittest.TestCase):
