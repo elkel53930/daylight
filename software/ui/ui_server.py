@@ -10,24 +10,20 @@ import errno
 import select
 import signal
 import socket
-import struct
 import logging
 import threading
 import time
 from pathlib import Path
 
 import lgpio
-import msgpack
 from PIL import Image
 from luma.core import cmdline as luma_cmdline
+
+from protocol import SOCKET_PATH, DISPLAY_WIDTH, DISPLAY_HEIGHT, send_msg, recv_msg  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-
-SOCKET_PATH = os.environ.get("UI_SOCKET_PATH", "/tmp/ui_server.sock")
-DISPLAY_WIDTH = 96
-DISPLAY_HEIGHT = 64
 
 GPIO_BUTTON_LEFT = 26
 GPIO_BUTTON_RIGHT = 19
@@ -54,42 +50,6 @@ logging.basicConfig(
     stream=sys.stdout,
 )
 logger = logging.getLogger("ui_server")
-
-# ---------------------------------------------------------------------------
-# MessagePack framing helpers
-# ---------------------------------------------------------------------------
-
-def send_msg(sock: socket.socket, data: dict) -> None:
-    """Send a length-prefixed MessagePack message."""
-    payload = msgpack.packb(data, use_bin_type=True)
-    header = struct.pack(">I", len(payload))
-    sock.sendall(header + payload)
-
-
-def recv_msg(sock: socket.socket) -> dict | None:
-    """Receive a length-prefixed MessagePack message. Returns None on disconnect."""
-    header = _recv_exact(sock, 4)
-    if header is None:
-        return None
-    length = struct.unpack(">I", header)[0]
-    payload = _recv_exact(sock, length)
-    if payload is None:
-        return None
-    return msgpack.unpackb(payload, raw=False)
-
-
-def _recv_exact(sock: socket.socket, n: int) -> bytes | None:
-    buf = bytearray()
-    while len(buf) < n:
-        try:
-            chunk = sock.recv(n - len(buf))
-        except OSError:
-            return None
-        if not chunk:
-            return None
-        buf += chunk
-    return bytes(buf)
-
 
 # ---------------------------------------------------------------------------
 # DisplayManager
@@ -176,7 +136,7 @@ class DisplayManager:
 
 class ButtonManager:
     """
-    Monitors GPIO 19 (LEFT) and GPIO 26 (RIGHT) with debounce and long-press.
+    Monitors GPIO 26 (LEFT) and GPIO 19 (RIGHT) with debounce and long-press.
     State is returned on demand; no event queue is maintained.
     """
 

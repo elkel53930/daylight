@@ -25,7 +25,7 @@ from picamera2 import Picamera2
 from PIL import Image
 
 # beacon の設定ローダーを流用
-sys.path.insert(0, str(Path(__file__).parent / "beacon"))
+sys.path.insert(0, str(Path(__file__).parent.parent / "beacon"))
 from discord_ip import load_webhook_url
 
 CAPTURE_WIDTH = 640

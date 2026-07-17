@@ -1,0 +1,5 @@
+lgpio
+Pillow
+luma.core
+luma.oled
+msgpack

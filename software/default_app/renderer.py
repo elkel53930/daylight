@@ -11,6 +11,8 @@ from typing import List, Tuple
 
 from PIL import Image, ImageDraw, ImageFont
 
+from battery import DEFAULT_LOW_VOLTAGE_THRESHOLD
+
 logger = logging.getLogger("default_ui.renderer")
 
 WIDTH = 96
@@ -26,7 +28,7 @@ WARN_COLOR = (255, 40, 40)
 
 BATTERY_BLUE_THRESHOLD = 8.5
 BATTERY_GREEN_THRESHOLD = 7.0
-BATTERY_YELLOW_THRESHOLD = 6.5
+BATTERY_YELLOW_THRESHOLD = DEFAULT_LOW_VOLTAGE_THRESHOLD  # matches battery.is_low
 
 BATTERY_BLUE_BG_COLOR = (0, 0, 20)
 BATTERY_GREEN_BG_COLOR = (0, 20, 0)

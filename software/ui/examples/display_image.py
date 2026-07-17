@@ -13,10 +13,7 @@ from PIL import Image
 
 # Allow running from the examples/ directory
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from ui_client import UIClient
-
-DISPLAY_WIDTH = 96
-DISPLAY_HEIGHT = 64
+from ui_client import UIClient, DISPLAY_WIDTH, DISPLAY_HEIGHT
 
 
 def main() -> None:

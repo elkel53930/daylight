@@ -96,8 +96,8 @@ MCP3221 の I2C アドレスは実機配線に合わせて `battery.py` の
 ドで動作するため、アプリ起動待ちで `ui_server` から切断している間も
 監視・通知を継続する。
 
-Webhook URL の設定方法は `camera_discord.py` / `beacon/discord_ip.py` と
-共通（優先順）。
+Webhook URL の設定方法は `camera/camera_discord.py` / `beacon/discord_ip.py`
+と共通（優先順）。
 
 1. 環境変数 `DISCORD_WEBHOOK_URL`
 2. `beacon/.env`
@@ -225,7 +225,7 @@ Default UI 自体は継続動作する。
 `DISCORD_WEBHOOK_URL`（環境変数 / `beacon/.env` / `beacon/config.json`）
 が設定されているか確認する。未設定時は起動時に警告ログのみで通知は
 送信されない。設定済みでも届かない場合は Webhook URL 自体の有効性を
-`camera_discord.py` 等で確認すること。
+`camera/camera_discord.py` 等で確認すること。
 
 **アプリケーションが起動しない**
 `/etc/robot-ui/applications.yaml` の `command` が実行可能なパスを指して

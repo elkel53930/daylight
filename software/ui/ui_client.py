@@ -5,44 +5,11 @@ Communicates over Unix Domain Socket using length-prefixed MessagePack frames.
 """
 
 import socket
-import struct
 from typing import Optional
 
-import msgpack
 from PIL import Image
 
-import os
-
-SOCKET_PATH = os.environ.get("UI_SOCKET_PATH", "/tmp/ui_server.sock")
-DISPLAY_WIDTH = 96
-DISPLAY_HEIGHT = 64
-
-
-def _send_msg(sock: socket.socket, data: dict) -> None:
-    payload = msgpack.packb(data, use_bin_type=True)
-    header = struct.pack(">I", len(payload))
-    sock.sendall(header + payload)
-
-
-def _recv_msg(sock: socket.socket) -> Optional[dict]:
-    header = _recv_exact(sock, 4)
-    if header is None:
-        return None
-    length = struct.unpack(">I", header)[0]
-    payload = _recv_exact(sock, length)
-    if payload is None:
-        return None
-    return msgpack.unpackb(payload, raw=False)
-
-
-def _recv_exact(sock: socket.socket, n: int) -> Optional[bytes]:
-    buf = bytearray()
-    while len(buf) < n:
-        chunk = sock.recv(n - len(buf))
-        if not chunk:
-            return None
-        buf += chunk
-    return bytes(buf)
+from protocol import SOCKET_PATH, DISPLAY_WIDTH, DISPLAY_HEIGHT, send_msg as _send_msg, recv_msg as _recv_msg
 
 
 class UIClient:

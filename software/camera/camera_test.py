@@ -18,7 +18,7 @@ from pathlib import Path
 from picamera2 import Picamera2
 from PIL import Image
 
-sys.path.insert(0, str(Path(__file__).parent / "ui"))
+sys.path.insert(0, str(Path(__file__).parent.parent / "ui"))
 from ui_client import UIClient
 
 DISPLAY_WIDTH = 96

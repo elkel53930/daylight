@@ -15,6 +15,9 @@ import struct
 import threading
 from typing import Optional
 
+from hysteresis import Hysteresis
+from polling_thread import PollingThread
+
 logger = logging.getLogger("default_ui.battery")
 
 _I2C_SLAVE = 0x0703
@@ -48,7 +51,7 @@ class MCP3221Reader:
         return struct.unpack(">H", data)[0] & 0x0FFF
 
 
-class BatteryMonitor:
+class BatteryMonitor(PollingThread):
     """
     Periodically samples the battery voltage in a background thread and
     exposes the latest reading plus a hysteresis-based low-voltage flag.
@@ -61,16 +64,12 @@ class BatteryMonitor:
         low_voltage_threshold: float = DEFAULT_LOW_VOLTAGE_THRESHOLD,
         low_voltage_clear_threshold: float = DEFAULT_LOW_VOLTAGE_CLEAR_THRESHOLD,
     ) -> None:
+        super().__init__(poll_interval_s, thread_name="battery-monitor")
         self._reader = reader or MCP3221Reader()
-        self._poll_interval_s = poll_interval_s
-        self._low_threshold = low_voltage_threshold
-        self._clear_threshold = low_voltage_clear_threshold
+        self._low_state = Hysteresis(low_voltage_threshold, low_voltage_clear_threshold, "falls_below")
 
         self._lock = threading.Lock()
         self._voltage: Optional[float] = None
-        self._is_low = False
-        self._stop_event = threading.Event()
-        self._thread: Optional[threading.Thread] = None
 
     @staticmethod
     def raw_to_voltage(raw: int) -> float:
@@ -92,11 +91,11 @@ class BatteryMonitor:
         return voltage
 
     def _update_low_state(self, voltage: float) -> None:
-        if not self._is_low and voltage < self._low_threshold:
-            self._is_low = True
+        was_low = self._low_state.active
+        is_low = self._low_state.update(voltage)
+        if is_low and not was_low:
             logger.warning("Battery voltage low: %.2fV", voltage)
-        elif self._is_low and voltage >= self._clear_threshold:
-            self._is_low = False
+        elif was_low and not is_low:
             logger.info("Battery voltage recovered: %.2fV", voltage)
 
     @property
@@ -109,24 +108,7 @@ class BatteryMonitor:
     def is_low(self) -> bool:
         """Return True if the battery is currently in the low-voltage state."""
         with self._lock:
-            return self._is_low
+            return self._low_state.active
 
-    def start(self) -> None:
-        """Start the background polling thread."""
-        if self._thread is not None:
-            return
-        self._stop_event.clear()
-        self._thread = threading.Thread(target=self._run, daemon=True, name="battery-monitor")
-        self._thread.start()
-
-    def stop(self) -> None:
-        """Stop the background polling thread."""
-        self._stop_event.set()
-        if self._thread is not None:
-            self._thread.join(timeout=self._poll_interval_s * 2)
-            self._thread = None
-
-    def _run(self) -> None:
-        while not self._stop_event.is_set():
-            self.poll_once()
-            self._stop_event.wait(self._poll_interval_s)
+    def _tick(self) -> None:
+        self.poll_once()

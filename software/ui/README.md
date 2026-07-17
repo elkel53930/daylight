@@ -17,7 +17,8 @@ msgpack
 ## インストール方法
 
 ```bash
-pip install lgpio Pillow luma.core luma.oled msgpack
+cd software/ui
+pip install -r requirements.txt
 ```
 
 ## systemd セットアップ

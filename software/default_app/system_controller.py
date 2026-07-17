@@ -5,6 +5,7 @@ system_controller.py — Executes system-level reboot and shutdown operations.
 
 import logging
 import subprocess
+from typing import List
 
 logger = logging.getLogger("default_ui.system_controller")
 
@@ -21,7 +22,7 @@ class SystemController:
         return self._run(["sudo", "systemctl", "poweroff"], "shutdown")
 
     @staticmethod
-    def _run(command: list, action: str) -> bool:
+    def _run(command: List[str], action: str) -> bool:
         logger.info("Requesting %s: %s", action, command)
         try:
             subprocess.run(command, check=True, timeout=10.0)

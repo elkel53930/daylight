@@ -16,13 +16,14 @@ beacon/discord_ip.py (env var, beacon/.env, or beacon/config.json).
 
 import logging
 import sys
-import threading
 from pathlib import Path
 from typing import Optional
 
 import requests
 
 from battery import BatteryMonitor
+from hysteresis import Hysteresis
+from polling_thread import PollingThread
 from system_info import SystemInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "beacon"))
@@ -44,7 +45,7 @@ def _load_webhook_url_safe() -> Optional[str]:
         return None
 
 
-class DiscordAlertMonitor:
+class DiscordAlertMonitor(PollingThread):
     """
     Periodically checks battery low-voltage state and CPU temperature and
     posts a Discord notification on each transition into a warning state.
@@ -64,41 +65,19 @@ class DiscordAlertMonitor:
         cpu_high_clear_threshold: float = DEFAULT_CPU_HIGH_CLEAR_THRESHOLD,
         webhook_url: Optional[str] = None,
     ) -> None:
+        super().__init__(poll_interval_s, thread_name="discord-alert-monitor")
         self._battery = battery
         self._system_info = system_info
-        self._poll_interval_s = poll_interval_s
-        self._cpu_high_threshold = cpu_high_threshold
-        self._cpu_high_clear_threshold = cpu_high_clear_threshold
+        self._cpu_high_state = Hysteresis(cpu_high_threshold, cpu_high_clear_threshold, "rises_above")
         self._webhook_url = webhook_url if webhook_url is not None else _load_webhook_url_safe()
 
         if self._webhook_url is None:
             logger.warning("Discord webhook URL is not configured; alerts are disabled")
 
         self._battery_alerted = False
-        self._cpu_alerted = False
 
-        self._stop_event = threading.Event()
-        self._thread: Optional[threading.Thread] = None
-
-    def start(self) -> None:
-        """Start the background polling thread."""
-        if self._thread is not None:
-            return
-        self._stop_event.clear()
-        self._thread = threading.Thread(target=self._run, daemon=True, name="discord-alert-monitor")
-        self._thread.start()
-
-    def stop(self) -> None:
-        """Stop the background polling thread."""
-        self._stop_event.set()
-        if self._thread is not None:
-            self._thread.join(timeout=self._poll_interval_s * 2)
-            self._thread = None
-
-    def _run(self) -> None:
-        while not self._stop_event.is_set():
-            self.check_once()
-            self._stop_event.wait(self._poll_interval_s)
+    def _tick(self) -> None:
+        self.check_once()
 
     def check_once(self) -> None:
         """Run one battery + CPU temperature check. Exposed for testing."""
@@ -119,11 +98,10 @@ class DiscordAlertMonitor:
         temp = self._system_info.get_cpu_temp()
         if temp is None:
             return
-        if temp > self._cpu_high_threshold and not self._cpu_alerted:
-            self._cpu_alerted = True
+        was_high = self._cpu_high_state.active
+        is_high = self._cpu_high_state.update(temp)
+        if is_high and not was_high:
             self._send(f"\U0001F321️ **CPU温度上昇**\n温度: `{temp:.1f}C`")
-        elif temp <= self._cpu_high_clear_threshold and self._cpu_alerted:
-            self._cpu_alerted = False
 
     def _send(self, message: str) -> None:
         if self._webhook_url is None:
