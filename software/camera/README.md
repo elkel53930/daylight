@@ -21,3 +21,14 @@ software/venv/bin/python3 software/camera/camera_discord.py --message "test"
 ```
 
 `camera_test.py` の実行には `ui_server` が起動している必要がある。
+
+`camera_test.py` は `ui_client.UIClient` 経由で `ui_server` に接続するが、
+デフォルトの接続先は `/tmp/ui_server.sock` であり、`ui_server.service` /
+`default-ui.service` が実際に使っているソケット(`/run/ui_server/ui_server.sock`、
+各サービスファイルの `Environment=UI_SOCKET_PATH=...` で指定)とは異なる。
+手動実行時は環境変数を明示的に合わせること。
+
+```bash
+UI_SOCKET_PATH=/run/ui_server/ui_server.sock \
+  software/venv/bin/python3 software/camera/camera_test.py --once
+```
