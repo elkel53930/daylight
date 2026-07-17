@@ -1,0 +1,16 @@
+[Unit]
+Description=Robot Default UI
+Requires=ui_server.service
+After=ui_server.service
+
+[Service]
+Type=simple
+Environment=UI_SOCKET_PATH=/run/ui_server.sock
+ExecStart=/usr/bin/python3 /opt/robot-default-ui/default_ui.py
+Restart=always
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

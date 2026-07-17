@@ -1,0 +1,12 @@
+applications:
+  - name: Maze
+    command:
+      - python3
+      - /opt/robot/apps/maze.py
+    priority: 10
+
+  - name: Motor Test
+    command:
+      - python3
+      - /opt/robot/apps/motor_test.py
+    priority: 20
