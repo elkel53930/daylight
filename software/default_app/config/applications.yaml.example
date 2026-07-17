@@ -1,4 +1,10 @@
 applications:
+  - name: Micromouse
+    command:
+      - python3
+      - /opt/robot/apps/micromouse/micromouse_app.py
+    priority: 10
+
   - name: Maze
     command:
       - python3
