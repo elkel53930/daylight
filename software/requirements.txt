@@ -1,18 +1,8 @@
-# Shared venv for ui/, default_app/, and camera/ (all touch the same
-# Raspberry Pi hardware libraries, so splitting them into separate venvs
-# buys no real isolation). Create with --system-site-packages so
-# apt-installed hardware bindings (notably picamera2, which is not
-# reliably pip-installable) resolve from the system Python:
+# ui/・default_app/・camera/ で共有する開発用venv(software/venv)向け。
+# セットアップ手順・方針の詳細は software/README.md を参照。
 #
-#   sudo apt install -y python3-picamera2
-#   python3 -m venv --system-site-packages software/venv
-#   software/venv/bin/pip install -r software/requirements.txt
-#
-# picamera2 itself is deliberately NOT listed below — it must come from
-# the apt package above, not pip.
-#
-# beacon/ has no hardware dependency and keeps its own fully-isolated venv
-# (see beacon/setup.sh).
+# picamera2 はpipでは信頼できないため、意図的にここへ含めていない
+# (apt側の --system-site-packages から解決する)。
 lgpio
 Pillow
 luma.core

@@ -19,24 +19,27 @@
 - **`software/venv`**(このディレクトリ直下、共有): `default_app/`・`ui/`・`camera/` はいずれも同じRPi固有のハードウェアライブラリ(lgpio, picamera2, luma等)に依存しているため、個別にvenvを分けても実質的な独立性は得られない。まとめて1つの `--system-site-packages` venvで管理する。
 
   ```bash
-  sudo apt install -y python3-picamera2
   python3 -m venv --system-site-packages software/venv
   software/venv/bin/pip install -r software/requirements.txt
   ```
 
-  `picamera2` はpipでは信頼できないため、apt側(system-site-packages)から解決する。
+  `camera/` を使う場合はさらに以下も必要(`picamera2` はpipでは信頼できないため、apt側(system-site-packages)から解決する。`default_app/`・`ui/` だけを触るなら不要):
+
+  ```bash
+  sudo apt install -y python3-picamera2
+  ```
 
 - **`beacon/venv`**(独立): ハードウェア依存の無い純粋なPythonスクリプトなので、`beacon/setup.sh` が作る完全に独立したpip-onlyのvenvのまま。他のディレクトリと混ぜない。
 
 - 本番デプロイ(`default-ui.service` / `ui_server.service`)はvenvを介さず `/usr/bin/python3` を直接使う(各サービスのファイルは `/opt/...` へ個別配置される)。`software/venv` はあくまでこのリポジトリ上での開発・テスト用。
 
-- `default_app/requirements.txt` / `ui/requirements.txt` は、それぞれを単体で `/opt/...` にデプロイする場合に必要なパッケージのドキュメントとして個別に維持している(実際にテストを動かす際は `software/venv` を使う)。
+- `default_app/requirements.txt` / `ui/requirements.txt` は、それぞれを単体で `/opt/...` にデプロイする場合に何をインストールすべきかの参考リストとして個別に維持している(自動化されたインストール手順ではなく、手動で環境を作る際の参考。実際にこのリポジトリでテストを動かす際は `software/venv` を使う)。
 
 ## テスト実行
 
 ```bash
-software/venv/bin/python3 -m unittest discover -s default_app/tests -q
-software/venv/bin/python3 -m unittest discover -s ui/tests -q
+software/venv/bin/python3 -m unittest discover -s software/default_app/tests -q
+software/venv/bin/python3 -m unittest discover -s software/ui/tests -q
 ```
 
 `camera/` はカメラ実機が無いと動作確認できないため自動テストは無い。

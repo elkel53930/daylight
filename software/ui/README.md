@@ -24,7 +24,8 @@ software/venv/bin/pip install -r software/ui/requirements.txt
 ```
 
 `ui/requirements.txt` は、このディレクトリを単体で `/opt/...` へデプロイ
-する場合に必要なパッケージのドキュメントとしても機能する。
+する場合に何をインストールすべきかの参考リストとしても使える(自動化
+されたインストール手順ではなく、手動で環境を作る際の参考)。
 
 ## systemd セットアップ
 
