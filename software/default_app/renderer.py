@@ -24,6 +24,15 @@ BG_COLOR = (0, 0, 0)
 FG_COLOR = (255, 255, 255)
 WARN_COLOR = (255, 40, 40)
 
+BATTERY_BLUE_THRESHOLD = 8.5
+BATTERY_GREEN_THRESHOLD = 7.0
+BATTERY_YELLOW_THRESHOLD = 6.5
+
+BATTERY_BLUE_BG_COLOR = (0, 0, 20)
+BATTERY_GREEN_BG_COLOR = (0, 20, 0)
+BATTERY_YELLOW_BG_COLOR = (20, 20, 0)
+BATTERY_RED_BG_COLOR = (20, 0, 0)
+
 MAX_LABEL_CHARS = 14
 
 
@@ -37,8 +46,8 @@ class UIRenderer:
             logger.warning("Failed to load font %s (%s); using default font", font_path, exc)
             self._font = ImageFont.load_default()
 
-    def _blank(self) -> Tuple[Image.Image, ImageDraw.ImageDraw]:
-        image = Image.new("RGB", (WIDTH, HEIGHT), BG_COLOR)
+    def _blank(self, bg_color: Tuple[int, int, int] = BG_COLOR) -> Tuple[Image.Image, ImageDraw.ImageDraw]:
+        image = Image.new("RGB", (WIDTH, HEIGHT), bg_color)
         return image, ImageDraw.Draw(image)
 
     def render_main(
@@ -49,9 +58,20 @@ class UIRenderer:
         menu_items: List[str],
         selected_index: int,
         low_battery: bool = False,
+        battery_voltage: float = None,
     ) -> Image.Image:
         """Render the home screen: IP, rotating status line, and the main menu."""
-        image, draw = self._blank()
+        if battery_voltage is None:
+            bg_color = BG_COLOR
+        elif battery_voltage >= BATTERY_BLUE_THRESHOLD:
+            bg_color = BATTERY_BLUE_BG_COLOR
+        elif battery_voltage >= BATTERY_GREEN_THRESHOLD:
+            bg_color = BATTERY_GREEN_BG_COLOR
+        elif battery_voltage >= BATTERY_YELLOW_THRESHOLD:
+            bg_color = BATTERY_YELLOW_BG_COLOR
+        else:
+            bg_color = BATTERY_RED_BG_COLOR
+        image, draw = self._blank(bg_color)
         draw.text((0, 0), f"IP: {ip_text}", fill=FG_COLOR, font=self._font)
 
         if low_battery:

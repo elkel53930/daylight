@@ -316,6 +316,7 @@ class DefaultUI:
                 menu_items=self._main_menu.items,
                 selected_index=self._main_menu.index,
                 low_battery=self._battery.is_low,
+                battery_voltage=self._battery.voltage,
             )
         if self._state == UIState.APPLICATION_MENU:
             return self._renderer.render_menu(
@@ -336,6 +337,7 @@ class DefaultUI:
             menu_items=self._main_menu.items,
             selected_index=self._main_menu.index,
             low_battery=self._battery.is_low,
+            battery_voltage=self._battery.voltage,
         )
 
     def _format_ip(self) -> str:
