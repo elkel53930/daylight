@@ -41,10 +41,15 @@ msgpack
 
 ## インストール
 
+開発・テスト時は `software/venv` (`ui/`・`camera/` と共有、詳細は
+`software/README.md`) を使う。
+
 ```bash
-cd software/default_app
-pip install -r requirements.txt
+software/venv/bin/pip install -r software/default_app/requirements.txt
 ```
+
+`default_app/requirements.txt` は、このディレクトリを単体で `/opt/...`
+へデプロイする場合に必要なパッケージのドキュメントとしても機能する。
 
 ## 設定
 

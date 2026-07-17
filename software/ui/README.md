@@ -16,10 +16,15 @@ msgpack
 
 ## インストール方法
 
+開発・テスト時は `software/venv` (`default_app/`・`camera/` と共有、詳細は
+`software/README.md`) を使う。
+
 ```bash
-cd software/ui
-pip install -r requirements.txt
+software/venv/bin/pip install -r software/ui/requirements.txt
 ```
+
+`ui/requirements.txt` は、このディレクトリを単体で `/opt/...` へデプロイ
+する場合に必要なパッケージのドキュメントとしても機能する。
 
 ## systemd セットアップ
 
