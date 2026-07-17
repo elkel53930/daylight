@@ -31,6 +31,12 @@ msgpack
 デプロイ時は `ui_client.py` を `PYTHONPATH` に含めるか、本ディレクトリへ
 コピーすること。
 
+同様に `discord_alerts.py` は `software/beacon/discord_ip.py`
+（`load_webhook_url`）に依存する。開発時はリポジトリのレイアウト
+（`software/default_app` と `software/beacon` が兄弟ディレクトリ）で自動
+解決されるが、デプロイ時は `beacon/discord_ip.py` を `PYTHONPATH` に含め
+るか、本ディレクトリへコピーすること。
+
 ---
 
 ## インストール
@@ -75,6 +81,30 @@ applications:
 MCP3221 の I2C アドレスは実機配線に合わせて `battery.py` の
 `DEFAULT_I2C_ADDRESS` を変更するか、`BatteryMonitor` へ独自の
 `MCP3221Reader` を渡すこと。
+
+### Discord 通知（バッテリー低下 / CPU 温度上昇）
+
+`discord_alerts.py` がバッテリー電圧・CPU 温度を独自のバックグラウンド
+スレッドで監視し、以下のいずれかを満たすと Discord Webhook へ通知する。
+
+- バッテリー電圧が 6.5V 未満（`BatteryMonitor.is_low` と同じ閾値。6.7V
+  まで回復するとクリアされ、次に低下したら再通知する）
+- CPU 温度が 75℃ を超過（72℃ まで下がるとクリアされ、次に超過したら
+  再通知する）
+
+`ui_server` への接続状態や Default UI のメインループとは独立したスレッ
+ドで動作するため、アプリ起動待ちで `ui_server` から切断している間も
+監視・通知を継続する。
+
+Webhook URL の設定方法は `camera_discord.py` / `beacon/discord_ip.py` と
+共通（優先順）。
+
+1. 環境変数 `DISCORD_WEBHOOK_URL`
+2. `beacon/.env`
+3. `beacon/config.json`
+
+いずれも未設定の場合は起動時に警告ログを出し、通知機能のみ無効化される
+（Default UI 自体は継続動作する）。
 
 ### ブザーのメロディ
 
@@ -190,6 +220,12 @@ Default UI 自体は継続動作する。
 
 **CPU 温度が取得できない**
 `vcgencmd` が利用可能か確認する。失敗時は `CPU: N/A` と表示される。
+
+**Discord 通知が届かない**
+`DISCORD_WEBHOOK_URL`（環境変数 / `beacon/.env` / `beacon/config.json`）
+が設定されているか確認する。未設定時は起動時に警告ログのみで通知は
+送信されない。設定済みでも届かない場合は Webhook URL 自体の有効性を
+`camera_discord.py` 等で確認すること。
 
 **アプリケーションが起動しない**
 `/etc/robot-ui/applications.yaml` の `command` が実行可能なパスを指して

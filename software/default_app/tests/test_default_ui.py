@@ -37,6 +37,7 @@ def _make_ui(**overrides) -> DefaultUI:
         battery_monitor=battery_monitor,
         renderer=MagicMock(),
         system_controller=MagicMock(),
+        discord_alert_monitor=MagicMock(),
     )
     defaults.update(overrides)
     return DefaultUI(**defaults)
@@ -327,6 +328,7 @@ class TestSignalShutdown(unittest.TestCase):
         self.assertFalse(ui._running)
         client.disconnect.assert_called_once()
         ui._battery.stop.assert_called_once()
+        ui._discord_alerts.stop.assert_called_once()
 
 
 class TestStatusRotationCaching(unittest.TestCase):

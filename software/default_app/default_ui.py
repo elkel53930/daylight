@@ -24,6 +24,7 @@ except ImportError:  # pragma: no cover - fallback for repo-local development
 
 from application_manager import ApplicationManager, DEFAULT_CONFIG_PATH
 from battery import BatteryMonitor
+from discord_alerts import DiscordAlertMonitor
 from melodies import APP_LAUNCH_MELODY, BUTTON_CLICK_MELODY, LOW_BATTERY_MELODY
 from menu import MenuManager
 from renderer import UIRenderer
@@ -76,6 +77,7 @@ class DefaultUI:
         battery_monitor: Optional[BatteryMonitor] = None,
         renderer: Optional[UIRenderer] = None,
         system_controller: Optional[SystemController] = None,
+        discord_alert_monitor: Optional[DiscordAlertMonitor] = None,
         apps_config_path: str = DEFAULT_CONFIG_PATH,
     ) -> None:
         self._client = ui_client or UIClient()
@@ -84,6 +86,7 @@ class DefaultUI:
         self._battery = battery_monitor or BatteryMonitor()
         self._renderer = renderer or UIRenderer()
         self._system_controller = system_controller or SystemController()
+        self._discord_alerts = discord_alert_monitor or DiscordAlertMonitor(self._battery, self._system_info)
 
         self._main_menu = MenuManager(["Applications", "System"])
         self._app_menu = MenuManager([])
@@ -111,6 +114,7 @@ class DefaultUI:
         signal.signal(signal.SIGINT, self._handle_signal)
 
         self._battery.start()
+        self._discord_alerts.start()
         try:
             while self._running:
                 try:
@@ -138,6 +142,7 @@ class DefaultUI:
         raise _ShutdownRequested()
 
     def _shutdown(self) -> None:
+        self._discord_alerts.stop()
         self._battery.stop()
         if self._connected:
             self._client.disconnect()
