@@ -7,7 +7,7 @@ manager, etc.) are injected as mocks so no real hardware or socket is used.
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -130,10 +130,28 @@ class TestApplicationMenu(unittest.TestCase):
         ui._on_right()  # select "Maze" -> launch
 
         app_manager.launch.assert_called_once_with(entry)
+        ui._client.play.assert_any_call("ce")
         ui._client.disconnect.assert_called_once()
         app_manager.wait.assert_called_once_with(process)
         self.assertEqual(ui._state, UIState.MAIN)
         self.assertFalse(ui._connected)
+
+    def test_launch_notification_plays_before_disconnect(self):
+        entry = AppEntry(name="Maze", command=["python3", "maze.py"], priority=10)
+        app_manager = MagicMock()
+        app_manager.names.return_value = ["Maze"]
+        app_manager.get.return_value = entry
+        app_manager.launch.return_value = MagicMock()
+        app_manager.wait.return_value = 0
+
+        ui = _make_ui(application_manager=app_manager)
+        ui._on_right()  # enter application menu
+        ui._on_right()  # select "Maze" -> launch
+
+        client = ui._client
+        launch_play_index = client.method_calls.index(call.play("ce"))
+        disconnect_index = client.method_calls.index(call.disconnect())
+        self.assertLess(launch_play_index, disconnect_index)
 
 
 class TestSystemMenuAndConfirm(unittest.TestCase):

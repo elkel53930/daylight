@@ -42,6 +42,9 @@ LOW_BATTERY_MELODY = "cc"
 # higher tone for "decide/execute" (R), so the two are distinguishable by ear.
 BUTTON_CLICK_MELODY = {"left": "c", "right": "e"}
 
+# Notification chime played when handing the UI off to a launched application.
+APP_LAUNCH_MELODY = "ce"
+
 STATUS_SEQUENCE = ("battery", "cpu_temp", "cpu_freq")
 
 
@@ -284,6 +287,9 @@ class DefaultUI:
             logger.error("Failed to launch '%s': %s", entry.name, exc)
             return
 
+        # The melody keeps playing in ui_server's own buzzer thread even
+        # after we disconnect below, so it isn't cut short.
+        self._client.play(APP_LAUNCH_MELODY)
         self._client.disconnect()
         self._connected = False
         logger.info("Waiting for '%s' (pid=%s) to exit", entry.name, process.pid)
