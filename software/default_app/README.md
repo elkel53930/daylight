@@ -116,6 +116,11 @@ sudo systemctl enable default-ui.service
 sudo systemctl start default-ui.service
 ```
 
+`default-ui.service` の `UI_SOCKET_PATH` は `ui_server.service` 側と
+必ず一致させること（デフォルトは `/run/ui_server/ui_server.sock`）。
+`/run` 直下は非rootユーザーから書き込めないため、`ui_server` 側の
+`RuntimeDirectory=ui_server` 配下のパスを指定する必要がある。
+
 `ui_server.service` の起動後に自動起動し、異常終了時は `Restart=always`
 により再起動される。
 

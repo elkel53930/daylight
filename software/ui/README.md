@@ -38,6 +38,22 @@ sudo systemctl status ui_server
 journalctl -u ui_server -f
 ```
 
+### 実機での既知の注意点
+
+- `lgpio` は import 時にカレントディレクトリへ通知用パイプファイル
+  (`.lgd-nfyN`) を作成する。systemd のデフォルト作業ディレクトリ（`/`）
+  では書き込めず失敗するため、`ui_server.service` は
+  `WorkingDirectory=/run/ui_server`（`RuntimeDirectory=ui_server` で
+  作成される、サービスユーザーが書き込み可能なディレクトリ）を指定
+  している。
+- 同じ理由で、`UI_SOCKET_PATH` は `/run` 直下ではなく
+  `/run/ui_server/ui_server.sock` のように `RuntimeDirectory` 配下を
+  指定すること。`/run` 直下は root 以外に書き込み権限がないため、
+  非rootユーザーで実行する場合は `bind()` が `PermissionError` になる。
+- `User=` を root 以外にする場合は、そのユーザーが `gpio` / `spi`
+  グループに属していること（`/dev/gpiochip*` ・SPIデバイスへのアクセス
+  に必要）。
+
 ---
 
 ## Socket 仕様
