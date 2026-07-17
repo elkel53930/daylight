@@ -12,7 +12,7 @@ Example:
 import sys
 import time
 
-from ui_client import UIClient
+from ui_client import SOCKET_PATH, UIClient
 
 NOTE_DURATION_S = 0.150  # must match ui_server's per-note duration
 
@@ -24,7 +24,18 @@ def main() -> None:
 
     melody = sys.argv[1]
     with UIClient() as client:
-        client.connect(priority=5)
+        try:
+            client.connect(priority=5)
+        except ConnectionError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            print(
+                f"Hint: ui_server.service's socket may not be {SOCKET_PATH!r}. "
+                "Check its UI_SOCKET_PATH= setting (e.g. "
+                "/run/ui_server/ui_server.sock) and pass the same value "
+                "here via the UI_SOCKET_PATH environment variable.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         print(f"Playing melody: {melody!r}")
         client.play(melody)
         time.sleep(len(melody) * NOTE_DURATION_S)
