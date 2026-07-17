@@ -38,6 +38,10 @@ STATUS_CYCLE_INTERVAL_S = 2.0
 LOW_BATTERY_WARNING_INTERVAL_S = 5.0
 LOW_BATTERY_MELODY = "cc"
 
+# Short click feedback for button presses: a low tone for "move" (L) and a
+# higher tone for "decide/execute" (R), so the two are distinguishable by ear.
+BUTTON_CLICK_MELODY = {"left": "c", "right": "e"}
+
 STATUS_SEQUENCE = ("battery", "cpu_temp", "cpu_freq")
 
 
@@ -212,6 +216,7 @@ class DefaultUI:
             return
         self._button_prev[name] = state
         if prev == "released":
+            self._client.play(BUTTON_CLICK_MELODY[name])
             on_press()
 
     def _on_left(self) -> None:

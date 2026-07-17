@@ -53,6 +53,27 @@ class TestButtonEdgeDetection(unittest.TestCase):
         ui._handle_button("left", "pressed", lambda: calls.append(1))
         self.assertEqual(len(calls), 2)
 
+    def test_press_plays_a_short_click(self):
+        ui = _make_ui()
+        ui._handle_button("left", "pressed", lambda: None)
+        ui._client.play.assert_called_once_with("c")
+
+    def test_left_and_right_use_different_click_tones(self):
+        ui = _make_ui()
+        ui._handle_button("left", "pressed", lambda: None)
+        ui._handle_button("right", "pressed", lambda: None)
+        ui._client.play.assert_any_call("c")
+        ui._client.play.assert_any_call("e")
+
+    def test_no_click_while_held_or_released(self):
+        ui = _make_ui()
+        ui._handle_button("left", "pressed", lambda: None)
+        ui._client.play.reset_mock()
+        ui._handle_button("left", "pressed", lambda: None)
+        ui._handle_button("left", "long_pressed", lambda: None)
+        ui._handle_button("left", "released", lambda: None)
+        ui._client.play.assert_not_called()
+
 
 class TestMainMenuNavigation(unittest.TestCase):
     def test_left_cycles_main_menu(self):
