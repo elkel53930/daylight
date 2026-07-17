@@ -76,6 +76,11 @@ MCP3221 の I2C アドレスは実機配線に合わせて `battery.py` の
 `DEFAULT_I2C_ADDRESS` を変更するか、`BatteryMonitor` へ独自の
 `MCP3221Reader` を渡すこと。
 
+### ブザーのメロディ
+
+ボタン操作音・アプリ起動音・低電圧警告音は、すべて `melodies.py` に
+まとめてある。音を変更したい場合はこのファイルだけを編集すればよい。
+
 ---
 
 ## 権限設定（sudoers）

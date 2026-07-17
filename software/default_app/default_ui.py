@@ -24,6 +24,7 @@ except ImportError:  # pragma: no cover - fallback for repo-local development
 
 from application_manager import ApplicationManager, DEFAULT_CONFIG_PATH
 from battery import BatteryMonitor
+from melodies import APP_LAUNCH_MELODY, BUTTON_CLICK_MELODY, LOW_BATTERY_MELODY
 from menu import MenuManager
 from renderer import UIRenderer
 from system_controller import SystemController
@@ -36,14 +37,6 @@ BUTTON_POLL_INTERVAL_S = 0.1
 RECONNECT_INTERVAL_S = 1.0
 STATUS_CYCLE_INTERVAL_S = 2.0
 LOW_BATTERY_WARNING_INTERVAL_S = 5.0
-LOW_BATTERY_MELODY = "cc"
-
-# Short click feedback for button presses: a low tone for "move" (L) and a
-# higher tone for "decide/execute" (R), so the two are distinguishable by ear.
-BUTTON_CLICK_MELODY = {"left": "c", "right": "e"}
-
-# Notification chime played when handing the UI off to a launched application.
-APP_LAUNCH_MELODY = "ce"
 
 STATUS_SEQUENCE = ("battery", "cpu_temp", "cpu_freq")
 
