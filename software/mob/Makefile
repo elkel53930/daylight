@@ -19,7 +19,7 @@ build:
 ## コンパイル＆書き込み
 upload:
 	arduino-cli compile $(COMPILE_FLAGS) $(SKETCH)
-	arduino-cli upload  --fqbn $(FQBN) --port $(PORT) $(SKETCH)
+	arduino-cli upload  --fqbn $(FQBN) --port $(PORT) --input-dir $(BUILD_PATH) $(SKETCH)
 
 ## シリアルモニタ（Ctrl+C で終了）
 monitor:
