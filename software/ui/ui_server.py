@@ -29,6 +29,12 @@ GPIO_BUTTON_LEFT = 26
 GPIO_BUTTON_RIGHT = 19
 GPIO_BUZZER = 13
 
+# GPIO 13 = BCM2711 PWM0 controller (fe20c000) channel 1 when muxed to ALT0.
+# Requires `dtoverlay=pwm,pin=13,func=4` in /boot/firmware/config.txt.
+PWM_CHIP_ADDR = "20c000.pwm"
+PWM_CHANNEL = 1
+PWM_SYSFS_ROOT = "/sys/class/pwm"
+
 DEBOUNCE_S = 0.020       # 20 ms
 LONG_PRESS_S = 1.000     # 1000 ms
 
@@ -212,17 +218,88 @@ class ButtonManager:
 
 
 # ---------------------------------------------------------------------------
-# BuzzerManager
+# HardwarePWM / BuzzerManager
 # ---------------------------------------------------------------------------
+
+class HardwarePWM:
+    """
+    Drives one channel of the BCM2711 PWM peripheral via the kernel sysfs
+    interface (/sys/class/pwm). Raises on construction if the pwmchip is not
+    exposed (i.e. the dtoverlay is missing from config.txt).
+    """
+
+    def __init__(self, chip_addr: str = PWM_CHIP_ADDR, channel: int = PWM_CHANNEL) -> None:
+        chip = self._find_chip(chip_addr)
+        if chip is None:
+            raise FileNotFoundError(
+                f"no pwmchip for '{chip_addr}' under {PWM_SYSFS_ROOT} "
+                "(dtoverlay=pwm,pin=13,func=4 not set in config.txt?)"
+            )
+        self._pwm_dir = chip / f"pwm{channel}"
+        if not self._pwm_dir.exists():
+            (chip / "export").write_text(str(channel))
+            # the kernel creates the pwmN directory asynchronously after export
+            for _ in range(50):
+                if self._pwm_dir.exists():
+                    break
+                time.sleep(0.01)
+            else:
+                raise FileNotFoundError(f"{self._pwm_dir} did not appear after export")
+        self._chip = chip
+        self._channel = channel
+        # udev grants the gpio group write access to the new pwmN files
+        # asynchronously after export (99-com.rules); until then writes raise
+        # EACCES. Falling back on that transient error would be destructive:
+        # the software-PWM path claims GPIO 13 as a plain output, undoing the
+        # ALT0 mux until reboot. So wait for the permissions instead.
+        deadline = time.monotonic() + 2.0
+        while True:
+            try:
+                self.silence()
+                break
+            except PermissionError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.05)
+
+    @staticmethod
+    def _find_chip(chip_addr: str) -> Path | None:
+        for chip in sorted(Path(PWM_SYSFS_ROOT).glob("pwmchip*")):
+            if chip_addr in os.path.realpath(chip):
+                return chip
+        return None
+
+    def _write(self, attr: str, value: int) -> None:
+        (self._pwm_dir / attr).write_text(f"{value}\n")
+
+    def tone(self, freq_hz: int) -> None:
+        period_ns = 1_000_000_000 // freq_hz
+        # duty_cycle must never exceed period, so clear it before shrinking period
+        self._write("duty_cycle", 0)
+        self._write("period", period_ns)
+        self._write("duty_cycle", period_ns // 2)
+        self._write("enable", 1)
+
+    def silence(self) -> None:
+        self._write("duty_cycle", 0)
+        self._write("enable", 0)
+
+    def close(self) -> None:
+        self.silence()
+        (self._chip / "unexport").write_text(str(self._channel))
+
 
 class BuzzerManager:
     """
-    Controls the PWM buzzer on GPIO 14.
+    Controls the PWM buzzer on GPIO 13.
+    Uses the BCM2711 hardware PWM (PWM0 channel 1); falls back to lgpio
+    software PWM if the pwm dtoverlay is not enabled.
     Melody playback runs in a background thread; new play() preempts ongoing melody.
     """
 
     def __init__(self, gpio_handle: int) -> None:
         self._h = gpio_handle
+        self._hw_pwm: HardwarePWM | None = None
         self._melody_lock = threading.Lock()
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -230,10 +307,32 @@ class BuzzerManager:
 
     def _init_pwm(self) -> None:
         try:
+            self._hw_pwm = HardwarePWM()
+            logger.info("Buzzer: hardware PWM (%s)", self._hw_pwm._pwm_dir)
+            return
+        except Exception as exc:
+            logger.warning(
+                "Buzzer: hardware PWM unavailable, falling back to software PWM: %s", exc
+            )
+        # Software fallback only: claiming GPIO 13 as output would undo the
+        # ALT0 mux, so lgpio must not touch the pin in hardware PWM mode.
+        try:
             lgpio.gpio_claim_output(self._h, GPIO_BUZZER, 0, 0)
             lgpio.tx_pwm(self._h, GPIO_BUZZER, 100, 0)  # silent
         except Exception as exc:
             logger.error("Buzzer PWM init failed: %s", exc)
+
+    def _tone(self, freq_hz: int) -> None:
+        if self._hw_pwm is not None:
+            self._hw_pwm.tone(freq_hz)
+        else:
+            lgpio.tx_pwm(self._h, GPIO_BUZZER, freq_hz, 50)
+
+    def _silence(self) -> None:
+        if self._hw_pwm is not None:
+            self._hw_pwm.silence()
+        else:
+            lgpio.tx_pwm(self._h, GPIO_BUZZER, 100, 0)
 
     def play(self, melody: str) -> None:
         """Start playing melody; preempts any ongoing melody."""
@@ -254,15 +353,15 @@ class BuzzerManager:
             freq = NOTE_FREQ.get(ch)
             try:
                 if freq:
-                    lgpio.tx_pwm(self._h, GPIO_BUZZER, freq, 50)
+                    self._tone(freq)
                 else:
-                    lgpio.tx_pwm(self._h, GPIO_BUZZER, 100, 0)  # rest
+                    self._silence()  # rest
             except Exception as exc:
                 logger.error("Buzzer PWM error: %s", exc)
             self._stop_event.wait(NOTE_DURATION_S)
         # Silence after melody completes
         try:
-            lgpio.tx_pwm(self._h, GPIO_BUZZER, 100, 0)
+            self._silence()
         except Exception as exc:
             logger.error("Buzzer stop error: %s", exc)
 
@@ -271,8 +370,11 @@ class BuzzerManager:
         if self._thread is not None:
             self._thread.join(timeout=1.0)
         try:
-            lgpio.tx_pwm(self._h, GPIO_BUZZER, 100, 0)
-            lgpio.gpio_free(self._h, GPIO_BUZZER)
+            if self._hw_pwm is not None:
+                self._hw_pwm.close()
+            else:
+                self._silence()
+                lgpio.gpio_free(self._h, GPIO_BUZZER)
         except Exception as exc:
             logger.error("Buzzer cleanup error: %s", exc)
 

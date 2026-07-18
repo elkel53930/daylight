@@ -45,6 +45,18 @@ sudo systemctl status ui_server
 journalctl -u ui_server -f
 ```
 
+### ブザーのハードウェアPWM設定
+
+ブザー(GPIO 13)は BCM2711 のハードウェア PWM(PWM0 チャネル1)で駆動する。
+`/boot/firmware/config.txt` に以下を追記して再起動しておくこと。
+
+```
+dtoverlay=pwm,pin=13,func=4
+```
+
+overlay が無い環境では起動時に警告ログを出し、従来どおり lgpio の
+ソフトウェア PWM(音程が CPU 負荷の影響を受ける)にフォールバックする。
+
 ### 実機での既知の注意点
 
 - `lgpio` は import 時にカレントディレクトリへ通知用パイプファイル
@@ -59,7 +71,15 @@ journalctl -u ui_server -f
   非rootユーザーで実行する場合は `bind()` が `PermissionError` になる。
 - `User=` を root 以外にする場合は、そのユーザーが `gpio` / `spi`
   グループに属していること（`/dev/gpiochip*` ・SPIデバイスへのアクセス
-  に必要）。
+  に必要）。ハードウェア PWM の sysfs（`/sys/class/pwm/`）は
+  Raspberry Pi OS の udev ルール（`99-com.rules`）が export 時に
+  `gpio` グループへ書き込み権限を付与するため、サービスユーザーが
+  `gpio` グループに属していればよい。ただしこの権限付与は**非同期**で、
+  export 直後の書き込みは一時的に `EACCES` になることがある。
+  `HardwarePWM` は初期化時にこれを最大2秒リトライする（ここで安易に
+  ソフトウェア PWM へフォールバックすると、GPIO 13 を通常出力として
+  claim した時点で ALT0 マックスが解除され、以後ハードウェア PWM の
+  波形がピンに出なくなるため）。
 
 ---
 
