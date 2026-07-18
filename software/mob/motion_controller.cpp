@@ -116,8 +116,10 @@ void MotionController::apply_speed_pid(uint32_t dt_ms) {
     prev_r_angle_ = r_angle;
     prev_l_angle_ = l_angle;
 
-    const float dist_r_m = -counts_to_m(dr);
-    const float dist_l_m = counts_to_m(dl);
+    // 前進方向の反転(2026-07-18)に合わせて符号を反転。sensors.cpp の
+    // オドメトリ計算と揃えること。
+    const float dist_r_m = counts_to_m(dr);
+    const float dist_l_m = -counts_to_m(dl);
 
     const float vr_mps = (dt > 0) ? (dist_r_m / dt) : 0.0f;
     const float vl_mps = (dt > 0) ? (dist_l_m / dt) : 0.0f;
