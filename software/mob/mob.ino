@@ -41,7 +41,8 @@ static bool stop_backoff_active = false;  // タイムアウト後の後退中�
 static float stop_backoff_target_dist_mm = 0.0f; // 後退完了目標距離 [mm]
 
 static constexpr float FINAL_APPROACH_SPEED_MMPS = 50.0f;  // STOP時の最終進入速度
-static constexpr float STOP_MIN_SPEED_MMPS = 20.0f;        // STOP時の最低速度 [mm/s]
+static constexpr float STOP_MIN_SPEED_MMPS = 40.0f;        // STOP時の最低速度 [mm/s]
+                                                           // 20だと静止摩擦に負けて目標手前でスタックする(2026-07-18実機)
 static constexpr float STOP_TIMEOUT_SEC = 4.0f;            // STOPのタイムアウト [s]
 static constexpr float STOP_BACKOFF_DIST_MM = 30.0f;       // タイムアウト時の後退距離 [mm]
 static constexpr float STOP_BACKOFF_SPEED_MPS = 0.12f;     // タイムアウト時の後退速度 [m/s]
