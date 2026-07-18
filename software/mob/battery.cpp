@@ -6,6 +6,7 @@ void Battery::begin() {
 }
 
 float Battery::read_voltage() {
-    int raw = analogRead(ADC_PIN);
-    return (float)raw / ADC_SCALE * ADC_VREF * DIV_RATIO;
+    // eFuse の工場キャリブレーションで減衰率・個体差を補正した mV 値を使う
+    uint32_t mv = analogReadMilliVolts(ADC_PIN);
+    return (float)mv / 1000.0f * DIV_RATIO;
 }
