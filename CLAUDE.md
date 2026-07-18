@@ -1,8 +1,8 @@
 # CLAUDE.md — Daylight 開発知見
 
-このリポジトリで作業する際の前提知識。2026-07-17 のマイクロマウス機能実装
-セッションで得た知見をまとめたもの。詳細な経緯は
-`micromouse_implementation_report.md` を参照。
+このリポジトリで作業する際の前提知識。2026-07-17〜18 の開発セッション
+(マイクロマウス実装、ブザーのハードウェア PWM 化)で得た知見をまとめたもの。
+マイクロマウスの詳細な経緯は `micromouse_implementation_report.md` を参照。
 
 ## リポジトリ概要
 
@@ -37,6 +37,12 @@ software/
 - UI: OLED 96×64 + ボタン L/R + ブザー。`ui_server` に Unix ドメインソケットで
   接続(4バイト長プレフィックス + MessagePack)。優先度制御あり
   (default_app は priority=100 で最低、アプリは 20 前後で奪取)。
+- ブザー(GPIO 13)は BCM2711 ハードウェア PWM(PWM0 ch1、sysfs 経由)駆動
+  (2026-07-18〜)。config.txt に `dtoverlay=pwm,pin=13,func=4` 設定済み。
+  ⚠️ **lgpio 等で GPIO 13 を出力として claim しないこと** — ALT0 マックスが
+  解除され、PWM 波形がピンに出なくなる(無音。復旧は `pinctrl set 13 a0`)。
+  sysfs 権限は udev が export 後に非同期付与するため直後の書き込みは
+  EACCES になり得る。詳細は `software/ui/README.md`。
 
 ## mob シリアルプロトコルの落とし穴
 
@@ -55,6 +61,10 @@ software/
 - pyserial 無しの疎通確認(モータを回さない):
   `stty -F /dev/ttyUSB0 3000000 raw -echo` → `printf 'SEN\n' > /dev/ttyUSB0`
   → `timeout 1 stdbuf -o0 cat /dev/ttyUSB0`
+  (読み取りを先に開始してから送信しないと応答を取りこぼす)
+- エンコーダ:ホイールのギア比 `GEAR_RATIO = 41/20` は `sensors.h` と
+  `motion_controller.cpp` に**重複定義**されている。変更時は両方を直すこと
+  (片方だけだと走行距離とオドメトリがずれる)。
 
 ## venv・テストの規約
 
@@ -72,8 +82,23 @@ software/
 - 既知の既存テスト失敗: `software/ui/tests` の `test_sigterm_calls_cleanup`
   (`SystemExit` 未捕捉)。micromouse 実装とは無関係。
 
+## 実機の systemd サービスの実態
+
+- **インストール済み unit はリポジトリ内の `.service` ファイルと一致しない**。
+  実態は必ず `systemctl cat <unit>` で確認すること。
+- 例: `ui_server.service` の実機定義は `User=k-iida` で、ExecStart は
+  `/opt/ui` ではなく**このリポジトリの作業ツリーを直接参照**
+  (`software/venv/bin/python3 .../software/ui/ui_server.py`)。
+  つまりコード修正の反映は cp 不要で `sudo systemctl restart ui_server` のみ。
+  逆に言うと、**作業ツリーの未コミット変更がそのまま本番で動く**ので、
+  master 上で編集中のコードはサービス再起動で即座に実機挙動に影響する。
+- リポジトリ側 `ui/README.md` の `/opt/ui` デプロイ手順・`ui_server.service`
+  は理想形/参考であり、実機の現状とは別物(2026-07-18 時点)。
+
 ## micromouse の設計要点(software/micromouse/)
 
+- **実装一式は `micromouse_hw_test` ブランチにあり、master には未マージ**
+  (2026-07-18 時点)。master 上に `software/micromouse/` は存在しない。
 - 依存方向は「ハードウェア → センサ抽象 → 迷路アルゴリズム」。
   `maze.py`/`explorer.py`/`path_planner.py` は純 Python でハード非依存。
   `simulator.py` は `mobile_base.py` と同一インターフェース(ダックタイピング)。
@@ -100,3 +125,5 @@ software/
   (`/etc/robot-ui/applications.yaml` に追記。実機にはまだこのファイルが無い)。
 - Discord Webhook 設定は 環境変数 `DISCORD_WEBHOOK_URL` → `beacon/.env` →
   `beacon/config.json` の優先順(camera/default_app/beacon で共通)。
+  投稿処理を書くときは `beacon/discord_ip.py` の `load_webhook_url()` を
+  import して再利用し、`{"content": ...}` を POST する(既存コードと同形式)。
