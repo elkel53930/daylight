@@ -68,7 +68,7 @@ private:
     
     // ロボット物理パラメータ
     static constexpr float WHEEL_DIAMETER = 23.4f;     // ホイール直径（mm）
-    static constexpr float GEAR_RATIO = 41.0f / 20.0f; // エンコーダ:ホイールの ギア比
+    static constexpr float GEAR_RATIO = 1.0f;          // エンコーダ:ホイールの ギア比(直結)
     static constexpr float ENCODER_RESOLUTION = 16384.0f; // エンコーダ分解能（14bit）
     static constexpr float WHEEL_BASE = 76.0f;         // 車輪間距離（mm）
  

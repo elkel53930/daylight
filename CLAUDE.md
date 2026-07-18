@@ -62,8 +62,9 @@ software/
   `stty -F /dev/ttyUSB0 3000000 raw -echo` → `printf 'SEN\n' > /dev/ttyUSB0`
   → `timeout 1 stdbuf -o0 cat /dev/ttyUSB0`
   (読み取りを先に開始してから送信しないと応答を取りこぼす)
-- エンコーダ:ホイールのギア比 `GEAR_RATIO = 41/20` は `sensors.h` と
-  `motion_controller.cpp` に**重複定義**されている。変更時は両方を直すこと
+- エンコーダ:ホイールのギア比 `GEAR_RATIO = 1.0`(直結、2026-07-18 に
+  41/20 から変更)は `sensors.h` と `motion_controller.cpp` に**重複定義**
+  されている。変更時は両方を直すこと
   (片方だけだと走行距離とオドメトリがずれる)。
 
 ## venv・テストの規約
