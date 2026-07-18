@@ -77,7 +77,7 @@ int16_t MotionController::calc_delta_14bit(uint16_t now, uint16_t prev) {
 
 float MotionController::counts_to_m(int16_t delta_counts) {
     constexpr float WHEEL_DIAMETER_MM = 23.4f;
-    constexpr float GEAR_RATIO = 41.0f / 20.0f;
+    constexpr float GEAR_RATIO = 1.0f;
     constexpr float ENCODER_RESOLUTION = 16384.0f;
     constexpr float COUNT_TO_MM = (WHEEL_DIAMETER_MM * 3.14159265359f) / (ENCODER_RESOLUTION * GEAR_RATIO);
     return (static_cast<float>(delta_counts) * COUNT_TO_MM) / 1000.0f;
