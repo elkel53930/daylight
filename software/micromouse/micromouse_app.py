@@ -239,7 +239,7 @@ def make_base(args, config: MicromouseConfig, abort_check):
     )
 
 
-def run_mission(args, config: MicromouseConfig, ui) -> MissionState:
+def run_mission(args, config: MicromouseConfig, ui) -> tuple[MissionState, str]:
     logger = RunLogger(Path(config.log_dir))
     base = make_base(args, config, ui.abort_requested)
     mission = MicromouseMission(
@@ -265,7 +265,7 @@ def run_mission(args, config: MicromouseConfig, ui) -> MissionState:
         print(f"エラー: {mission.error_message}")
     print(mission.maze.render_text(pose=mission.pose, goal=mission.goal))
     print(f"走行ログ: {logger.jsonl_path}")
-    return final
+    return final, mission.error_message
 
 
 def main() -> int:
@@ -295,8 +295,15 @@ def main() -> int:
         while True:
             if not ui.wait_start():
                 return 0
-            final = run_mission(args, config, ui)
-            ui.show_message("DONE:", final.value, "", "R: Retry", "L: Quit")
+            final, error_message = run_mission(args, config, ui)
+            if error_message:
+                # OLED は1行約16文字。エラー理由を2行まで表示する
+                lines = [f"DONE: {final.value}"[:16]]
+                lines += [error_message[i:i + 16] for i in (0, 16)]
+                lines += ["R: Retry", "L: Quit"]
+                ui.show_message(*[l for l in lines if l][:5])
+            else:
+                ui.show_message("DONE:", final.value, "", "R: Retry", "L: Quit")
             if isinstance(ui, ConsoleUI):
                 return 0 if final == MissionState.FINISHED else 1
             # OLED: ボタンで再走行か終了かを選ぶ
