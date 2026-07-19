@@ -1,14 +1,36 @@
 #include "motion_controller.h"
 #include <math.h>
 
-// Tuning constants (initial / placeholder)
-static constexpr float DEFAULT_KP = 800.0f;
-static constexpr float DEFAULT_KI = 60.0f;
+// Tuning constants
+// 実測プラントゲイン ≈ 3mm/s per duty (2026-07-19 テレメトリ: duty96↔300mm/s)。
+// KP=800はループゲイン≈2.4で振動していたため、FF主体+P縮小(≈0.9)に変更。
+static constexpr float DEFAULT_KP = 300.0f;
+// KI=60 は弱すぎて実質P制御になり、負荷・電圧変動がそのまま速度変動に
+// 現れていた(2026-07-19)。定常dutyを積分項が数百msで担える値に引き上げ。
+static constexpr float DEFAULT_KI = 3000.0f;
 static constexpr float DEFAULT_KD = 0.0f;
+
+// 速度フィードフォワード: 目標速度[m/s]→duty。
+// VBATT_NOM 時の値。実効ゲインは電圧に反比例するため vbatt でスケーリングする
+// (2026-07-19: 計測毎に duty↔速度 の関係が±10%以上ずれる原因が電圧変動だった)。
+// 定常テレメトリ実測 duty100 ↔ 約370mm/s(vbatt≈7.5V)から逆算。
+static constexpr float KF_DUTY_PER_MPS = 250.0f;
+static constexpr float VBATT_NOM = 8.0f;  // KF を校正した基準電圧 [V]
+
+// 速度測定(1ms毎のエンコーダ差分)の量子化ノイズを抑えるLPF係数
+// 0.3では±100mm/s級のスパイク(ジャイロと矛盾=計測ノイズ)が残った(2026-07-19)
+static constexpr float SPEED_LPF_ALPHA = 0.12f;
 
 float MotionController::SpeedPID::step(float err, float dt_s) {
     if (dt_s <= 0) return 0.0f;
     integ += err * dt_s;
+    // アンチワインドアップ: 積分項単独で出力範囲を超えないようクランプ
+    if (ki > 0.0f) {
+        const float integ_max = out_max / ki;
+        const float integ_min = out_min / ki;
+        if (integ > integ_max) integ = integ_max;
+        if (integ < integ_min) integ = integ_min;
+    }
     float deriv = (err - prev_err) / dt_s;
     prev_err = err;
     float u = kp * err + ki * integ + kd * deriv;
@@ -124,14 +146,27 @@ void MotionController::apply_speed_pid(uint32_t dt_ms) {
     const float vr_mps = (dt > 0) ? (dist_r_m / dt) : 0.0f;
     const float vl_mps = (dt > 0) ? (dist_l_m / dt) : 0.0f;
 
-    const float err_r = vr_ref_mps_ - vr_mps;
-    const float err_l = vl_ref_mps_ - vl_mps;
+    // 量子化ノイズ対策のLPF(EMA)
+    vr_filt_mps_ += SPEED_LPF_ALPHA * (vr_mps - vr_filt_mps_);
+    vl_filt_mps_ += SPEED_LPF_ALPHA * (vl_mps - vl_filt_mps_);
 
-    // PID出力（これは「speed」単位：−1023〜+1023）
-    float u_r = pid_r_.step(err_r, dt);
-    float u_l = pid_l_.step(err_l, dt);
+    const float err_r = vr_ref_mps_ - vr_filt_mps_;
+    const float err_l = vl_ref_mps_ - vl_filt_mps_;
+
+    // フィードフォワード + PID補正（出力は duty: −1023〜+1023）
+    float vbatt = sensors_.get_battery_voltage();
+    if (vbatt < 6.0f) vbatt = VBATT_NOM;  // 起動直後・異常値ガード
+    const float kf = KF_DUTY_PER_MPS * (VBATT_NOM / vbatt);
+    float u_r = kf * vr_ref_mps_ + pid_r_.step(err_r, dt);
+    float u_l = kf * vl_ref_mps_ + pid_l_.step(err_l, dt);
+    if (u_r > 1023.0f) u_r = 1023.0f;
+    if (u_r < -1023.0f) u_r = -1023.0f;
+    if (u_l > 1023.0f) u_l = 1023.0f;
+    if (u_l < -1023.0f) u_l = -1023.0f;
 
     // モーターに直接設定（D の Motor は −1023〜+1023 を受け入れる）
-    motor_.set_right(static_cast<int16_t>(u_r));
-    motor_.set_left(static_cast<int16_t>(u_l));
+    last_duty_r_ = static_cast<int16_t>(u_r);
+    last_duty_l_ = static_cast<int16_t>(u_l);
+    motor_.set_right(last_duty_r_);
+    motor_.set_left(last_duty_l_);
 }

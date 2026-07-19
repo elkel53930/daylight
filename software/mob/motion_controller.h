@@ -32,6 +32,12 @@ public:
     // Stop everything.
     void stop();
 
+    // テレメトリ用: LPF後の測定車輪速度と最終duty出力
+    float get_vr_filt_mps() const { return vr_filt_mps_; }
+    float get_vl_filt_mps() const { return vl_filt_mps_; }
+    int16_t get_duty_r() const { return last_duty_r_; }
+    int16_t get_duty_l() const { return last_duty_l_; }
+
 private:
     enum class Mode {
         STOP,
@@ -72,6 +78,14 @@ private:
     uint16_t prev_r_angle_ = 0;
     uint16_t prev_l_angle_ = 0;
     bool have_prev_ = false;
+
+    // LPF後の測定速度 [m/s]
+    float vr_filt_mps_ = 0.0f;
+    float vl_filt_mps_ = 0.0f;
+
+    // 最終duty出力(テレメトリ用)
+    int16_t last_duty_r_ = 0;
+    int16_t last_duty_l_ = 0;
 
     // Helpers
     static int16_t calc_delta_14bit(uint16_t now, uint16_t prev);

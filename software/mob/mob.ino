@@ -48,6 +48,9 @@ static constexpr float STOP_BACKOFF_SPEED_MPS = 0.12f;     // タイムアウト
 static bool turn_active = false;
 static float turn_goal_angle_rad = 0.0f;
 static float turn_speed_cmd_mps = 0.0f; // 指令速度（加減速制限後）
+static bool turn_settling = false;      // 整定確認フェーズ中
+static float turn_settle_elapsed_s = 0.0f;
+static uint8_t turn_retry_count = 0;    // 再サーボ回数
 
 // 低速動作コマンド（L*）状態
 enum class LatchMode : uint8_t {
@@ -86,26 +89,31 @@ static constexpr float QSTP_DECEL_MMPS2 = 1000.0f;  // QSTP時の最大減速度
 // 角度制御パラメータ（簡易P + 速度制限）
 static constexpr float TURN_KP_MPS_PER_RAD = 0.35f;   // [m/s]/rad
 static constexpr float TURN_MAX_SPEED_MPS = 0.25f;
-static constexpr float TURN_MIN_SPEED_MPS = 0.04f;
-static constexpr float TURN_DONE_TOL_RAD = 0.03f;     // 約1.7deg
+static constexpr float TURN_MIN_SPEED_MPS = 0.06f;  // 0.04では終端が遅すぎた(2026-07-19)
+static constexpr float TURN_DONE_TOL_RAD = 0.01f;     // 約0.57deg
+static constexpr float TURN_SETTLE_SEC = 0.08f;       // 整定確認の待ち時間 [s]
+static constexpr uint8_t TURN_MAX_RETRY = 3;          // 整定不足時の再サーボ最大回数
 static constexpr float TURN_ACCEL_MPS2 = 1.2f;        // 旋回時の車輪速度加速度制限 [m/s^2]
 
 // 直進時の角度フィードバックゲイン
-static constexpr float ANGLE_FB_GAIN = 0.3f;  // [m/s]/rad
+static constexpr float ANGLE_FB_GAIN = 0.5f;  // [m/s]/rad
 
 // 直進時の角速度フィードバックゲイン（角速度→0）
-static constexpr float ANGULAR_RATE_FB_GAIN = 0.01f;  // [m/s]/(rad/s)
+static constexpr float ANGULAR_RATE_FB_GAIN = 0.04f;  // [m/s]/(rad/s)
+                                                      // ヨー振動(GZ±0.3-0.6rad/s)対策で0.02から増強(2026-07-19)
 
 // 壁センサフィードバックパラメータ
 static constexpr float WALL_SENSOR_THRESHOLD = 100.0f;  // 壁検出閾値
 // １号機
 //static constexpr float WALL_SENSOR_TARGET_LS = 250.0f;     // 中央時の目標値
 //static constexpr float WALL_SENSOR_TARGET_RS = 234.0f;     // 中央時の目標値
-// ２号機
-static constexpr float WALL_SENSOR_TARGET_LS = 233.0f;     // 中央時の目標値
-static constexpr float WALL_SENSOR_TARGET_RS = 209.0f;     // 中央時の目標値
+// ２号機(2026-07-19 セル中央実測 ls=299-322 / rs=216-242 の平均)
+static constexpr float WALL_SENSOR_TARGET_LS = 311.0f;     // 中央時の目標値
+static constexpr float WALL_SENSOR_TARGET_RS = 229.0f;     // 中央時の目標値
 
-static constexpr float WALL_SENSOR_GAIN = 0.000005f;      // 壁センサフィードバックゲイン [m/s] per sensor unit
+static constexpr float WALL_SENSOR_GAIN = 0.000002f;      // 壁センサフィードバックゲイン [m/s] per sensor unit
+                                                          // 1kHzで目標角度に積算されるため実質積分器。0.000005では
+                                                          // 目標角の移動が速すぎ角度ループと干渉して振動した(2026-07-19)
 static constexpr float WALL_CORRECTION_CUT_OFF_DISTANCE = 30.0f; // 壁センサ補正を行う残距離の閾値 [mm]
 
 // 壁センサを使用した横方向補正値を計算
@@ -428,6 +436,9 @@ void handleTurnCommand(float target_rad) {
     const float turn_start_angle_rad = sensors.get_angle();
     turn_goal_angle_rad = turn_start_angle_rad + target_rad;
     turn_speed_cmd_mps = 0.0f;
+    turn_settling = false;
+    turn_settle_elapsed_s = 0.0f;
+    turn_retry_count = 0;
 
     // TURNコマンドの詳細情報を通知
     char msg[64];
@@ -654,11 +665,18 @@ void updateForward(float dt_s) {
         {
             static int dbg_count = 0;
             dbg_count++;
-            if (dbg_count >= 100) {
+            if (dbg_count >= 50) {  // 20Hz
                 dbg_count = 0;
-                char msg[128];
-                snprintf(msg, sizeof(msg), "#WALCOR: RS=%u LS=%u CORR=%.4f REM=%.1f\n",
-                         sensors.get_rs(), sensors.get_ls(), wall_correction, remain_mm);
+                // MsgLine は64バイト上限のためCSV形式で短縮
+                // #V,cmd,vr,vl,ur,ul,gz,ang,rem
+                char msg[64];
+                snprintf(msg, sizeof(msg),
+                         "#V,%.0f,%.0f,%.0f,%d,%d,%.2f,%.3f,%.1f\n",
+                         fwd_v_cmd_mmps,
+                         motion.get_vr_filt_mps() * 1000.0f,
+                         motion.get_vl_filt_mps() * 1000.0f,
+                         motion.get_duty_r(), motion.get_duty_l(),
+                         gyro_z, sensors.get_angle(), remain_mm);
                 enqueue_msg_line(msg);
             }
         }
@@ -783,13 +801,30 @@ void updateTurn(float dt_s) {
     const float now_ang = sensors.get_angle();
     const float err = turn_goal_angle_rad - now_ang;   // +: 左回り目標が残っている
 
+    // 整定確認フェーズ: 一旦停止して待ち、慣性で流れた分を再確認する
+    if (turn_settling) {
+        turn_settle_elapsed_s += dt_s;
+        if (turn_settle_elapsed_s < TURN_SETTLE_SEC) return;
+        if (fabsf(err) <= TURN_DONE_TOL_RAD || turn_retry_count >= TURN_MAX_RETRY) {
+            turn_active = false;
+            turn_settling = false;
+            enqueue_msg_line("DONE\n");
+        } else {
+            // 許容外に流れた: 再サーボ
+            turn_settling = false;
+            turn_retry_count++;
+            turn_speed_cmd_mps = 0.0f;
+        }
+        return;
+    }
+
     if (fabsf(err) <= TURN_DONE_TOL_RAD) {
-        turn_active = false;
+        turn_settling = true;
+        turn_settle_elapsed_s = 0.0f;
         turn_speed_cmd_mps = 0.0f;
         target_vr_mps = 0.0f;
         target_vl_mps = 0.0f;
         motion.stop();
-        enqueue_msg_line("DONE\n");
     } else {
         // P制御で「理想速度」を作る（残角が小さいほど遅く）
         float v_target = TURN_KP_MPS_PER_RAD * fabsf(err);
