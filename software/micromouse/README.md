@@ -174,6 +174,36 @@ $V $M turn back           # 180度旋回
 $V $M cycle               # 探索1サイクル(半セル→判断→半セル)
 ```
 
+### 固定走行パターンテスト (pattern_test.py)
+
+迷路探索を介さず、決め打ちの動作(右旋回→左旋回→180度旋回、その場
+旋回のみで前進なし)を実行するテスト。直進側は別問題を抱えているため
+(2026-07-22時点)、まず旋回制御(PID)のオーバーシュート・振動の
+チューニングに絞って見るためのパターンにしてある。hw_test.py の
+単発 turn コマンドと違い、連続旋回時の誤差累積を見られる。
+過去には前進を含む閉路パターン(スタート位置に戻る)だった。復元する
+場合は git 履歴の `PATTERN` 定義を参照。
+
+```bash
+software/venv/bin/python3 software/micromouse/pattern_test.py
+```
+
+`--speed`/`--accel` で速度プロファイルを変更可能(既定は config の
+explore 系の値)。`--no-ui` でコンソールモード(ui_server 不要)。
+default_app の Applications メニューにも `Pattern Test` として登録済み
+(`/etc/robot-ui/applications.yaml`、登録例は
+`software/default_app/config/applications.yaml.example` 参照)。
+
+実行のたびに `logs/pattern_YYYYmmdd_HHMMSS.jsonl` へ mob からの生シリアル
+行(SEN・DONE に加えて `updateForward`/`updateStop`/`updateTurn`/
+`updateQstp` が20Hzで送る `#V,cmd,vr,vl,ur,ul,gz,ang,rem` テレメトリ含む)
+をそのまま記録する(`mobile_base.MobileBase` の `raw_log_fn` フック経由。
+これが無いと `#V,...` 行は `_wait_for()` の一時バッファでしか保持されず
+DONE 受信時に捨てられてしまう)。各行に走行中のステップ番号・区間
+(`Motion` の repr)を付与しているので、旋回中のオーバーシュート等は
+該当ステップの `#V` 行を time 順に追って `ang`(角度)や `gz`(角速度)の
+推移を見れば確認できる。
+
 ### 設定
 
 `config/micromouse.yaml.example` を `config/micromouse.yaml` にコピーして編集

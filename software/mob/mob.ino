@@ -54,6 +54,7 @@ static float turn_speed_cmd_mps = 0.0f; // 指令速度（加減速制限後）
 static bool turn_settling = false;      // 整定確認フェーズ中
 static float turn_settle_elapsed_s = 0.0f;
 static uint8_t turn_retry_count = 0;    // 再サーボ回数
+static float turn_integ = 0.0f;         // PID積分項 [rad*s]（リトライ含め1回のTURNコマンド内で保持）
 
 // 低速動作コマンド（L*）状態
 enum class LatchMode : uint8_t {
@@ -89,20 +90,65 @@ static float qstp_target_angle_rad = 0.0f; // 目標角度 [rad] （角度フィ
 static float qstp_original_goal_dist_mm = 0.0f; // 元の目標距離 [mm]（FWD/STOPの目標）
 static constexpr float QSTP_DECEL_MMPS2 = 1000.0f;  // QSTP時の最大減速度 [mm/s^2]
 
-// 角度制御パラメータ（簡易P + 速度制限）
-static constexpr float TURN_KP_MPS_PER_RAD = 0.35f;   // [m/s]/rad
-static constexpr float TURN_MAX_SPEED_MPS = 0.25f;
+// 角度制御パラメータ（PID + 速度制限）
+// P単独では減速が間に合わず、目標付近で毎回7〜15°程度オーバーシュートして
+// 整定待ち(TURN_SETTLE_SEC)→再サーボのリトライを消費していた(2026-07-22
+// 実機 Pattern Test ログで確認)。
+//
+// 第1版(I・D常時有効)では90°旋回は改善した(7〜15°→1.5〜3.7°)が、
+// 180°旋回(TURN_BACK)は悪化した(-17.6°)。残角が大きい間(gz最大
+// 8.7rad/s)積分項がアンチワインドアップ上限に張り付き続けて減速開始を
+// 遅らせていたと考え、Iを条件付き積分(残角小のみ)にしたところ、
+// 今度は複数の旋回でオーバーシュート・振動がさらに悪化した
+// (例: 180°で-20.7°、7°旋回で3回リトライ)。原因はDにあった:
+// TURN_KD_MPS_PER_RADPS×gz は巡航中の高い gz(6〜8rad/s)だけで
+// 単独で約0.4m/sにも達し、Pがまだ十分な速度を要求している最中でも
+// cmdを最低速度まで落としてしまい、減速タイミングを乱していた
+// (残角0.7rad=40°でもcmdが60まで低下、実機ログで確認)。
+//
+// このため I・D いずれも残角が TURN_FINE_ENABLE_RAD 以下(=Pだけで
+// 既に最低速度域に入っている、目標間際の最終アプローチ)のときのみ
+// 有効化する「条件付きPID」にした。巡航中はPのみの素直な減速
+// プロファイルを保ち、最終アプローチでだけI(残留誤差解消)と
+// D(オーバーシュート抑制)を効かせる狙い。KI/KDは初期値であり、
+// 実機の Pattern Test ログ(#V の ang/gz 推移)で要再チューニング。
+static constexpr float TURN_KP_MPS_PER_RAD = 0.35f;      // [m/s]/rad
+static constexpr float TURN_KI_MPS_PER_RAD_S = 0.3f;     // [m/s]/(rad*s)
+static constexpr float TURN_KD_MPS_PER_RADPS = 0.05f;    // [m/s]/(rad/s)（実測角速度=gyro_zに掛ける）
+static constexpr float TURN_FINE_ENABLE_RAD = 0.2f;     // 条件付き積分: |err|がこれ以下の間だけ積分を加算
+// オーバーシュートの根本原因(整定判定の瞬間にduty=0にして
+// TURN_SETTLE_SEC=80ms無制動で待つため、その時点のgzがそのまま飛び出し
+// 量になる)を踏まえ、減速レート(TURN_ACCEL_MPS2)側のチューニングでは
+// 方向によって効きムラが大きく限界だったため、そもそもの最高角速度
+// 自体を下げて飛び出す物理量を減らす方針に変更(2026-07-22)。
+// 0.25→0.15でオーバーシュート3.6〜6.6°・最終誤差0.9〜1.3°まで改善
+// (リトライも2〜3回→1回に減少、2026-07-22実機ログで確認)。
+// 0.12まで下げると右90°/180°はさらに改善したが、左90°は逆に悪化
+// (4.6°→7.7°、リトライ1→2回)。左右差は速度を下げるだけでは解消しない
+// (方向依存の非対称性がある)ため、0.15に戻して左右速度同期の検証に
+// 切り替える。
+static constexpr float TURN_MAX_SPEED_MPS = 0.15f;
 static constexpr float TURN_MIN_SPEED_MPS = 0.06f;  // 0.04では終端が遅すぎた(2026-07-19)
 static constexpr float TURN_DONE_TOL_RAD = 0.01f;     // 約0.57deg
 static constexpr float TURN_SETTLE_SEC = 0.08f;       // 整定確認の待ち時間 [s]
 static constexpr uint8_t TURN_MAX_RETRY = 3;          // 整定不足時の再サーボ最大回数
-static constexpr float TURN_ACCEL_MPS2 = 1.2f;        // 旋回時の車輪速度加速度制限 [m/s^2]
+// 整定判定(|err|<=TURN_DONE_TOL_RAD)の瞬間にmotion.stop()でduty=0にして
+// TURN_SETTLE_SEC待つが、その時点でgzがまだ8〜10rad/s残っていると
+// 無制動の80ms慣性だけで10〜24°も飛び出すことが実機ログで確認された
+// (2026-07-22)。1.2m/s²では巡航速度(250mm/s)から最低速度(60mm/s)まで
+// 絞り切る前に整定判定に突入してしまうため、大幅に引き上げる。
+// 1.2→4.0でオーバーシュートが大幅減少(90°で最大24°→14°、180°で
+// 13°→4.5°、旋回によっては0°)。試しに8.0まで上げたところ、左90°旋回は
+// 引き続き0°だったが右90°(14°→17°)と180°(4.5°→14.4°)はむしろ悪化した
+// ため、4.0に戻す(単純に強いほど良いわけではなく、方向によって最適値が
+// 違う可能性がある。左右差は wheel sync 無効化と合わせて要調査)。
+static constexpr float TURN_ACCEL_MPS2 = 4.0f;        // 旋回時の車輪速度加速度制限 [m/s^2]
 
 // 直進時の角度フィードバックゲイン
-static constexpr float ANGLE_FB_GAIN = 0.5f;  // [m/s]/rad
+static constexpr float ANGLE_FB_GAIN = 1.0f;  // [m/s]/rad
 
 // 直進時の角速度フィードバックゲイン（角速度→0）
-static constexpr float ANGULAR_RATE_FB_GAIN = 0.04f;  // [m/s]/(rad/s)
+static constexpr float ANGULAR_RATE_FB_GAIN = 0.3f;  // [m/s]/(rad/s)
                                                       // ヨー振動(GZ±0.3-0.6rad/s)対策で0.02から増強(2026-07-19)
 
 // 壁センサフィードバックパラメータ
@@ -114,7 +160,7 @@ static constexpr float WALL_SENSOR_THRESHOLD = 100.0f;  // 壁検出閾値
 static constexpr float WALL_SENSOR_TARGET_LS = 311.0f;     // 中央時の目標値
 static constexpr float WALL_SENSOR_TARGET_RS = 229.0f;     // 中央時の目標値
 
-static constexpr float WALL_SENSOR_GAIN = 0.000002f;      // 壁センサフィードバックゲイン [m/s] per sensor unit
+static constexpr float WALL_SENSOR_GAIN = 0.00000f;      // 壁センサフィードバックゲイン [m/s] per sensor unit
                                                           // 1kHzで目標角度に積算されるため実質積分器。0.000005では
                                                           // 目標角の移動が速すぎ角度ループと干渉して振動した(2026-07-19)
 static constexpr float WALL_CORRECTION_CUT_OFF_DISTANCE = 30.0f; // 壁センサ補正を行う残距離の閾値 [mm]
@@ -445,6 +491,7 @@ void handleTurnCommand(float target_rad) {
     turn_settling = false;
     turn_settle_elapsed_s = 0.0f;
     turn_retry_count = 0;
+    turn_integ = 0.0f;
 
     // TURNコマンドの詳細情報を通知
     char msg[64];
@@ -791,6 +838,24 @@ void updateStop(float dt_s) {
         // 合計補正値
         const float lateral_correction = angle_correction + rate_correction; // STOPでは壁センサ補正は行わない
 
+        {
+            static int dbg_count = 0;
+            dbg_count++;
+            if (dbg_count >= 50) {  // 20Hz
+                dbg_count = 0;
+                // #V,cmd,vr,vl,ur,ul,gz,ang,rem
+                char msg[64];
+                snprintf(msg, sizeof(msg),
+                         "#V,%.0f,%.0f,%.0f,%d,%d,%.2f,%.3f,%.1f\n",
+                         stop_v_cmd_mmps,
+                         motion.get_vr_filt_mps() * 1000.0f,
+                         motion.get_vl_filt_mps() * 1000.0f,
+                         motion.get_duty_r(), motion.get_duty_l(),
+                         gyro_z, sensors.get_angle(), remain_mm);
+                enqueue_msg_line(msg);
+            }
+        }
+
         target_vr_mps = v_cmd_mps;
         target_vl_mps = v_cmd_mps;
         if (v_cmd_mps == 0.0f) {
@@ -832,8 +897,42 @@ void updateTurn(float dt_s) {
         target_vl_mps = 0.0f;
         motion.stop();
     } else {
-        // P制御で「理想速度」を作る（残角が小さいほど遅く）
-        float v_target = TURN_KP_MPS_PER_RAD * fabsf(err);
+        // PID制御で「理想速度」を作る。
+        // P: 残角に比例(大きいほど速く)。
+        // I: 整定待ち後もリトライ上限で許容差を超えたまま終わる残留誤差を解消。
+        // D: 実測角速度(gyro_z)へのフィードバックで、目標接近時の
+        //    ブレーキ不足によるオーバーシュートを抑える
+        //    (err = goal - now_ang なので d(err)/dt = -gyro_z)。
+        //
+        // I・Dとも TURN_FINE_ENABLE_RAD 以下(最終アプローチ)でのみ有効化
+        // する条件付き制御にしている。理由: 巡航中(残角が大きい間)は
+        // gzが6〜8rad/s程度まで達するため、D単独で
+        // TURN_KD_MPS_PER_RADPS×gz ≈ 0.4m/s もの制動項になり、Pがまだ
+        // 十分な速度を要求している最中でもcmdが最低速度まで落ちてしまう
+        // (2026-07-22 実機ログで確認: 残角0.7rad=40°でもcmdが60まで低下)。
+        // これが減速タイミングを乱し、無条件Dにしたところ180°旋回で
+        // オーバーシュートが悪化(-17.6°→-20.7°)した原因と考えられる。
+        // 残角が小さい最終アプローチでのみDを効かせることで、巡航中は
+        // Pだけの素直な減速プロファイルを保ちつつ、目標間際の
+        // オーバーシュート抑制効果だけを残す狙い。
+        const bool turn_fine_phase = (fabsf(err) <= TURN_FINE_ENABLE_RAD);
+        if (turn_fine_phase) {
+            turn_integ += err * dt_s;
+        }
+        // アンチワインドアップ: 積分項単独で最大速度を超えないようクランプ
+        if (TURN_KI_MPS_PER_RAD_S > 0.0f) {
+            const float integ_max = TURN_MAX_SPEED_MPS / TURN_KI_MPS_PER_RAD_S;
+            if (turn_integ > integ_max) turn_integ = integ_max;
+            if (turn_integ < -integ_max) turn_integ = -integ_max;
+        }
+
+        const float gyro_z = sensors.get_gyro_z();
+        const float d_term = turn_fine_phase ? (-TURN_KD_MPS_PER_RADPS * gyro_z) : 0.0f;
+        const float pid_out = TURN_KP_MPS_PER_RAD * err
+                             + TURN_KI_MPS_PER_RAD_S * turn_integ
+                             + d_term;
+
+        float v_target = fabsf(pid_out);
         if (v_target > TURN_MAX_SPEED_MPS) v_target = TURN_MAX_SPEED_MPS;
         if (v_target < TURN_MIN_SPEED_MPS) v_target = TURN_MIN_SPEED_MPS;
 
@@ -847,6 +946,24 @@ void updateTurn(float dt_s) {
         // デバッグ用
         target_vr_mps = (err >= 0.0f) ? +turn_speed_cmd_mps : -turn_speed_cmd_mps;
         target_vl_mps = (err >= 0.0f) ? -turn_speed_cmd_mps : +turn_speed_cmd_mps;
+
+        {
+            static int dbg_count = 0;
+            dbg_count++;
+            if (dbg_count >= 50) {  // 20Hz
+                dbg_count = 0;
+                // #V,cmd,vr,vl,ur,ul,gz,ang,rem (remはTURNのみ残り角[rad])
+                char msg[64];
+                snprintf(msg, sizeof(msg),
+                         "#V,%.0f,%.0f,%.0f,%d,%d,%.2f,%.3f,%.3f\n",
+                         turn_speed_cmd_mps * 1000.0f,
+                         motion.get_vr_filt_mps() * 1000.0f,
+                         motion.get_vl_filt_mps() * 1000.0f,
+                         motion.get_duty_r(), motion.get_duty_l(),
+                         gyro_z, now_ang, err);
+                enqueue_msg_line(msg);
+            }
+        }
     }
 }
 
@@ -903,8 +1020,30 @@ bool updateQstp(float dt_s) {
     // 上で計算したvr/vlの差分をそのままlateral_correctionとして渡す
     // （motion.forward()内部で speed±corr に展開されるため、平均速度＋補正量で渡す）
     const float lateral_correction = angle_correction + rate_correction - wall_correction;
+
+    {
+        static int dbg_count = 0;
+        dbg_count++;
+        if (dbg_count >= 50) {  // 20Hz
+            dbg_count = 0;
+            const float remain_mm = (qstp_original_goal_dist_mm > 0.0f)
+                ? (qstp_original_goal_dist_mm - sensors.get_distance())
+                : 0.0f;
+            // #V,cmd,vr,vl,ur,ul,gz,ang,rem
+            char msg[64];
+            snprintf(msg, sizeof(msg),
+                     "#V,%.0f,%.0f,%.0f,%d,%d,%.2f,%.3f,%.1f\n",
+                     qstp_v_cmd_mmps,
+                     motion.get_vr_filt_mps() * 1000.0f,
+                     motion.get_vl_filt_mps() * 1000.0f,
+                     motion.get_duty_r(), motion.get_duty_l(),
+                     gyro_z, sensors.get_angle(), remain_mm);
+            enqueue_msg_line(msg);
+        }
+    }
+
     motion.forward(v_cmd_mps, lateral_correction);
-    
+
     return true;
 }
 

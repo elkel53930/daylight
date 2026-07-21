@@ -87,6 +87,9 @@ private:
     int16_t last_duty_r_ = 0;
     int16_t last_duty_l_ = 0;
 
+    // 旋回中の左右速度同期(積分項)。TURN以外では0にリセットする。
+    float turn_sync_integ_ = 0.0f;
+
     // Helpers
     static int16_t calc_delta_14bit(uint16_t now, uint16_t prev);
     static float counts_to_m(int16_t delta_counts);

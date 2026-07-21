@@ -38,10 +38,16 @@ class MobileBase:
         *,
         timeout_s: float = 10.0,
         abort_check: Optional[Callable[[], bool]] = None,
+        raw_log_fn: Optional[Callable[[str], None]] = None,
     ):
         self.ser = serial.Serial(port=port, baudrate=baud, timeout=0.05)
         self.timeout_s = timeout_s
         self.abort_check = abort_check
+        # mob から読んだ行を(SEN/DONE 含め)そのまま受け取るフック。
+        # #V,... デバッグテレメトリは SEN でも DONE でもないため、これが
+        # 無いと _wait_for() の tail バッファ(直近5行、タイムアウト時のみ
+        # 表示)以外には一切残らず捨てられる。
+        self.raw_log_fn = raw_log_fn
         self.last_frame: Optional[SensorFrame] = None
         self.ser.reset_input_buffer()
         self.ser.reset_output_buffer()
@@ -71,6 +77,8 @@ class MobileBase:
             return None
         line = raw.decode("ascii", errors="replace")
         line = "".join(ch for ch in line if ch >= " " or ch == "\t").strip()
+        if line and self.raw_log_fn is not None:
+            self.raw_log_fn(line)
         return line or None
 
     def _check_abort(self) -> None:
