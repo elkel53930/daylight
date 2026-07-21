@@ -21,6 +21,28 @@ static constexpr float VBATT_NOM = 8.0f;  // KF を校正した基準電圧 [V]
 // 0.3では±100mm/s級のスパイク(ジャイロと矛盾=計測ノイズ)が残った(2026-07-19)
 static constexpr float SPEED_LPF_ALPHA = 0.12f;
 
+// 旋回中の左右速度同期(2026-07-22追加、2回無効化: 2026-07-22)。
+// 左右輪は独立したPID(同一ゲイン・同一目標速度)で追従しているが、
+// 摩擦やギアの個体差で実速度がずれると旋回中心が機械的中心からずれる
+// (並進成分が生じる)。turn_in_place() が毎tick与える目標(±s、同じ大きさ)
+// はそのままに、実測速度の絶対値の差だけを打ち消す向きに左右の目標を
+// 逆方向へ微調整して追従させる…つもりだった。
+//
+// 1回目(導入直後、条件付きPID化と同時テスト): オーバーシュート悪化
+// (90°で-18〜-24°、180°で-12〜-13°) → ゲイン0で無効化。
+// TURN_ACCEL_MPS2・TURN_MAX_SPEED_MPS(0.25→0.15)の調整でオーバーシュート
+// 自体が一桁台まで縮小したため、干渉する土壌が薄れたと考え再有効化
+// (クランプもTURN_MAX_SPEED_MPSに比例縮小: 0.08→0.05)。
+// 2回目(このゲインで再テスト): それでも悪化(右90°6.6°→9.9°・3回
+// リトライ、180°3.6°→9.7°・2回リトライ)。ゲインを弱めても改善せず、
+// 個別車輪PID(KP=300,KI=3000)と同じ雑音混じりの実測速度に反応する
+// 同期ループという設計自体が振動源になっていると判断し、再度無効化。
+// 左右差対策として別のアプローチ(例: 十分にLPFした差分を使う、応答を
+// もっと遅くする等)が必要。
+static constexpr float TURN_SYNC_KP = 0.0f;         // 無次元(m/s差 → m/s補正)。無効化
+static constexpr float TURN_SYNC_KI = 0.0f;         // [1/s]。無効化
+static constexpr float TURN_SYNC_MAX_CORR_MPS = 0.05f;  // 補正量クランプ(グリッチ対策)
+
 float MotionController::SpeedPID::step(float err, float dt_s) {
     if (dt_s <= 0) return 0.0f;
     integ += err * dt_s;
@@ -86,6 +108,7 @@ void MotionController::stop() {
     set_targets_mps(0.0f, 0.0f);
     pid_r_.reset();
     pid_l_.reset();
+    turn_sync_integ_ = 0.0f;
     motor_.set_right(0);
     motor_.set_left(0);
 }
@@ -116,6 +139,7 @@ void MotionController::apply_speed_pid(uint32_t dt_ms) {
     if (vr_ref_mps_ == 0.0f && vl_ref_mps_ == 0.0f) {
         pid_r_.reset();
         pid_l_.reset();
+        turn_sync_integ_ = 0.0f;
         motor_.set_right(0);
         motor_.set_left(0);
         return;
@@ -150,15 +174,44 @@ void MotionController::apply_speed_pid(uint32_t dt_ms) {
     vr_filt_mps_ += SPEED_LPF_ALPHA * (vr_mps - vr_filt_mps_);
     vl_filt_mps_ += SPEED_LPF_ALPHA * (vl_mps - vl_filt_mps_);
 
-    const float err_r = vr_ref_mps_ - vr_filt_mps_;
-    const float err_l = vl_ref_mps_ - vl_filt_mps_;
+    // 旋回中のみ: 実測速度の絶対値を左右で揃える同期補正。
+    // turn_in_place() が設定した ±s（同じ大きさ）はそのままに、
+    // 「速い方を減速・遅い方を増速」させて中心の並進成分を抑える。
+    float vr_ref_eff = vr_ref_mps_;
+    float vl_ref_eff = vl_ref_mps_;
+    if (mode_ == Mode::TURN) {
+        const float mag_r = fabsf(vr_filt_mps_);
+        const float mag_l = fabsf(vl_filt_mps_);
+        const float sync_err = mag_r - mag_l;  // +: 右が速い
+
+        turn_sync_integ_ += sync_err * dt;
+        if (TURN_SYNC_KI > 0.0f) {
+            const float sync_integ_max = TURN_SYNC_MAX_CORR_MPS / TURN_SYNC_KI;
+            if (turn_sync_integ_ > sync_integ_max) turn_sync_integ_ = sync_integ_max;
+            if (turn_sync_integ_ < -sync_integ_max) turn_sync_integ_ = -sync_integ_max;
+        }
+
+        float sync_corr = TURN_SYNC_KP * sync_err + TURN_SYNC_KI * turn_sync_integ_;
+        if (sync_corr > TURN_SYNC_MAX_CORR_MPS) sync_corr = TURN_SYNC_MAX_CORR_MPS;
+        if (sync_corr < -TURN_SYNC_MAX_CORR_MPS) sync_corr = -TURN_SYNC_MAX_CORR_MPS;
+
+        const float dir_r = (vr_ref_mps_ >= 0.0f) ? 1.0f : -1.0f;
+        const float dir_l = (vl_ref_mps_ >= 0.0f) ? 1.0f : -1.0f;
+        vr_ref_eff = dir_r * (fabsf(vr_ref_mps_) - 0.5f * sync_corr);
+        vl_ref_eff = dir_l * (fabsf(vl_ref_mps_) + 0.5f * sync_corr);
+    } else {
+        turn_sync_integ_ = 0.0f;
+    }
+
+    const float err_r = vr_ref_eff - vr_filt_mps_;
+    const float err_l = vl_ref_eff - vl_filt_mps_;
 
     // フィードフォワード + PID補正（出力は duty: −1023〜+1023）
     float vbatt = sensors_.get_battery_voltage();
     if (vbatt < 6.0f) vbatt = VBATT_NOM;  // 起動直後・異常値ガード
     const float kf = KF_DUTY_PER_MPS * (VBATT_NOM / vbatt);
-    float u_r = kf * vr_ref_mps_ + pid_r_.step(err_r, dt);
-    float u_l = kf * vl_ref_mps_ + pid_l_.step(err_l, dt);
+    float u_r = kf * vr_ref_eff + pid_r_.step(err_r, dt);
+    float u_l = kf * vl_ref_eff + pid_l_.step(err_l, dt);
     if (u_r > 1023.0f) u_r = 1023.0f;
     if (u_r < -1023.0f) u_r = -1023.0f;
     if (u_l > 1023.0f) u_l = 1023.0f;

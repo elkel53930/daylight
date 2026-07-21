@@ -5,6 +5,12 @@ applications:
       - /opt/robot/apps/micromouse/micromouse_app.py
     priority: 10
 
+  - name: Pattern Test
+    command:
+      - python3
+      - /opt/robot/apps/micromouse/pattern_test.py
+    priority: 10
+
   - name: Maze
     command:
       - python3
