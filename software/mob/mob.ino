@@ -44,14 +44,15 @@ static constexpr float STOP_TIMEOUT_SEC = 4.0f;            // STOPのタイム�
 static constexpr float STOP_BACKOFF_DIST_MM = 30.0f;       // タイムアウト時の後退距離 [mm]
 static constexpr float STOP_BACKOFF_SPEED_MPS = 0.12f;     // タイムアウト時の後退速度 [m/s]
 
-// 旋回コマンド（その場旋回）状態
+// 旋回コマンド（その場旋回、角度制御ベース。turn_angle_controlブランチ）状態
 static bool turn_active = false;
 static float turn_goal_angle_rad = 0.0f;
-static float turn_speed_cmd_mps = 0.0f; // 指令速度（加減速制限後）
-static bool turn_settling = false;      // 整定確認フェーズ中
+static float turn_integ = 0.0f;          // PID積分項 [rad*s]（1回のTURNコマンド内で保持）
+// 整定確認: 角度誤差・角速度がともに許容範囲内の状態が
+// TURN_SETTLE_SEC継続したら完了とする(速度ベース版のような、いったん
+// duty=0にして無制動で待つ盲目的なリトライは行わない。PIDは常時
+// 動き続けたまま連続監視する)。
 static float turn_settle_elapsed_s = 0.0f;
-static uint8_t turn_retry_count = 0;    // 再サーボ回数
-static float turn_integ = 0.0f;         // PID積分項 [rad*s]（リトライ含め1回のTURNコマンド内で保持）
 
 // 低速動作コマンド（L*）状態
 enum class LatchMode : uint8_t {
@@ -87,59 +88,70 @@ static float qstp_target_angle_rad = 0.0f; // 目標角度 [rad] （角度フィ
 static float qstp_original_goal_dist_mm = 0.0f; // 元の目標距離 [mm]（FWD/STOPの目標）
 static constexpr float QSTP_DECEL_MMPS2 = 1000.0f;  // QSTP時の最大減速度 [mm/s^2]
 
-// 角度制御パラメータ（PID + 速度制限）
-// P単独では減速が間に合わず、目標付近で毎回7〜15°程度オーバーシュートして
-// 整定待ち(TURN_SETTLE_SEC)→再サーボのリトライを消費していた(2026-07-22
-// 実機 Pattern Test ログで確認)。
+// 角度制御パラメータ(turn_angle_controlブランチ: 速度PIDを経由せず、
+// 角度誤差から直接duty(-1023〜+1023)を出力するPID)。
 //
-// 第1版(I・D常時有効)では90°旋回は改善した(7〜15°→1.5〜3.7°)が、
-// 180°旋回(TURN_BACK)は悪化した(-17.6°)。残角が大きい間(gz最大
-// 8.7rad/s)積分項がアンチワインドアップ上限に張り付き続けて減速開始を
-// 遅らせていたと考え、Iを条件付き積分(残角小のみ)にしたところ、
-// 今度は複数の旋回でオーバーシュート・振動がさらに悪化した
-// (例: 180°で-20.7°、7°旋回で3回リトライ)。原因はDにあった:
-// TURN_KD_MPS_PER_RADPS×gz は巡航中の高い gz(6〜8rad/s)だけで
-// 単独で約0.4m/sにも達し、Pがまだ十分な速度を要求している最中でも
-// cmdを最低速度まで落としてしまい、減速タイミングを乱していた
-// (残角0.7rad=40°でもcmdが60まで低下、実機ログで確認)。
+// 速度ベース版(micromouse_hw_testブランチ)では、角度PIDの出力を
+// いったん「目標車輪速度」に変換し、それを別の速度PIDでdutyに変換する
+// 二段構成(カスケード制御)だった。この構成では、整定判定
+// (|err|<=TURN_DONE_TOL_RAD)の瞬間にduty=0にして無制動で
+// TURN_SETTLE_SEC(80ms)待つ実装だったため、その時点の実測角速度が
+// そのまま飛び出し量になり(gz6〜9rad/sで10〜24°オーバーシュート)、
+// TURN_MAX_SPEED_MPSやTURN_ACCEL_MPS2の調整で数度程度まで抑えるのが
+// 精一杯だった(2026-07-22 Pattern Test 10回再現性検証で最終誤差
+// ±2〜4°程度のばらつきが残ることを確認)。
 //
-// このため I・D いずれも残角が TURN_FINE_ENABLE_RAD 以下(=Pだけで
-// 既に最低速度域に入っている、目標間際の最終アプローチ)のときのみ
-// 有効化する「条件付きPID」にした。巡航中はPのみの素直な減速
-// プロファイルを保ち、最終アプローチでだけI(残留誤差解消)と
-// D(オーバーシュート抑制)を効かせる狙い。KI/KDは初期値であり、
-// 実機の Pattern Test ログ(#V の ang/gz 推移)で要再チューニング。
-static constexpr float TURN_KP_MPS_PER_RAD = 0.35f;      // [m/s]/rad
-static constexpr float TURN_KI_MPS_PER_RAD_S = 0.3f;     // [m/s]/(rad*s)
-static constexpr float TURN_KD_MPS_PER_RADPS = 0.05f;    // [m/s]/(rad/s)（実測角速度=gyro_zに掛ける）
-static constexpr float TURN_FINE_ENABLE_RAD = 0.2f;     // 条件付き積分: |err|がこれ以下の間だけ積分を加算
-// オーバーシュートの根本原因(整定判定の瞬間にduty=0にして
-// TURN_SETTLE_SEC=80ms無制動で待つため、その時点のgzがそのまま飛び出し
-// 量になる)を踏まえ、減速レート(TURN_ACCEL_MPS2)側のチューニングでは
-// 方向によって効きムラが大きく限界だったため、そもそもの最高角速度
-// 自体を下げて飛び出す物理量を減らす方針に変更(2026-07-22)。
-// 0.25→0.15でオーバーシュート3.6〜6.6°・最終誤差0.9〜1.3°まで改善
-// (リトライも2〜3回→1回に減少、2026-07-22実機ログで確認)。
-// 0.12まで下げると右90°/180°はさらに改善したが、左90°は逆に悪化
-// (4.6°→7.7°、リトライ1→2回)。左右差は速度を下げるだけでは解消しない
-// (方向依存の非対称性がある)ため、0.15に戻して左右速度同期の検証に
-// 切り替える。
-static constexpr float TURN_MAX_SPEED_MPS = 0.15f;
-static constexpr float TURN_MIN_SPEED_MPS = 0.06f;  // 0.04では終端が遅すぎた(2026-07-19)
+// 角度制御ベース版では、角度PID(P+I+D、Dは実測角速度gyro_zへの
+// フィードバック)の出力を速度PIDを経由せず直接dutyとして常時
+// 出力し続ける(motion.turn_direct())。完了判定も「いったん止めて
+// 慣性を確認する」盲目的なリトライではなく、角度誤差と角速度が
+// ともに許容範囲に入った状態がTURN_SETTLE_SEC継続したら完了とする
+// 連続監視に変える。狙いは、Dによる能動的なブレーキを目標間際まで
+// 効かせ続けることで、無制動の慣性コースト自体を無くすこと。
+// ゲインはすべて初期値であり、実機の Pattern Test ログで要チューニング。
+static constexpr float TURN_ANG_KP_DUTY_PER_RAD = 120.0f;     // duty/rad
+static constexpr float TURN_ANG_KI_DUTY_PER_RAD_S = 150.0f;   // duty/(rad*s)
+static constexpr float TURN_ANG_KD_DUTY_PER_RADPS = 15.0f;    // duty/(rad/s)（実測角速度=gyro_zに掛ける）
+static constexpr float TURN_ANG_MAX_DUTY = 500.0f;            // 出力duty上限(±1023の約半分、余力を残す)
+// デッドバンド補償: |err|がTURN_DONE_TOL_RADを超えている(=まだ収束して
+// いない)間は、最低TURN_ANG_MIN_DUTYを保証する。
+// 60では静止摩擦に対して余裕が無く、実機で「duty=-60に張り付いたまま
+// 8秒近くほぼ動かず、積分がようやく効いて振り切った瞬間に33°も
+// 飛び出す」ケースを確認した(2026-07-22)ため90に引き上げた。
+// 90でも符号ロックは解消したが、9回中1回(TURN_RIGHT)で約3.7秒
+// duty=-90のままほぼ動かない静止摩擦イベントが発生(オーバーシュートは
+// 無し、単に遅いだけ)。120まで引き上げて9回再検証したが、明確な改善は
+// なく、むしろオーバーシュート発生率がやや増えた(最終誤差はどちらも
+// 概ね±0.6°以内で大差無し)ため、90に戻す。
+static constexpr float TURN_ANG_MIN_DUTY = 90.0f;
+// 上のケースで振り切った直後、err と duty の符号が逆(errは正なのに
+// duty=-37で止まる等)のままロックしてタイムアウトすることも確認した。
+// 実際に速く回転中(|gyro_z|がこの閾値超)でなければ、dutyの符号が
+// errと逆でも「意図的なDブレーキ」とはみなさずデッドバンド補償で
+// 上書きする(単なる古い積分の残留と判断する)。
+static constexpr float TURN_ANG_BRAKE_GZ_THRESH_RADPS = 1.0f;
+// デッドバンド補償の発動閾値をTURN_DONE_TOL_RADぴったりにすると、
+// 収束判定の境界(|err|=TOL付近)でフロア(±90)適用のON/OFFが
+// 短時間に切り替わり、duty=±90と小さい値の間を往復するチャタリングで
+// タイムアウトすることを実機で確認した(2026-07-22)。
+// → TOLより広い閾値(0.03rad)にする案を試したが、TOL(0.01)〜0.03の
+// 範囲がフロアも発動せず完了判定もされない「詰みゾーン」になり、
+// 実機で毎回(6/6)そこに嵌ってタイムアウトする重大な悪化を引き起こした
+// (2026-07-22)。ヒステリシス無しのTURN_DONE_TOL_RADに戻す。チャタリング
+// 対策は別のアプローチ(例: フロアの立ち上がりにスルーレートを掛ける)
+// で改めて検討する。
+// 条件付き積分: |err|がこれ以下のときだけ積分を加算する。速度ベース版
+// (TURN_FINE_ENABLE_RAD)と同じ理由。巡航中(残角が大きい間、最大0.3〜0.35秒
+// 続く)に積分が大きく片側に蓄積し、目標を過ぎて誤差の符号が反転した後も
+// 逆符号の積分が支配して正しい向きにdutyが出ず、何秒もかけて積分が
+// 自然に抜けるのを待つだけの「動けないまま長時間停滞」を実機で確認した
+// (2026-07-22、無条件積分では180°旋回で最大約28°のオーバーシュート後に
+// 3秒近く動かないまま経過)。積分は最終アプローチでの残留誤差解消だけに
+// 使う。
+static constexpr float TURN_ANG_FINE_ENABLE_RAD = 0.3f;
 static constexpr float TURN_DONE_TOL_RAD = 0.01f;     // 約0.57deg
-static constexpr float TURN_SETTLE_SEC = 0.08f;       // 整定確認の待ち時間 [s]
-static constexpr uint8_t TURN_MAX_RETRY = 3;          // 整定不足時の再サーボ最大回数
-// 整定判定(|err|<=TURN_DONE_TOL_RAD)の瞬間にmotion.stop()でduty=0にして
-// TURN_SETTLE_SEC待つが、その時点でgzがまだ8〜10rad/s残っていると
-// 無制動の80ms慣性だけで10〜24°も飛び出すことが実機ログで確認された
-// (2026-07-22)。1.2m/s²では巡航速度(250mm/s)から最低速度(60mm/s)まで
-// 絞り切る前に整定判定に突入してしまうため、大幅に引き上げる。
-// 1.2→4.0でオーバーシュートが大幅減少(90°で最大24°→14°、180°で
-// 13°→4.5°、旋回によっては0°)。試しに8.0まで上げたところ、左90°旋回は
-// 引き続き0°だったが右90°(14°→17°)と180°(4.5°→14.4°)はむしろ悪化した
-// ため、4.0に戻す(単純に強いほど良いわけではなく、方向によって最適値が
-// 違う可能性がある。左右差は wheel sync 無効化と合わせて要調査)。
-static constexpr float TURN_ACCEL_MPS2 = 4.0f;        // 旋回時の車輪速度加速度制限 [m/s^2]
+static constexpr float TURN_DONE_GZ_TOL_RADPS = 0.3f; // 約17deg/s。「ほぼ静止」とみなす角速度閾値
+static constexpr float TURN_SETTLE_SEC = 0.08f;       // 整定確認の継続時間 [s]
 
 // 直進時の角度フィードバックゲイン
 static constexpr float ANGLE_FB_GAIN = 1.0f;  // [m/s]/rad
@@ -190,12 +202,6 @@ static float calculate_wall_correction(const Sensors& sensors_ref) {
     // 両方無効な場合は correction = 0.0f のまま
     
     return correction;
-}
-
-static inline float slew_rate_limit(float current, float target, float max_delta) {
-    if (target > current + max_delta) return current + max_delta;
-    if (target < current - max_delta) return current - max_delta;
-    return target;
 }
 
 // グローバルなクラスは、上から順に初期化される
@@ -481,10 +487,7 @@ void handleTurnCommand(float target_rad) {
     // 角度制御の基準を確定
     const float turn_start_angle_rad = sensors.get_angle();
     turn_goal_angle_rad = turn_start_angle_rad + target_rad;
-    turn_speed_cmd_mps = 0.0f;
-    turn_settling = false;
     turn_settle_elapsed_s = 0.0f;
-    turn_retry_count = 0;
     turn_integ = 0.0f;
 
     // TURNコマンドの詳細情報を通知
@@ -865,98 +868,88 @@ void updateTurn(float dt_s) {
 
     const float now_ang = sensors.get_angle();
     const float err = turn_goal_angle_rad - now_ang;   // +: 左回り目標が残っている
+    const float gyro_z = sensors.get_gyro_z();
 
-    // 整定確認フェーズ: 一旦停止して待ち、慣性で流れた分を再確認する
-    if (turn_settling) {
-        turn_settle_elapsed_s += dt_s;
-        if (turn_settle_elapsed_s < TURN_SETTLE_SEC) return;
-        if (fabsf(err) <= TURN_DONE_TOL_RAD || turn_retry_count >= TURN_MAX_RETRY) {
-            turn_active = false;
-            turn_settling = false;
-            enqueue_msg_line("DONE\n");
-        } else {
-            // 許容外に流れた: 再サーボ
-            turn_settling = false;
-            turn_retry_count++;
-            turn_speed_cmd_mps = 0.0f;
-        }
-        return;
-    }
+    // 収束判定: 角度誤差・角速度がともに許容範囲内の状態が
+    // TURN_SETTLE_SEC継続したら完了とする。速度ベース版のような
+    // 「いったんduty=0にして無制動で待ち、流れた分を確認する」盲目的な
+    // リトライは行わない。PIDは収束判定中も止めずに動かし続ける。
+    const bool settled_now = (fabsf(err) <= TURN_DONE_TOL_RAD) &&
+                              (fabsf(gyro_z) <= TURN_DONE_GZ_TOL_RADPS);
+    turn_settle_elapsed_s = settled_now ? (turn_settle_elapsed_s + dt_s) : 0.0f;
 
-    if (fabsf(err) <= TURN_DONE_TOL_RAD) {
-        turn_settling = true;
-        turn_settle_elapsed_s = 0.0f;
-        turn_speed_cmd_mps = 0.0f;
+    if (turn_settle_elapsed_s >= TURN_SETTLE_SEC) {
+        turn_active = false;
         target_vr_mps = 0.0f;
         target_vl_mps = 0.0f;
         motion.stop();
+        enqueue_msg_line("DONE\n");
+        return;
+    }
+
+    // 角度PID(P+I+D)の出力をそのままduty(-1023〜+1023)として直接
+    // 指令する(速度PIDを経由しない)。
+    // P: 残角に比例。I: 静止摩擦等による定常残留誤差の解消。
+    // D: 実測角速度(gyro_z)へのフィードバックで、目標接近時に能動的な
+    //    ブレーキをかけてオーバーシュートを抑える
+    //    (err = goal - now_ang なので d(err)/dt = -gyro_z)。
+    if (fabsf(err) <= TURN_ANG_FINE_ENABLE_RAD) {
+        turn_integ += err * dt_s;
     } else {
-        // PID制御で「理想速度」を作る。
-        // P: 残角に比例(大きいほど速く)。
-        // I: 整定待ち後もリトライ上限で許容差を超えたまま終わる残留誤差を解消。
-        // D: 実測角速度(gyro_z)へのフィードバックで、目標接近時の
-        //    ブレーキ不足によるオーバーシュートを抑える
-        //    (err = goal - now_ang なので d(err)/dt = -gyro_z)。
-        //
-        // I・Dとも TURN_FINE_ENABLE_RAD 以下(最終アプローチ)でのみ有効化
-        // する条件付き制御にしている。理由: 巡航中(残角が大きい間)は
-        // gzが6〜8rad/s程度まで達するため、D単独で
-        // TURN_KD_MPS_PER_RADPS×gz ≈ 0.4m/s もの制動項になり、Pがまだ
-        // 十分な速度を要求している最中でもcmdが最低速度まで落ちてしまう
-        // (2026-07-22 実機ログで確認: 残角0.7rad=40°でもcmdが60まで低下)。
-        // これが減速タイミングを乱し、無条件Dにしたところ180°旋回で
-        // オーバーシュートが悪化(-17.6°→-20.7°)した原因と考えられる。
-        // 残角が小さい最終アプローチでのみDを効かせることで、巡航中は
-        // Pだけの素直な減速プロファイルを保ちつつ、目標間際の
-        // オーバーシュート抑制効果だけを残す狙い。
-        const bool turn_fine_phase = (fabsf(err) <= TURN_FINE_ENABLE_RAD);
-        if (turn_fine_phase) {
-            turn_integ += err * dt_s;
+        // 粗い領域に戻った(≒大きく飛び出した)場合は積分をリセットし、
+        // 古い符号のバイアスを次の収束の邪魔にさせない。
+        turn_integ = 0.0f;
+    }
+    // アンチワインドアップ: 積分項単独で出力上限を超えないようクランプ
+    if (TURN_ANG_KI_DUTY_PER_RAD_S > 0.0f) {
+        const float integ_max = TURN_ANG_MAX_DUTY / TURN_ANG_KI_DUTY_PER_RAD_S;
+        if (turn_integ > integ_max) turn_integ = integ_max;
+        if (turn_integ < -integ_max) turn_integ = -integ_max;
+    }
+
+    float duty_f = TURN_ANG_KP_DUTY_PER_RAD * err
+                 + TURN_ANG_KI_DUTY_PER_RAD_S * turn_integ
+                 - TURN_ANG_KD_DUTY_PER_RADPS * gyro_z;
+
+    // デッドバンド補償: まだ収束していないのに出力が小さすぎて(あるいは
+    // 古い積分の影響で符号が逆になって)動けないケースを底上げする。
+    // 実際に速く回転中(|gyro_z|>閾値)でDが正しくブレーキ方向に効いて
+    // いる場合だけは優先し、ここでは上書きしない。
+    if (fabsf(err) > TURN_DONE_TOL_RAD) {
+        const bool intentional_brake =
+            (fabsf(gyro_z) > TURN_ANG_BRAKE_GZ_THRESH_RADPS) && (duty_f * err < 0.0f);
+        if (!intentional_brake) {
+            if (err >= 0.0f && duty_f < TURN_ANG_MIN_DUTY) duty_f = TURN_ANG_MIN_DUTY;
+            if (err < 0.0f && duty_f > -TURN_ANG_MIN_DUTY) duty_f = -TURN_ANG_MIN_DUTY;
         }
-        // アンチワインドアップ: 積分項単独で最大速度を超えないようクランプ
-        if (TURN_KI_MPS_PER_RAD_S > 0.0f) {
-            const float integ_max = TURN_MAX_SPEED_MPS / TURN_KI_MPS_PER_RAD_S;
-            if (turn_integ > integ_max) turn_integ = integ_max;
-            if (turn_integ < -integ_max) turn_integ = -integ_max;
-        }
+    }
 
-        const float gyro_z = sensors.get_gyro_z();
-        const float d_term = turn_fine_phase ? (-TURN_KD_MPS_PER_RADPS * gyro_z) : 0.0f;
-        const float pid_out = TURN_KP_MPS_PER_RAD * err
-                             + TURN_KI_MPS_PER_RAD_S * turn_integ
-                             + d_term;
+    if (duty_f > TURN_ANG_MAX_DUTY) duty_f = TURN_ANG_MAX_DUTY;
+    if (duty_f < -TURN_ANG_MAX_DUTY) duty_f = -TURN_ANG_MAX_DUTY;
 
-        float v_target = fabsf(pid_out);
-        if (v_target > TURN_MAX_SPEED_MPS) v_target = TURN_MAX_SPEED_MPS;
-        if (v_target < TURN_MIN_SPEED_MPS) v_target = TURN_MIN_SPEED_MPS;
+    const int16_t duty = static_cast<int16_t>(duty_f);
+    motion.turn_direct(duty);
 
-        // 加減速をなめらかにする（slew rate limit）
-        const float dv_max = TURN_ACCEL_MPS2 * dt_s;
-        turn_speed_cmd_mps = slew_rate_limit(turn_speed_cmd_mps, v_target, dv_max);
+    // デバッグ用(FWD/STOP/QSTP再開時の「現在速度」引き継ぎに使われるため、
+    // duty ではなく実測速度を入れておく)
+    target_vr_mps = motion.get_vr_filt_mps();
+    target_vl_mps = motion.get_vl_filt_mps();
 
-        const float target_rel = err; // 現在から見た残り角度
-        motion.turn_in_place(turn_speed_cmd_mps, target_rel);
-
-        // デバッグ用
-        target_vr_mps = (err >= 0.0f) ? +turn_speed_cmd_mps : -turn_speed_cmd_mps;
-        target_vl_mps = (err >= 0.0f) ? -turn_speed_cmd_mps : +turn_speed_cmd_mps;
-
-        {
-            static int dbg_count = 0;
-            dbg_count++;
-            if (dbg_count >= 50) {  // 20Hz
-                dbg_count = 0;
-                // #V,cmd,vr,vl,ur,ul,gz,ang,rem (remはTURNのみ残り角[rad])
-                char msg[64];
-                snprintf(msg, sizeof(msg),
-                         "#V,%.0f,%.0f,%.0f,%d,%d,%.2f,%.3f,%.3f\n",
-                         turn_speed_cmd_mps * 1000.0f,
-                         motion.get_vr_filt_mps() * 1000.0f,
-                         motion.get_vl_filt_mps() * 1000.0f,
-                         motion.get_duty_r(), motion.get_duty_l(),
-                         gyro_z, now_ang, err);
-                enqueue_msg_line(msg);
-            }
+    {
+        static int dbg_count = 0;
+        dbg_count++;
+        if (dbg_count >= 50) {  // 20Hz
+            dbg_count = 0;
+            // #V,cmd,vr,vl,ur,ul,gz,ang,rem (cmdはduty、remはTURNのみ残り角[rad])
+            char msg[64];
+            snprintf(msg, sizeof(msg),
+                     "#V,%.0f,%.0f,%.0f,%d,%d,%.2f,%.3f,%.3f\n",
+                     duty_f,
+                     motion.get_vr_filt_mps() * 1000.0f,
+                     motion.get_vl_filt_mps() * 1000.0f,
+                     motion.get_duty_r(), motion.get_duty_l(),
+                     gyro_z, now_ang, err);
+            enqueue_msg_line(msg);
         }
     }
 }

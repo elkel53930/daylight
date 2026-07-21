@@ -29,6 +29,12 @@ public:
     // only sets the per-wheel speed targets for the requested direction.
     void turn_in_place(float speed_mps, float target_angle_rad);
 
+    // 旋回用: 角度制御PID(呼び出し側)の出力を速度PIDを経由せず直接duty
+    // として指令する。正: 右+duty/左-duty(左回り/CCW)。
+    // 速度PID(pid_r_/pid_l_)の積分器はリセットされる(速度制御に戻った
+    // ときに古い積分値で暴れないように)。
+    void turn_direct(int16_t duty);
+
     // Stop everything.
     void stop();
 
@@ -43,7 +49,8 @@ private:
         STOP,
         FORWARD,
         BACKWARD,
-        TURN
+        TURN,        // 速度PID経由(turn_in_place)
+        TURN_DIRECT  // 角度PIDの出力を速度PIDを経由せず直接duty指令(turn_direct)
     };
 
     Motor& motor_;

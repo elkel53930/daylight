@@ -103,6 +103,24 @@ void MotionController::turn_in_place(float speed_mps, float target_angle_rad) {
     }
 }
 
+void MotionController::turn_direct(int16_t duty) {
+    // 角度制御PID(mob.ino側)の出力をそのままduty指令する。速度PID
+    // (pid_r_/pid_l_)は経由しないが、次に速度制御(FORWARD/STOP/TURN)に
+    // 戻ったときに古い積分値で暴れないようリセットしておく。
+    mode_ = Mode::TURN_DIRECT;
+
+    if (duty > 1023) duty = 1023;
+    if (duty < -1023) duty = -1023;
+
+    last_duty_r_ = duty;
+    last_duty_l_ = static_cast<int16_t>(-duty);
+    motor_.set_right(last_duty_r_);
+    motor_.set_left(last_duty_l_);
+
+    pid_r_.reset();
+    pid_l_.reset();
+}
+
 void MotionController::stop() {
     mode_ = Mode::STOP;
     set_targets_mps(0.0f, 0.0f);
@@ -136,15 +154,9 @@ void MotionController::set_targets_mps(float vr, float vl) {
 void MotionController::apply_speed_pid(uint32_t dt_ms) {
     const float dt = static_cast<float>(dt_ms) / 1000.0f;
 
-    if (vr_ref_mps_ == 0.0f && vl_ref_mps_ == 0.0f) {
-        pid_r_.reset();
-        pid_l_.reset();
-        turn_sync_integ_ = 0.0f;
-        motor_.set_right(0);
-        motor_.set_left(0);
-        return;
-    }
-
+    // エンコーダによる速度推定は、モード(速度PID経由かTURN_DIRECTか)に
+    // 関わらず常に行う。TURN_DIRECT中もテレメトリ(#Vのvr/vl)を意味の
+    // あるものにするため。
     const uint16_t r_angle = sensors_.get_right_wheel_angle();
     const uint16_t l_angle = sensors_.get_left_wheel_angle();
 
@@ -152,8 +164,10 @@ void MotionController::apply_speed_pid(uint32_t dt_ms) {
         prev_r_angle_ = r_angle;
         prev_l_angle_ = l_angle;
         have_prev_ = true;
-        motor_.set_right(0);
-        motor_.set_left(0);
+        if (mode_ != Mode::TURN_DIRECT) {
+            motor_.set_right(0);
+            motor_.set_left(0);
+        }
         return;
     }
 
@@ -173,6 +187,20 @@ void MotionController::apply_speed_pid(uint32_t dt_ms) {
     // 量子化ノイズ対策のLPF(EMA)
     vr_filt_mps_ += SPEED_LPF_ALPHA * (vr_mps - vr_filt_mps_);
     vl_filt_mps_ += SPEED_LPF_ALPHA * (vl_mps - vl_filt_mps_);
+
+    if (mode_ == Mode::TURN_DIRECT) {
+        // duty は turn_direct() が既に直接設定済み。速度PIDは経由しない。
+        return;
+    }
+
+    if (vr_ref_mps_ == 0.0f && vl_ref_mps_ == 0.0f) {
+        pid_r_.reset();
+        pid_l_.reset();
+        turn_sync_integ_ = 0.0f;
+        motor_.set_right(0);
+        motor_.set_left(0);
+        return;
+    }
 
     // 旋回中のみ: 実測速度の絶対値を左右で揃える同期補正。
     // turn_in_place() が設定した ±s（同じ大きさ）はそのままに、
