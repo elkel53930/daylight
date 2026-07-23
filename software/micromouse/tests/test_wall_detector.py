@@ -24,7 +24,7 @@ def make_frame(lf=0, ls=0, rs=0, rf=0, vbatt=7.4) -> SensorFrame:
 
 class TestParseSenLine(unittest.TestCase):
     def test_valid_line(self):
-        line = "SEN,0.01,7.42,120,250,240,130,1000,2000,90.50,0.02"
+        line = "SEN,0.01,7.42,120,250,240,130,1000,2000,90.50,0.02,0,0"
         frame = parse_sen_line(line)
         self.assertIsNotNone(frame)
         self.assertAlmostEqual(frame.gyro_radps, 0.01)
@@ -41,7 +41,7 @@ class TestParseSenLine(unittest.TestCase):
     def test_invalid_lines(self):
         self.assertIsNone(parse_sen_line("DONE"))
         self.assertIsNone(parse_sen_line("SEN,1,2,3"))  # フィールド不足
-        self.assertIsNone(parse_sen_line("SEN,a,b,c,d,e,f,g,h,i,j"))  # 数値でない
+        self.assertIsNone(parse_sen_line("SEN,a,b,c,d,e,f,g,h,i,j,k,l"))  # 数値でない
         self.assertIsNone(parse_sen_line("#SEN,comment"))
         self.assertIsNone(parse_sen_line(""))
 

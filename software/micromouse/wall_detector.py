@@ -25,7 +25,10 @@ from explorer import WallObservation
 class SensorFrame:
     """mob の SEN 応答 1 行分。
 
-    SEN,<gyro rad/s>,<batt V>,<lf>,<ls>,<rs>,<rf>,<enc_r>,<enc_l>,<dist mm>,<ang rad>
+    SEN,<gyro rad/s>,<batt V>,<lf>,<ls>,<rs>,<rf>,<enc_r>,<enc_l>,<dist mm>,<ang rad>,<ball_raw>,<ball_det>
+
+    ball_raw/ball_det は迷路走行では未使用だが、mob.ino の SEN 応答に
+    含まれるためパース対象として受け取る(桁数チェックのみに使う)。
     """
 
     gyro_radps: float
@@ -43,7 +46,7 @@ class SensorFrame:
 def parse_sen_line(line: str) -> Optional[SensorFrame]:
     """SEN 行をパースする。形式不正なら None(呼び出し側でリトライ)。"""
     parts = line.strip().split(",")
-    if len(parts) != 11 or parts[0] != "SEN":
+    if len(parts) != 13 or parts[0] != "SEN":
         return None
     try:
         return SensorFrame(
