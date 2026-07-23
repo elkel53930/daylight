@@ -13,6 +13,7 @@
 #include "motion_controller.h"
 #include "fan.h"
 #include "servo.h"
+#include "ball_sensor.h"
 #include <math.h>
 
 // Target wheel speed [m/s] (updated from MOT command via cmd_queue)
@@ -156,6 +157,7 @@ Sensors sensors(imu, wall_sensor, battery, encoder);
 MotionController motion(motor, sensors);
 Fan fan;
 Servo servo;
+BallSensor ball_sensor;
 
 hw_timer_t* high_speed_timer = NULL;
 std::atomic<uint32_t> timer_ticks(0);
@@ -940,6 +942,7 @@ void setup() {
     led.begin();
     fan.begin();
     servo.begin();
+    ball_sensor.begin();
 
     // 起動時に赤色LEDを消灯
     led.red_off();
@@ -1056,6 +1059,18 @@ void loop() {
             // RCサーボのトルクオフ（脱力）
             servo.detach();
             Serial.printf("#SRVOFF\n");
+        } else if (cmd.startsWith("BALL,")) {
+            // ボールセンサしきい値設定: BALL,<threshold>（0-4095）
+            int comma1 = cmd.indexOf(',');
+            if (comma1 > 0) {
+                int threshold = cmd.substring(comma1 + 1).toInt();
+                if (threshold < 0) threshold = 0;
+                if (threshold > 4095) threshold = 4095;
+                ball_sensor.set_threshold(static_cast<uint16_t>(threshold));
+                Serial.printf("#BALL threshold=%d\n", threshold);
+            } else {
+                Serial.printf("#Invalid BALL format\n");
+            }
         } else if (cmd.startsWith("FWD,")) {
             // FWD: FWD,<speed_mmps>,<accel_mmps2>,<distance_mm>
             int comma1 = cmd.indexOf(',');
@@ -1249,8 +1264,11 @@ void loop() {
             uint16_t enc_l = sensors.get_left_wheel_angle();
             float odo_dist = sensors.get_distance();
             float odo_ang = sensors.get_angle();    // rad
-            Serial.printf("SEN,%.2f,%.2f,%u,%u,%u,%u,%u,%u,%.2f,%.2f\n",
-                          gyro, vbatt, lf, ls, rs, rf, enc_r, enc_l, odo_dist, odo_ang);
+            uint16_t ball_raw = ball_sensor.read_raw();
+            bool ball_det = ball_sensor.detect();
+            Serial.printf("SEN,%.2f,%.2f,%u,%u,%u,%u,%u,%u,%.2f,%.2f,%u,%u\n",
+                          gyro, vbatt, lf, ls, rs, rf, enc_r, enc_l, odo_dist, odo_ang,
+                          ball_raw, ball_det ? 1 : 0);
         } else {
             // デバッグ用: 不明コマンド
             Serial.printf("#Unknown cmd: %s\n", cmd.c_str());

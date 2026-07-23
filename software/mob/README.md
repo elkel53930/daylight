@@ -146,14 +146,16 @@ make clean-all
 ### SEN レスポンス形式
 
 ```
-SEN,<gyro_z rad/s>,<batt V>,<wall_r>,<wall_f>,<wall_l>,<enc_r>,<enc_l>,<ball_raw>,<ball_det>
+SEN,<gyro_z>,<vbatt>,<lf>,<ls>,<rs>,<rf>,<enc_r>,<enc_l>,<odo_dist>,<odo_ang>,<ball_raw>,<ball_det>
 ```
 
 | フィールド | 型 | 説明 |
 |---|---|---|
 | `gyro_z` | float | Z軸角速度 [rad/s] |
-| `batt` | float | バッテリー電圧 [V] |
-| `wall_r/f/l` | uint16 | 壁センサ差分値（右/前/左） |
+| `vbatt` | float | バッテリー電圧 [V] |
+| `lf/ls/rs/rf` | uint16 | 壁センサ差分値（`lf`/`rf`は共に前センサ値、Twilight 4センサとの互換のため） |
 | `enc_r/l` | uint16 | エンコーダ角度 0–16383（右/左） |
+| `odo_dist` | float | オドメトリ走行距離 [mm] |
+| `odo_ang` | float | オドメトリ角度 [rad] |
 | `ball_raw` | uint16 | ボールセンサ ADC 生値 0–4095 |
 | `ball_det` | 0\|1 | ボール検出フラグ（1=検出） |
