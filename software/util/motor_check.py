@@ -7,6 +7,9 @@ mob (ESP32-S3) の DUTY,<r>,<l> コマンド(生duty直指令、速度PID非経�
 算出する。ギア滑りなどハードウェアの健全性を、速度PIDの補正に隠されない
 形で確認するためのもの。
 
+回転数は 10Hz(0.1秒間隔)でサンプリングし、1秒毎にその平均値を表示する
+(瞬時値のノイズを均すため)。
+
 使い方:
     software/venv/bin/python3 software/util/motor_check.py
     software/venv/bin/python3 software/util/motor_check.py --duty-pct 40 --duration 60
@@ -97,11 +100,17 @@ def main() -> None:
         ser.write(f"DUTY,{phase_duty},{phase_duty}\n".encode("ascii"))
         phase_start_t = prev_t
 
+        SAMPLE_INTERVAL_S = 0.1
+        AVG_WINDOW_S = 1.0
+        rpm_r_samples: list[float] = []
+        rpm_l_samples: list[float] = []
+        window_start_t = prev_t
+
         while args.duration is None or (time.monotonic() - start_t) < args.duration:
-            time.sleep(1.0)
+            time.sleep(SAMPLE_INTERVAL_S)
             now_t = time.monotonic()
 
-            # フェーズ切り替え(残り時間の端数は次の1秒待ちに乗せる)
+            # フェーズ切り替え(残り時間の端数は次のサンプリング待ちに乗せる)
             if now_t - phase_start_t >= phase_len_s:
                 phase_idx = (phase_idx + 1) % len(phases)
                 label, phase_duty, phase_len_s = phases[phase_idx]
@@ -118,13 +127,19 @@ def main() -> None:
 
             dr = delta_14bit(now_r, prev_r)
             dl = delta_14bit(now_l, prev_l)
-            rpm_r = (dr / ENCODER_RESOLUTION) * (60.0 / dt_s)
-            rpm_l = (dl / ENCODER_RESOLUTION) * (60.0 / dt_s)
-
-            print(f"R: {rpm_r:+7.1f} rpm   L: {rpm_l:+7.1f} rpm")
+            rpm_r_samples.append((dr / ENCODER_RESOLUTION) * (60.0 / dt_s))
+            rpm_l_samples.append((dl / ENCODER_RESOLUTION) * (60.0 / dt_s))
 
             prev_r, prev_l = now_r, now_l
             prev_t = now_t
+
+            if now_t - window_start_t >= AVG_WINDOW_S:
+                avg_r = sum(rpm_r_samples) / len(rpm_r_samples)
+                avg_l = sum(rpm_l_samples) / len(rpm_l_samples)
+                print(f"R: {avg_r:+7.1f} rpm   L: {avg_l:+7.1f} rpm")
+                rpm_r_samples.clear()
+                rpm_l_samples.clear()
+                window_start_t = now_t
     except KeyboardInterrupt:
         pass
     finally:
