@@ -11,6 +11,7 @@
 #include "encoder.h"
 #include "sensors.h"
 #include "motion_controller.h"
+#include "fan.h"
 #include <math.h>
 
 // Target wheel speed [m/s] (updated from MOT command via cmd_queue)
@@ -152,6 +153,7 @@ Encoder encoder;
 Battery battery;
 Sensors sensors(imu, wall_sensor, battery, encoder);
 MotionController motion(motor, sensors);
+Fan fan;
 
 hw_timer_t* high_speed_timer = NULL;
 std::atomic<uint32_t> timer_ticks(0);
@@ -934,6 +936,7 @@ void setup() {
     wall_sensor.begin();
     battery.begin();
     led.begin();
+    fan.begin();
     
     // 起動時に赤色LEDを消灯
     led.red_off();
@@ -1021,6 +1024,18 @@ void loop() {
                 Serial.printf("#WallSensor enabled=%d\n", enabled ? 1 : 0);
             } else {
                 Serial.printf("#Invalid WALL format\n");
+            }
+        } else if (cmd.startsWith("FAN,")) {
+            // 吸引ファンPWM速度指定: FAN,<speed>（0-255、0=停止）
+            int comma1 = cmd.indexOf(',');
+            if (comma1 > 0) {
+                int speed = cmd.substring(comma1 + 1).toInt();
+                if (speed < 0) speed = 0;
+                if (speed > 255) speed = 255;
+                fan.set_speed(static_cast<uint8_t>(speed));
+                Serial.printf("#FAN speed=%d\n", speed);
+            } else {
+                Serial.printf("#Invalid FAN format\n");
             }
         } else if (cmd.startsWith("FWD,")) {
             // FWD: FWD,<speed_mmps>,<accel_mmps2>,<distance_mm>

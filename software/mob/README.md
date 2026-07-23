@@ -69,7 +69,7 @@ PWM 周波数: ~39kHz（40MHz / 1024 ticks）、速度指定: −1023〜+1023。
 |-----------|-------|
 | FET ゲート | IO2  |
 
-NchFET ゲート駆動。PWM 周波数: 10kHz、8bit 分解能（0–255）。
+NchFET ゲート駆動。PWM 周波数: 40kHz、8bit 分解能（0–255）。
 
 ### RCサーボ（MG90S） — MCPWM group 1
 
