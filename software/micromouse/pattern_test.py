@@ -6,12 +6,11 @@ hw_test.py の個別コマンド(fwd/turn)を単発で確認するのとは違�
 複数の旋回を連続実行したときの誤差累積(オーバーシュート・振動など)を
 見るためのもの。
 
-走行パターン: 右旋回 → 左旋回 → 180度旋回(その場旋回のみ、前進なし)。
-
-直進側にも別の問題があるため(2026-07-22時点)、まず旋回制御(PID)の
-チューニングに集中する目的でこの3ステップに絞っている。前進を含む
-閉路パターンが必要になったら PATTERN に STRAIGHT を組み込み直すこと
-(過去のパターンは git 履歴を参照)。
+走行パターン: 1マス直進 → 右旋回 → 1マス直進 → 左旋回 → 2マス直進
+→ 左旋回 → 1マス直進 → 左旋回 → 3マス直進 → 180度旋回。
+開始位置・開始向きに戻る閉路(誤差累積がそのまま最終位置ずれに出る)。
+(旋回のみの3ステップ版は git 履歴を参照。旋回チューニング完了
+(2026-07-24、左右速度同期の再有効化)を受けて直進を組み込んだ。)
 
 各区間は cell_runner.CellRunner.run_motion() を使う(TURN系はその場
 旋回のみで、STRAIGHTのような速度プロファイルは使わない)。
@@ -53,10 +52,18 @@ MELODY_START = "ceg"
 MELODY_FINISH = "CCGG"
 MELODY_ERROR = "CcCc"
 
-# 固定テストパターン(旋回のみ。開始向きには戻らない: -90+90+180=180度)
+# 固定テストパターン(直進+旋回の閉路。開始位置・開始向きに戻る:
+# 旋回合計 -90+90+90+90+180 = +360度)
 PATTERN: List[Motion] = [
+    Motion(MotionType.STRAIGHT, 1),
     Motion(MotionType.TURN_RIGHT),
+    Motion(MotionType.STRAIGHT, 1),
     Motion(MotionType.TURN_LEFT),
+    Motion(MotionType.STRAIGHT, 2),
+    Motion(MotionType.TURN_LEFT),
+    Motion(MotionType.STRAIGHT, 1),
+    Motion(MotionType.TURN_LEFT),
+    Motion(MotionType.STRAIGHT, 3),
     Motion(MotionType.TURN_BACK),
 ]
 
@@ -99,10 +106,27 @@ class PatternLogger:
 
 
 class ConsoleUI:
-    """ui_server 無し環境用のフォールバック。"""
+    """ui_server 無し環境用のフォールバック。
+
+    表示はコンソールのみだが、走行開始メロディだけは(鳴らせる環境なら)
+    ui_server 経由でブザーを鳴らす(いつ走り出すか分かりにくいため)。
+    """
 
     def __init__(self, autostart: bool):
         self.autostart = autostart
+        self._buzzer = None
+
+    def notify_start(self) -> None:
+        print("走行開始...")
+        try:
+            from ui_client import UIClient
+
+            if self._buzzer is None:
+                self._buzzer = UIClient()
+                self._buzzer.connect(priority=90)
+            self._buzzer.play(MELODY_START)
+        except Exception:
+            self._buzzer = None
 
     def wait_start(self) -> bool:
         if self.autostart:
@@ -132,7 +156,11 @@ class ConsoleUI:
             return False
 
     def close(self) -> None:
-        pass
+        if self._buzzer is not None:
+            try:
+                self._buzzer.disconnect()
+            except Exception:
+                pass
 
 
 class OledUI:
@@ -204,10 +232,12 @@ class OledUI:
             return True
         return False
 
+    def notify_start(self) -> None:
+        self._draw(["PATTERN TEST", "", "starting..."])
+        self._play(MELODY_START)
+
     def show_progress(self, i: int, total: int, motion: Motion) -> None:
         self._draw(["PATTERN TEST", f"step {i + 1}/{total}", repr(motion), ""])
-        if i == 0:
-            self._play(MELODY_START)
 
     def show_result(self, ok: bool, message: str) -> None:
         self._play(MELODY_FINISH if ok else MELODY_ERROR)
@@ -242,6 +272,10 @@ def run_pattern(
     base.reset_distance()
     base.reset_angle()
 
+    # 走行開始をメロディで予告し、1秒置いてから動き出す
+    ui.notify_start()
+    time.sleep(1.0)
+
     runner = CellRunner(base, config)
     total = len(PATTERN)
     for i, motion in enumerate(PATTERN):
@@ -254,6 +288,9 @@ def run_pattern(
     if logger is not None:
         logger.set_context(None, None)
 
+    # mob側の停止後角度維持(STOP_HOLD 0.5秒)が終わって慣性が収まってから
+    # 最終オドメトリを読む(直後にMOT,0,0を送るとホールドが中断されるため)
+    time.sleep(0.7)
     frame = base.read_sensors()
     if frame is None:
         return True, "done (odo read failed)"
