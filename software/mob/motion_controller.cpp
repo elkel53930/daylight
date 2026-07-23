@@ -39,9 +39,19 @@ static constexpr float SPEED_LPF_ALPHA = 0.12f;
 // 同期ループという設計自体が振動源になっていると判断し、再度無効化。
 // 左右差対策として別のアプローチ(例: 十分にLPFした差分を使う、応答を
 // もっと遅くする等)が必要。
-static constexpr float TURN_SYNC_KP = 0.0f;         // 無次元(m/s差 → m/s補正)。無効化
-static constexpr float TURN_SYNC_KI = 0.0f;         // [1/s]。無効化
+//
+// 3回目(2026-07-24、右モーター軸のギア滑り修理後に再挑戦)。過去2回の
+// 振動は「同期ループが個別車輪PIDと同じ生の速度信号(SPEED_LPF_ALPHA=
+// 0.12、時定数≈8ms)に反応し結合していた」ことが原因と考え、同期誤差
+// 専用に別の緩いLPF(SYNC_ERR_LPF_ALPHA、時定数≈50ms)をかけて低周波の
+// 定常ずれ(ギア・摩擦の個体差)だけに反応させ、車輪PIDの速い応答とは
+// 周波数帯で分離する。ゲインは小さめから開始し実機で追い込む。
+static constexpr float TURN_SYNC_KP = 0.3f;         // 無次元(m/s差 → m/s補正)
+static constexpr float TURN_SYNC_KI = 1.0f;         // [1/s]
 static constexpr float TURN_SYNC_MAX_CORR_MPS = 0.05f;  // 補正量クランプ(グリッチ対策)
+// 同期誤差専用LPFの係数。SPEED_LPF_ALPHA(0.12)より十分小さくし、
+// 個別車輪PIDと反応する周波数帯が重ならないようにする。
+static constexpr float SYNC_ERR_LPF_ALPHA = 0.02f;
 
 float MotionController::SpeedPID::step(float err, float dt_s) {
     if (dt_s <= 0) return 0.0f;
@@ -126,6 +136,7 @@ void MotionController::stop() {
     pid_r_.reset();
     pid_l_.reset();
     turn_sync_integ_ = 0.0f;
+    turn_sync_err_filt_ = 0.0f;
     motor_.set_right(0);
     motor_.set_left(0);
 }
@@ -196,6 +207,7 @@ void MotionController::apply_speed_pid(uint32_t dt_ms) {
         pid_r_.reset();
         pid_l_.reset();
         turn_sync_integ_ = 0.0f;
+        turn_sync_err_filt_ = 0.0f;
         motor_.set_right(0);
         motor_.set_left(0);
         return;
@@ -209,7 +221,12 @@ void MotionController::apply_speed_pid(uint32_t dt_ms) {
     if (mode_ == Mode::TURN) {
         const float mag_r = fabsf(vr_filt_mps_);
         const float mag_l = fabsf(vl_filt_mps_);
-        const float sync_err = mag_r - mag_l;  // +: 右が速い
+        const float sync_err_raw = mag_r - mag_l;  // +: 右が速い
+
+        // 個別車輪PID(速い応答)と結合して振動しないよう、同期誤差は
+        // さらに緩いLPFを通してから使う(低周波の定常ずれのみ反応)。
+        turn_sync_err_filt_ += SYNC_ERR_LPF_ALPHA * (sync_err_raw - turn_sync_err_filt_);
+        const float sync_err = turn_sync_err_filt_;
 
         turn_sync_integ_ += sync_err * dt;
         if (TURN_SYNC_KI > 0.0f) {
@@ -228,6 +245,7 @@ void MotionController::apply_speed_pid(uint32_t dt_ms) {
         vl_ref_eff = dir_l * (fabsf(vl_ref_mps_) + 0.5f * sync_corr);
     } else {
         turn_sync_integ_ = 0.0f;
+        turn_sync_err_filt_ = 0.0f;
     }
 
     const float err_r = vr_ref_eff - vr_filt_mps_;

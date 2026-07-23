@@ -96,6 +96,11 @@ private:
     // 旋回中の左右速度同期(積分項)。TURN以外では0にリセットする。
     float turn_sync_integ_ = 0.0f;
 
+    // 旋回中の左右速度同期誤差を追加LPFした値(個別車輪PIDと同じ生の
+    // vr_filt_mps_/vl_filt_mps_ に反応すると結合振動するため、同期
+    // ループ専用にさらに緩いLPFをかけて低周波成分だけに反応させる)。
+    float turn_sync_err_filt_ = 0.0f;
+
     // Helpers
     static int16_t calc_delta_14bit(uint16_t now, uint16_t prev);
     static float counts_to_m(int16_t delta_counts);
