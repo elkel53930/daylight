@@ -1052,6 +1052,10 @@ void loop() {
             } else {
                 Serial.printf("#Invalid SRV format\n");
             }
+        } else if (cmd == "SRVOFF") {
+            // RCサーボのトルクオフ（脱力）
+            servo.detach();
+            Serial.printf("#SRVOFF\n");
         } else if (cmd.startsWith("FWD,")) {
             // FWD: FWD,<speed_mmps>,<accel_mmps2>,<distance_mm>
             int comma1 = cmd.indexOf(',');
