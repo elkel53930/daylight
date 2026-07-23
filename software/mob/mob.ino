@@ -145,11 +145,18 @@ static constexpr uint8_t TURN_MAX_RETRY = 3;          // 整定不足時の再�
 static constexpr float TURN_ACCEL_MPS2 = 4.0f;        // 旋回時の車輪速度加速度制限 [m/s^2]
 
 // 直進時の角度フィードバックゲイン
-static constexpr float ANGLE_FB_GAIN = 1.0f;  // [m/s]/rad
-
-// 直進時の角速度フィードバックゲイン（角速度→0）
-static constexpr float ANGULAR_RATE_FB_GAIN = 0.3f;  // [m/s]/(rad/s)
-                                                      // ヨー振動(GZ±0.3-0.6rad/s)対策で0.02から増強(2026-07-19)
+//
+// 補正corr[m/s]は左右輪目標に±corrで振り分けられるため、ヨー系の
+// ループゲインは 2*GAIN/WHEEL_BASE(0.076m) で決まる。旧値(ANGLE=1.0、
+// RATE=0.3)はレートループゲイン≈7.9で、車輪速度PID(KI=3000で高速化、
+// 2026-07-19)+速度LPF(8ms)の位相遅れと合わさり数Hzで発振していた
+// (2026-07-24 実機: duty±400超、実測車輪速度が-118〜995mm/sで暴れ、
+// 機体がガタガタ振動しながら前進)。RATE=0.3自体が「ヨー振動対策」で
+// 0.02から増強された値だったが、振動の原因はゲイン不足ではなく過大な
+// ループゲインだった。レートループゲイン≈1.3、角度保持帯域≈1.7rad/s
+// に下げる。
+static constexpr float ANGLE_FB_GAIN = 0.15f;  // [m/s]/rad
+static constexpr float ANGULAR_RATE_FB_GAIN = 0.05f;  // [m/s]/(rad/s)
 
 // 壁センサフィードバックパラメータ
 static constexpr float WALL_SENSOR_THRESHOLD = 100.0f;  // 壁検出閾値
