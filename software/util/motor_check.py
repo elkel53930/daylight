@@ -34,7 +34,7 @@ def delta_14bit(now: int, prev: int) -> int:
 def parse_sen_line(line: str) -> tuple[int, int] | None:
     """SEN 行から (enc_r, enc_l) を取り出す。形式不正なら None。"""
     parts = line.split(",")
-    if len(parts) != 11 or parts[0] != "SEN":
+    if len(parts) != 13 or parts[0] != "SEN":
         return None
     try:
         return int(parts[7]), int(parts[8])
