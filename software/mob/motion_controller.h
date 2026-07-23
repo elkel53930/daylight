@@ -29,6 +29,11 @@ public:
     // only sets the per-wheel speed targets for the requested direction.
     void turn_in_place(float speed_mps, float target_angle_rad);
 
+    // 校正・診断用: 左右独立にduty(-1023〜+1023)を直接指令する。速度PID
+    // (pid_r_/pid_l_)は経由しない。速度制御に戻ったときに古い積分値で
+    // 暴れないよう積分器はリセットする。
+    void set_duty_direct(int16_t r_duty, int16_t l_duty);
+
     // Stop everything.
     void stop();
 
@@ -43,7 +48,8 @@ private:
         STOP,
         FORWARD,
         BACKWARD,
-        TURN
+        TURN,
+        DUTY_DIRECT  // 校正・診断用: 速度PIDを経由せず直接duty指令(set_duty_direct)
     };
 
     Motor& motor_;

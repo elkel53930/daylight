@@ -226,6 +226,11 @@ struct SetMotorSpeedCommand {
     int16_t left_speed;  // mm/s（互換）
 };
 
+struct SetDutyCommand {
+    int16_t right_duty; // 生duty（-1023〜+1023、速度PID非経由）
+    int16_t left_duty;  // 生duty（-1023〜+1023、速度PID非経由）
+};
+
 struct ForwardCommand {
     float speed_mmps;
     float accel_mmps2;
@@ -259,6 +264,7 @@ enum CommandID : uint8_t {
     CMD_LATCH_STOP = 0x0B,
     CMD_JOG_START = 0x0C,
     CMD_QSTP = 0x0D,
+    CMD_SET_DUTY_DIRECT = 0x0E,
 };
 
 struct Command {
@@ -270,6 +276,7 @@ struct Command {
         float turn_target_rad;
         LatchCommand latch;
         JogCommand jog;
+        SetDutyCommand set_duty;
     } parameter;
 };
 
@@ -321,6 +328,7 @@ uint32_t waitTick(uint32_t &last_tick) {
 
 // コマンド処理・モーション更新関数の前方宣言
 void handleSetMotorSpeedCommand(const SetMotorSpeedCommand& cmd);
+void handleSetDutyCommand(const SetDutyCommand& cmd);
 void handleForwardCommand(const ForwardCommand& cmd);
 void handleStopCommand(const StopCommand& cmd);
 void handleTurnCommand(float turn_target_rad);
@@ -355,6 +363,21 @@ void handleSetMotorSpeedCommand(const SetMotorSpeedCommand& cmd) {
     target_vr_mps = vr;
     target_vl_mps = vl;
     motion.forward((vr + vl) * 0.5f, 0.0f);
+}
+
+void handleSetDutyCommand(const SetDutyCommand& cmd) {
+    // 手動DUTYが来たらプロファイルは停止（競合回避、MOTと同様）
+    fwd_active = false;
+    stop_active = false;
+    turn_active = false;
+    latch_active = false;
+    latch_mode = LatchMode::NONE;
+    jog_active = false;
+    qstp_active = false;
+    stop_backoff_active = false;
+    stop_elapsed_s = 0.0f;
+
+    motion.set_duty_direct(cmd.right_duty, cmd.left_duty);
 }
 
 void handleForwardCommand(const ForwardCommand& cmd) {
@@ -544,6 +567,10 @@ void processCommandQueue() {
 
             case CMD_QSTP:
                 handleQstpCommand();
+                break;
+
+            case CMD_SET_DUTY_DIRECT:
+                handleSetDutyCommand(q.parameter.set_duty);
                 break;
 
             case CMD_LATCH_START: {
@@ -1194,6 +1221,27 @@ void loop() {
                 }
             } else {
                 Serial.printf("#Invalid MOT format\n");
+            }
+        } else if (cmd.startsWith("DUTY,")) {
+            // 生duty直接指令（校正・診断用、速度PID非経由）: DUTY,<right_duty>,<left_duty>
+            // 範囲: -1023〜+1023
+            int comma1 = cmd.indexOf(',');
+            int comma2 = (comma1 >= 0) ? cmd.indexOf(',', comma1 + 1) : -1;
+            if (comma1 > 0 && comma2 > comma1) {
+                Command q;
+                q.cmd_id = CMD_SET_DUTY_DIRECT;
+                q.parameter.set_duty.right_duty = cmd.substring(comma1 + 1, comma2).toInt();
+                q.parameter.set_duty.left_duty = cmd.substring(comma2 + 1).toInt();
+
+                if (xQueueSend(cmd_queue, &q, pdMS_TO_TICKS(10)) == pdTRUE) {
+                    Serial.printf("#Duty: R=%d, L=%d\n",
+                                  q.parameter.set_duty.right_duty,
+                                  q.parameter.set_duty.left_duty);
+                } else {
+                    Serial.printf("#Queue full!\n");
+                }
+            } else {
+                Serial.printf("#Invalid DUTY format\n");
             }
         } else if (cmd.startsWith("WALL")) {
             // 壁センサLEDの有効/無効: WALL,1 または WALL,0
