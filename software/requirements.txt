@@ -8,5 +8,6 @@ Pillow
 luma.core
 luma.oled
 msgpack
+pyserial
 PyYAML
 requests
