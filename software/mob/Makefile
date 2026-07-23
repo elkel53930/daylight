@@ -8,7 +8,7 @@ BUILD_PATH  := .build
 COMPILE_FLAGS := --fqbn $(FQBN) \
                  --build-path $(BUILD_PATH)
 
-.PHONY: all build upload monitor clean clean-all
+.PHONY: all build upload upload-only monitor clean clean-all
 
 all: build
 
@@ -17,9 +17,15 @@ build:
 	arduino-cli compile $(COMPILE_FLAGS) $(SKETCH)
 
 ## コンパイル＆書き込み
+## --input-dir を指定しないと arduino-cli のデフォルトキャッシュ(前回の
+## ビルドとは無関係な古いバイナリ)が書き込まれることがあるため必須。
 upload:
 	arduino-cli compile $(COMPILE_FLAGS) $(SKETCH)
-	arduino-cli upload  --fqbn $(FQBN) --port $(PORT) $(SKETCH)
+	arduino-cli upload  --fqbn $(FQBN) --port $(PORT) --input-dir $(BUILD_PATH) $(SKETCH)
+
+## 書き込みのみ（ビルド済みの $(BUILD_PATH) を使用）
+upload-only:
+	arduino-cli upload  --fqbn $(FQBN) --port $(PORT) --input-dir $(BUILD_PATH) $(SKETCH)
 
 ## シリアルモニタ（Ctrl+C で終了）
 monitor:

@@ -12,6 +12,7 @@
 #include "sensors.h"
 #include "motion_controller.h"
 #include "fan.h"
+#include "servo.h"
 #include <math.h>
 
 // Target wheel speed [m/s] (updated from MOT command via cmd_queue)
@@ -154,6 +155,7 @@ Battery battery;
 Sensors sensors(imu, wall_sensor, battery, encoder);
 MotionController motion(motor, sensors);
 Fan fan;
+Servo servo;
 
 hw_timer_t* high_speed_timer = NULL;
 std::atomic<uint32_t> timer_ticks(0);
@@ -937,7 +939,8 @@ void setup() {
     battery.begin();
     led.begin();
     fan.begin();
-    
+    servo.begin();
+
     // 起動時に赤色LEDを消灯
     led.red_off();
 
@@ -1036,6 +1039,18 @@ void loop() {
                 Serial.printf("#FAN speed=%d\n", speed);
             } else {
                 Serial.printf("#Invalid FAN format\n");
+            }
+        } else if (cmd.startsWith("SRV,")) {
+            // RCサーボ角度設定: SRV,<angle>（0-180度）
+            int comma1 = cmd.indexOf(',');
+            if (comma1 > 0) {
+                int angle = cmd.substring(comma1 + 1).toInt();
+                if (angle < 0) angle = 0;
+                if (angle > 180) angle = 180;
+                servo.set_angle(static_cast<uint8_t>(angle));
+                Serial.printf("#SRV angle=%d\n", angle);
+            } else {
+                Serial.printf("#Invalid SRV format\n");
             }
         } else if (cmd.startsWith("FWD,")) {
             // FWD: FWD,<speed_mmps>,<accel_mmps2>,<distance_mm>
