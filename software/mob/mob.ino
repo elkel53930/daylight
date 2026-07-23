@@ -48,11 +48,17 @@ static constexpr float STOP_BACKOFF_DIST_MM = 30.0f;       // タイムアウト
 static constexpr float STOP_BACKOFF_SPEED_MPS = 0.12f;     // タイムアウト時の後退速度 [m/s]
 
 // 停止完了後の角度維持(2026-07-24追加)。duty=0で制御を切ると慣性で
-// 機体が回る(実機: DONEの17ms後にgz=1.1rad/s、角度+0.7°→+1.7°)ため、
-// DONE送信後もこの時間だけ v=0 + 角度・角速度FBを継続して向きを保つ。
-// 次のモーションコマンドが来たら即座に解除される。
+// 機体が回る(実機: 停止の17ms後にgz=1.1rad/s、角度+0.7°→+1.7°)ため、
+// STOP/TURNの完了時は即DONEを返さず、この時間だけ v=0 + 角度・角速度FB
+// で目標角度(STOP=直進の基準角、TURN=旋回目標角)を維持・修正してから
+// DONEを返す。DONEをホールド後に送るのは、DONE直後に届く次コマンドが
+// 慣性で回転中の角度を基準角として取り込んでしまうのを防ぐため
+// (実機の閉路走行で、旋回直後の直進だけ基準角が2〜5°汚染されていた)。
+// ホールド中に新しいモーションコマンドが来たら即解除する
+// (この場合DONEは送られない: QSTP等の中断経路のみが該当)。
 static bool stop_hold_active = false;
 static float stop_hold_elapsed_s = 0.0f;
+static float stop_hold_target_angle_rad = 0.0f;
 static constexpr float STOP_HOLD_SEC = 0.5f;
 
 // 旋回コマンド（その場旋回）状態
@@ -804,7 +810,8 @@ void updateStop(float dt_s) {
             motion.stop();
             stop_hold_active = true;
             stop_hold_elapsed_s = 0.0f;
-            enqueue_msg_line("DONE\n");
+            stop_hold_target_angle_rad = stop_target_angle_rad;
+            // DONEはホールド完了後(updateStopHold)に送る
         } else {
             target_vr_mps = -STOP_BACKOFF_SPEED_MPS;
             target_vl_mps = -STOP_BACKOFF_SPEED_MPS;
@@ -841,7 +848,8 @@ void updateStop(float dt_s) {
         stop_backoff_active = false;
         stop_hold_active = true;
         stop_hold_elapsed_s = 0.0f;
-        enqueue_msg_line("DONE\n");
+        stop_hold_target_angle_rad = stop_target_angle_rad;
+        // DONEはホールド完了後(updateStopHold)に送る
     } else {
         const float a_mag = stop_a_mmps2;
         const float v = stop_v_cmd_mmps;
@@ -935,12 +943,13 @@ void updateStopHold(float dt_s) {
         target_vr_mps = 0.0f;
         target_vl_mps = 0.0f;
         motion.stop();
+        enqueue_msg_line("DONE\n");
         return;
     }
 
     // v=0のまま角度・角速度FBだけを継続し、慣性による回頭を打ち消して
-    // STOP開始時の目標角度(stop_target_angle_rad)へ戻す
-    const float angle_error = sensors.get_angle() - stop_target_angle_rad;
+    // 目標角度(STOP=直進の基準角、TURN=旋回目標角)へ戻す
+    const float angle_error = sensors.get_angle() - stop_hold_target_angle_rad;
     const float angle_correction = ANGLE_FB_GAIN * angle_error;
     const float rate_correction = ANGULAR_RATE_FB_GAIN * sensors.get_gyro_z();
     const float lateral_correction = angle_correction + rate_correction;
@@ -963,7 +972,11 @@ void updateTurn(float dt_s) {
         if (fabsf(err) <= TURN_DONE_TOL_RAD || turn_retry_count >= TURN_MAX_RETRY) {
             turn_active = false;
             turn_settling = false;
-            enqueue_msg_line("DONE\n");
+            // 旋回目標角を維持しつつ慣性を減衰させてからDONEを返す
+            // (リトライ上限で残った誤差もホールド中のFBで引き戻される)
+            stop_hold_active = true;
+            stop_hold_elapsed_s = 0.0f;
+            stop_hold_target_angle_rad = turn_goal_angle_rad;
         } else {
             // 許容外に流れた: 再サーボ
             turn_settling = false;

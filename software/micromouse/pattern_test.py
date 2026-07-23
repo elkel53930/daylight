@@ -288,9 +288,8 @@ def run_pattern(
     if logger is not None:
         logger.set_context(None, None)
 
-    # mob側の停止後角度維持(STOP_HOLD 0.5秒)が終わって慣性が収まってから
-    # 最終オドメトリを読む(直後にMOT,0,0を送るとホールドが中断されるため)
-    time.sleep(0.7)
+    # mob側はSTOP/TURN完了後0.5秒の角度維持ホールドを終えてからDONEを
+    # 返すため、この時点で機体は整定済み
     frame = base.read_sensors()
     if frame is None:
         return True, "done (odo read failed)"
