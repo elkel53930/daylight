@@ -47,6 +47,14 @@ static constexpr float STOP_TIMEOUT_SEC = 4.0f;            // STOPのタイム�
 static constexpr float STOP_BACKOFF_DIST_MM = 30.0f;       // タイムアウト時の後退距離 [mm]
 static constexpr float STOP_BACKOFF_SPEED_MPS = 0.12f;     // タイムアウト時の後退速度 [m/s]
 
+// 停止完了後の角度維持(2026-07-24追加)。duty=0で制御を切ると慣性で
+// 機体が回る(実機: DONEの17ms後にgz=1.1rad/s、角度+0.7°→+1.7°)ため、
+// DONE送信後もこの時間だけ v=0 + 角度・角速度FBを継続して向きを保つ。
+// 次のモーションコマンドが来たら即座に解除される。
+static bool stop_hold_active = false;
+static float stop_hold_elapsed_s = 0.0f;
+static constexpr float STOP_HOLD_SEC = 0.5f;
+
 // 旋回コマンド（その場旋回）状態
 static bool turn_active = false;
 static float turn_goal_angle_rad = 0.0f;
@@ -155,7 +163,9 @@ static constexpr float TURN_ACCEL_MPS2 = 4.0f;        // 旋回時の車輪速�
 // 0.02から増強された値だったが、振動の原因はゲイン不足ではなく過大な
 // ループゲインだった。レートループゲイン≈1.3、角度保持帯域≈1.7rad/s
 // に下げる。
-static constexpr float ANGLE_FB_GAIN = 0.15f;  // [m/s]/rad
+// 0.15では角度保持が緩く±1.5°程度ふらついたため段階的に増強
+// (0.15→0.3→0.5、2026-07-24)
+static constexpr float ANGLE_FB_GAIN = 0.5f;  // [m/s]/rad
 static constexpr float ANGULAR_RATE_FB_GAIN = 0.05f;  // [m/s]/(rad/s)
 
 // 壁センサフィードバックパラメータ
@@ -345,6 +355,7 @@ bool updateLatch(float dt_s);
 bool updateJog(float dt_s);
 void updateForward(float dt_s);
 void updateStop(float dt_s);
+void updateStopHold(float dt_s);
 void updateTurn(float dt_s);
 bool updateQstp(float dt_s);
 
@@ -365,6 +376,7 @@ void handleSetMotorSpeedCommand(const SetMotorSpeedCommand& cmd) {
     jog_active = false;
     qstp_active = false;
     stop_backoff_active = false;
+    stop_hold_active = false;
     stop_elapsed_s = 0.0f;
 
     target_vr_mps = vr;
@@ -382,6 +394,7 @@ void handleSetDutyCommand(const SetDutyCommand& cmd) {
     jog_active = false;
     qstp_active = false;
     stop_backoff_active = false;
+    stop_hold_active = false;
     stop_elapsed_s = 0.0f;
 
     motion.set_duty_direct(cmd.right_duty, cmd.left_duty);
@@ -398,6 +411,7 @@ void handleForwardCommand(const ForwardCommand& cmd) {
     jog_active = false;
     qstp_active = false;
     stop_backoff_active = false;
+    stop_hold_active = false;
     stop_elapsed_s = 0.0f;
 
     fwd_v_target_mmps = cmd.speed_mmps;
@@ -438,6 +452,7 @@ void handleStopCommand(const StopCommand& cmd) {
     latch_mode = LatchMode::NONE;
     jog_active = false;
     stop_backoff_active = false;
+    stop_hold_active = false;
     stop_elapsed_s = 0.0f;
     stop_backoff_target_dist_mm = 0.0f;
 
@@ -484,6 +499,7 @@ void handleQstpCommand() {
     latch_mode = LatchMode::NONE;
     jog_active = false;
     stop_backoff_active = false;
+    stop_hold_active = false;
     stop_elapsed_s = 0.0f;
     
     // 現在の指令速度を取得
@@ -512,6 +528,7 @@ void handleTurnCommand(float target_rad) {
     jog_active = false;
     qstp_active = false;
     stop_backoff_active = false;
+    stop_hold_active = false;
     stop_elapsed_s = 0.0f;
 
     // 角度制御の基準を確定
@@ -785,6 +802,8 @@ void updateStop(float dt_s) {
             target_vr_mps = 0.0f;
             target_vl_mps = 0.0f;
             motion.stop();
+            stop_hold_active = true;
+            stop_hold_elapsed_s = 0.0f;
             enqueue_msg_line("DONE\n");
         } else {
             target_vr_mps = -STOP_BACKOFF_SPEED_MPS;
@@ -820,6 +839,8 @@ void updateStop(float dt_s) {
         motion.stop();
         stop_elapsed_s = 0.0f;
         stop_backoff_active = false;
+        stop_hold_active = true;
+        stop_hold_elapsed_s = 0.0f;
         enqueue_msg_line("DONE\n");
     } else {
         const float a_mag = stop_a_mmps2;
@@ -898,6 +919,35 @@ void updateStop(float dt_s) {
             motion.forward(v_cmd_mps, lateral_correction);
         }
     }
+}
+
+void updateStopHold(float dt_s) {
+    if (!stop_hold_active) return;
+    // 他のモーションが動き出していたら何もしない(ハンドラ側でも解除するが念のため)
+    if (fwd_active || stop_active || stop_backoff_active || turn_active || qstp_active) {
+        stop_hold_active = false;
+        return;
+    }
+
+    stop_hold_elapsed_s += dt_s;
+    if (stop_hold_elapsed_s >= STOP_HOLD_SEC) {
+        stop_hold_active = false;
+        target_vr_mps = 0.0f;
+        target_vl_mps = 0.0f;
+        motion.stop();
+        return;
+    }
+
+    // v=0のまま角度・角速度FBだけを継続し、慣性による回頭を打ち消して
+    // STOP開始時の目標角度(stop_target_angle_rad)へ戻す
+    const float angle_error = sensors.get_angle() - stop_target_angle_rad;
+    const float angle_correction = ANGLE_FB_GAIN * angle_error;
+    const float rate_correction = ANGULAR_RATE_FB_GAIN * sensors.get_gyro_z();
+    const float lateral_correction = angle_correction + rate_correction;
+
+    target_vr_mps = 0.0f;
+    target_vl_mps = 0.0f;
+    motion.forward(0.0f, lateral_correction);
 }
 
 void updateTurn(float dt_s) {
@@ -1112,6 +1162,7 @@ void Core0RealtimeTask(void* parameter) {
                 updateForward(dt_s);
                 updateStop(dt_s);
                 updateTurn(dt_s);
+                updateStopHold(dt_s);
             }
         }
 
