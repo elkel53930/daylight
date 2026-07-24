@@ -179,43 +179,60 @@ static constexpr float WALL_SENSOR_THRESHOLD = 100.0f;  // 壁検出閾値
 // １号機
 //static constexpr float WALL_SENSOR_TARGET_LS = 250.0f;     // 中央時の目標値
 //static constexpr float WALL_SENSOR_TARGET_RS = 234.0f;     // 中央時の目標値
-// ２号機(2026-07-19 セル中央実測 ls=299-322 / rs=216-242 の平均)
-static constexpr float WALL_SENSOR_TARGET_LS = 311.0f;     // 中央時の目標値
-static constexpr float WALL_SENSOR_TARGET_RS = 229.0f;     // 中央時の目標値
+// ２号機(2026-07-24 セル中央実測 ls=339-351 / rs=233-247 の平均、
+// n=20。2026-07-19の実測値 ls=311/rs=229 から再校正)
+static constexpr float WALL_SENSOR_TARGET_LS = 348.0f;     // 中央時の目標値
+static constexpr float WALL_SENSOR_TARGET_RS = 241.0f;     // 中央時の目標値
 
-static constexpr float WALL_SENSOR_GAIN = 0.00000f;      // 壁センサフィードバックゲイン [m/s] per sensor unit
-                                                          // 1kHzで目標角度に積算されるため実質積分器。0.000005では
-                                                          // 目標角の移動が速すぎ角度ループと干渉して振動した(2026-07-19)
+// 壁センサ誤差→目標角オフセット(比例)のゲインとクランプ。
+//
+// 旧実装は誤差を毎msで目標角に積算していた(WALL_SENSOR_GAIN)が、
+// 「横位置→誤差→積分→傾き→横速度→横位置」は減衰項のない二重積分
+// ループになり、ゲインをいくら下げても必ず行き過ぎる(実機 2026-07-24:
+// 0.000002で左25mmずれ→中央を15mm右に通過、半減しても行き過ぎ)。
+// 誤差に比例した傾きを目標角に直接与える方式なら
+// 横速度∝-横位置の一次系になり、指数収束・オーバーシュートなし。
+// 0.0005では左25mmずれ→3マスで数mm左まで収束(オーバーシュートなし)。
+// 収束を速めるため増強(2026-07-24)
+static constexpr float WALL_TILT_RAD_PER_UNIT = 0.0015f;  // [rad] per sensor unit
+static constexpr float WALL_TILT_MAX_RAD = 0.12f;         // 傾きクランプ(約7°)
 static constexpr float WALL_CORRECTION_CUT_OFF_DISTANCE = 30.0f; // 壁センサ補正を行う残距離の閾値 [mm]
 
-// 壁センサを使用した横方向補正値を計算
-// 戻り値: 正の値は右に寄せる補正、負の値は左に寄せる補正
-static float calculate_wall_correction(const Sensors& sensors_ref) {
+// 壁センサを使用した横方向誤差を計算
+// 戻り値: センサ値単位の誤差。正の値は右に寄せたい(左に寄っている)状態
+static float calculate_wall_error_units(const Sensors& sensors_ref) {
     const uint16_t rs_val = sensors_ref.get_rs();  // 右側センサ
     const uint16_t ls_val = sensors_ref.get_ls();  // 左側センサ
-    
+
     const bool rs_valid = (rs_val >= WALL_SENSOR_THRESHOLD);
     const bool ls_valid = (ls_val >= WALL_SENSOR_THRESHOLD);
-    
-    float correction = 0.0f;
-    
+
+    float error_units = 0.0f;
+
     if (rs_valid && ls_valid) {
         // 両方のセンサが有効な場合：両方を使用
         const float rs_error = WALL_SENSOR_TARGET_RS - static_cast<float>(rs_val);
         const float ls_error = static_cast<float>(ls_val) - WALL_SENSOR_TARGET_LS;
-        correction = (rs_error + ls_error) * 0.5f * WALL_SENSOR_GAIN;
+        error_units = (rs_error + ls_error) * 0.5f;
     } else if (ls_valid) {
         // 左センサのみ有効：左センサを使用して右に寄せる
-        const float ls_error = static_cast<float>(ls_val) - WALL_SENSOR_TARGET_LS;
-        correction = ls_error * WALL_SENSOR_GAIN;
+        error_units = static_cast<float>(ls_val) - WALL_SENSOR_TARGET_LS;
     } else if (rs_valid) {
         // 右センサのみ有効：右センサを使用して左に寄せる
-        const float rs_error = WALL_SENSOR_TARGET_RS - static_cast<float>(rs_val);
-        correction = rs_error * WALL_SENSOR_GAIN;
+        error_units = WALL_SENSOR_TARGET_RS - static_cast<float>(rs_val);
     }
-    // 両方無効な場合は correction = 0.0f のまま
-    
-    return correction;
+    // 両方無効な場合は error_units = 0.0f のまま
+
+    return error_units;
+}
+
+// 壁センサ誤差に比例した目標角オフセット [rad] (クランプ付き)。
+// 正の値 = 右に傾けて右へ寄せる。目標角からこの値を引いて使う。
+static float calculate_wall_tilt_rad(const Sensors& sensors_ref) {
+    float tilt = WALL_TILT_RAD_PER_UNIT * calculate_wall_error_units(sensors_ref);
+    if (tilt > WALL_TILT_MAX_RAD) tilt = WALL_TILT_MAX_RAD;
+    if (tilt < -WALL_TILT_MAX_RAD) tilt = -WALL_TILT_MAX_RAD;
+    return tilt;
 }
 
 static inline float slew_rate_limit(float current, float target, float max_delta) {
@@ -756,15 +773,15 @@ void updateForward(float dt_s) {
         fwd_v_cmd_mmps = v_next;
         const float v_cmd_mps = fwd_v_cmd_mmps / 1000.0f;
 
-        // 壁センサフィードバック（残距離15mm未満ではオフ）
-        float wall_correction = 0.0f;
+        // 壁センサフィードバック: 誤差に比例した傾きを目標角に直接与える
+        // (残距離が短いときはオフ)
+        float wall_tilt_rad = 0.0f;
         if (remain_mm >= WALL_CORRECTION_CUT_OFF_DISTANCE) {
-            wall_correction = calculate_wall_correction(sensors);
+            wall_tilt_rad = calculate_wall_tilt_rad(sensors);
         }
-        
-        // 角度フィードバック: 現在角度と目標角度の差分
-        fwd_target_angle_rad -= wall_correction;
-        const float angle_error = sensors.get_angle() - fwd_target_angle_rad;
+
+        // 角度フィードバック: 現在角度と目標角度(壁補正の傾き込み)の差分
+        const float angle_error = sensors.get_angle() - (fwd_target_angle_rad - wall_tilt_rad);
         const float angle_correction = ANGLE_FB_GAIN * angle_error;
 
         // 角速度フィードバック: 角速度をゼロに保つ
@@ -890,8 +907,23 @@ void updateStop(float dt_s) {
         stop_v_cmd_mmps = v_next;
         const float v_cmd_mps = stop_v_cmd_mmps / 1000.0f;
 
-        // 角度フィードバック: 現在角度と目標角度の差分
-        const float angle_error = sensors.get_angle() - stop_target_angle_rad;
+        // 壁センサフィードバック: 誤差に比例した傾きを目標角に直接与える
+        // (残距離が短いときはオフ)。
+        // CellRunnerの直進はSTOP単発で実行されるため、FWDと同様に
+        // ここでも壁補正を行わないと直進中の横位置補正が一切効かない。
+        // ただし前壁がある場合は、前壁の反射が横センサに干渉して正しい
+        // 値が取れないケースがあるため壁FBを使わない(STOPは前壁に
+        // 向かって止まる用途が多い)
+        const bool front_wall =
+            (sensors.get_lf() >= WALL_SENSOR_THRESHOLD) ||
+            (sensors.get_rf() >= WALL_SENSOR_THRESHOLD);
+        float wall_tilt_rad = 0.0f;
+        if (!front_wall && remain_mm >= WALL_CORRECTION_CUT_OFF_DISTANCE) {
+            wall_tilt_rad = calculate_wall_tilt_rad(sensors);
+        }
+
+        // 角度フィードバック: 現在角度と目標角度(壁補正の傾き込み)の差分
+        const float angle_error = sensors.get_angle() - (stop_target_angle_rad - wall_tilt_rad);
         const float angle_correction = ANGLE_FB_GAIN * angle_error;
 
         // 角速度フィードバック: 角速度をゼロに保つ
@@ -899,7 +931,7 @@ void updateStop(float dt_s) {
         const float rate_correction = ANGULAR_RATE_FB_GAIN * gyro_z;
 
         // 合計補正値
-        const float lateral_correction = angle_correction + rate_correction; // STOPでは壁センサ補正は行わない
+        const float lateral_correction = angle_correction + rate_correction;
 
         {
             static int dbg_count = 0;
@@ -1097,26 +1129,26 @@ bool updateQstp(float dt_s) {
 
     const float v_cmd_mps = qstp_v_cmd_mmps / 1000.0f;
 
-    // 角度フィードバック: 現在角度と目標角度の差分
-    const float angle_error = sensors.get_angle() - qstp_target_angle_rad;
+    // 壁センサフィードバック: 誤差に比例した傾きを目標角に直接与える
+    const float wall_tilt_rad = calculate_wall_tilt_rad(sensors);
+
+    // 角度フィードバック: 現在角度と目標角度(壁補正の傾き込み)の差分
+    const float angle_error = sensors.get_angle() - (qstp_target_angle_rad - wall_tilt_rad);
     const float angle_correction = ANGLE_FB_GAIN * angle_error;
 
     // 角速度フィードバック: 角速度をゼロに保つ
     const float gyro_z = sensors.get_gyro_z();
     const float rate_correction = ANGULAR_RATE_FB_GAIN * gyro_z;
-    
-    // 壁センサフィードバック
-    const float wall_correction = calculate_wall_correction(sensors);
 
     // 最終速度計算: 車輪の速度差で補正
-    const float vr = v_cmd_mps - angle_correction - rate_correction + wall_correction;
-    const float vl = v_cmd_mps + angle_correction + rate_correction - wall_correction;
+    const float vr = v_cmd_mps - angle_correction - rate_correction;
+    const float vl = v_cmd_mps + angle_correction + rate_correction;
 
     target_vr_mps = vr;
     target_vl_mps = vl;
     // 上で計算したvr/vlの差分をそのままlateral_correctionとして渡す
     // （motion.forward()内部で speed±corr に展開されるため、平均速度＋補正量で渡す）
-    const float lateral_correction = angle_correction + rate_correction - wall_correction;
+    const float lateral_correction = angle_correction + rate_correction;
 
     {
         static int dbg_count = 0;

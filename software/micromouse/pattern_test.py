@@ -52,19 +52,10 @@ MELODY_START = "ceg"
 MELODY_FINISH = "CCGG"
 MELODY_ERROR = "CcCc"
 
-# 固定テストパターン(直進+旋回の閉路。開始位置・開始向きに戻る:
-# 旋回合計 -90+90+90+90+180 = +360度)
+# 固定テストパターン(壁センサFB確認用: 壁付きコリドーで3マス直進のみ。
+# 閉路パターンは git 履歴を参照)
 PATTERN: List[Motion] = [
-    Motion(MotionType.STRAIGHT, 1),
-    Motion(MotionType.TURN_RIGHT),
-    Motion(MotionType.STRAIGHT, 1),
-    Motion(MotionType.TURN_LEFT),
-    Motion(MotionType.STRAIGHT, 2),
-    Motion(MotionType.TURN_LEFT),
-    Motion(MotionType.STRAIGHT, 1),
-    Motion(MotionType.TURN_LEFT),
     Motion(MotionType.STRAIGHT, 3),
-    Motion(MotionType.TURN_BACK),
 ]
 
 
@@ -271,6 +262,9 @@ def run_pattern(
     base.gyro_calibrate()
     base.reset_distance()
     base.reset_angle()
+    # 壁センサLEDを点灯(壁FBの実機確認用。壁が無い環境ではセンサ値が
+    # 閾値未満になり補正0なので挙動は変わらない)
+    base.wall_led(True)
 
     # 走行開始をメロディで予告し、1秒置いてから動き出す
     ui.notify_start()
@@ -321,6 +315,10 @@ def run_once(
         base.emergency_stop()
         return False, f"unexpected: {e}"
     finally:
+        try:
+            base.wall_led(False)
+        except Exception:
+            pass
         base.motors_off()
         base.close()
 
