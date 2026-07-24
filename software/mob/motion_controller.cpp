@@ -1,26 +1,27 @@
 #include "motion_controller.h"
+#include "params.h"
 #include <math.h>
 
-// Tuning constants
+// チューニング定数は params.h/params.cpp の Params 構造体(実行時に
+// PSET/PSAVEで機体ごとに変更・永続化できる)に移動した。以下は各値の
+// 意味・調整経緯の記録(ビルド時デフォルトは params.cpp の
+// kDefaultParams 参照)。
+//
+// params.speed_kp/speed_ki/speed_kd: 車輪速度PID。
 // 実測プラントゲイン ≈ 3mm/s per duty (2026-07-19 テレメトリ: duty96↔300mm/s)。
 // KP=800はループゲイン≈2.4で振動していたため、FF主体+P縮小(≈0.9)に変更。
-static constexpr float DEFAULT_KP = 300.0f;
 // KI=60 は弱すぎて実質P制御になり、負荷・電圧変動がそのまま速度変動に
 // 現れていた(2026-07-19)。定常dutyを積分項が数百msで担える値に引き上げ。
-static constexpr float DEFAULT_KI = 3000.0f;
-static constexpr float DEFAULT_KD = 0.0f;
-
-// 速度フィードフォワード: 目標速度[m/s]→duty。
-// VBATT_NOM 時の値。実効ゲインは電圧に反比例するため vbatt でスケーリングする
+//
+// params.kf_duty_per_mps/vbatt_nom: 速度フィードフォワード: 目標速度[m/s]→duty。
+// vbatt_nom 時の値。実効ゲインは電圧に反比例するため vbatt でスケーリングする
 // (2026-07-19: 計測毎に duty↔速度 の関係が±10%以上ずれる原因が電圧変動だった)。
 // 定常テレメトリ実測 duty100 ↔ 約370mm/s(vbatt≈7.5V)から逆算。
-static constexpr float KF_DUTY_PER_MPS = 250.0f;
-static constexpr float VBATT_NOM = 8.0f;  // KF を校正した基準電圧 [V]
-
-// 速度測定(1ms毎のエンコーダ差分)の量子化ノイズを抑えるLPF係数
-// 0.3では±100mm/s級のスパイク(ジャイロと矛盾=計測ノイズ)が残った(2026-07-19)
-static constexpr float SPEED_LPF_ALPHA = 0.12f;
-
+//
+// params.speed_lpf_alpha: 速度測定(1ms毎のエンコーダ差分)の量子化ノイズを
+// 抑えるLPF係数。0.3では±100mm/s級のスパイク(ジャイロと矛盾=計測ノイズ)
+// が残った(2026-07-19)。
+//
 // 旋回中の左右速度同期(2026-07-22追加、2回無効化: 2026-07-22)。
 // 左右輪は独立したPID(同一ゲイン・同一目標速度)で追従しているが、
 // 摩擦やギアの個体差で実速度がずれると旋回中心が機械的中心からずれる
@@ -46,12 +47,11 @@ static constexpr float SPEED_LPF_ALPHA = 0.12f;
 // 専用に別の緩いLPF(SYNC_ERR_LPF_ALPHA、時定数≈50ms)をかけて低周波の
 // 定常ずれ(ギア・摩擦の個体差)だけに反応させ、車輪PIDの速い応答とは
 // 周波数帯で分離する。ゲインは小さめから開始し実機で追い込む。
-static constexpr float TURN_SYNC_KP = 0.3f;         // 無次元(m/s差 → m/s補正)
-static constexpr float TURN_SYNC_KI = 1.0f;         // [1/s]
-static constexpr float TURN_SYNC_MAX_CORR_MPS = 0.05f;  // 補正量クランプ(グリッチ対策)
-// 同期誤差専用LPFの係数。SPEED_LPF_ALPHA(0.12)より十分小さくし、
-// 個別車輪PIDと反応する周波数帯が重ならないようにする。
-static constexpr float SYNC_ERR_LPF_ALPHA = 0.02f;
+// params.turn_sync_kp: 無次元(m/s差 → m/s補正)
+// params.turn_sync_ki: [1/s]
+// params.sync_max_corr: 補正量クランプ(グリッチ対策)
+// params.sync_lpf_alpha: 同期誤差専用LPFの係数。speed_lpf_alpha(0.12)
+// より十分小さくし、個別車輪PIDと反応する周波数帯が重ならないようにする。
 
 float MotionController::SpeedPID::step(float err, float dt_s) {
     if (dt_s <= 0) return 0.0f;
@@ -80,8 +80,11 @@ MotionController::MotionController(Motor& motor, Sensors& sensors)
     : motor_(motor), sensors_(sensors) {
     // out_min/out_maxは「D の duty」範囲ではなく「speed」範囲で指定
     // T: −255〜+255 → D: −1023〜+1023
-    pid_r_ = {DEFAULT_KP, DEFAULT_KI, DEFAULT_KD, 0.0f, 0.0f, -1023.0f, 1023.0f};
-    pid_l_ = {DEFAULT_KP, DEFAULT_KI, DEFAULT_KD, 0.0f, 0.0f, -1023.0f, 1023.0f};
+    // kp/ki/kd の初期値はここで一度だけ設定するが、実行中に PSET で
+    // params.speed_kp 等が変わった場合は apply_speed_pid() で毎回
+    // 反映し直す(integ/prev_err は保持したままゲインだけ更新する)。
+    pid_r_ = {params.speed_kp, params.speed_ki, params.speed_kd, 0.0f, 0.0f, -1023.0f, 1023.0f};
+    pid_l_ = {params.speed_kp, params.speed_ki, params.speed_kd, 0.0f, 0.0f, -1023.0f, 1023.0f};
 }
 
 void MotionController::update(uint32_t dt_ms) {
@@ -164,6 +167,15 @@ void MotionController::set_targets_mps(float vr, float vl) {
 void MotionController::apply_speed_pid(uint32_t dt_ms) {
     const float dt = static_cast<float>(dt_ms) / 1000.0f;
 
+    // PSET で変更されている可能性があるゲインを毎回反映する
+    // (integ/prev_err はリセットしない)。
+    pid_r_.kp = params.speed_kp;
+    pid_r_.ki = params.speed_ki;
+    pid_r_.kd = params.speed_kd;
+    pid_l_.kp = params.speed_kp;
+    pid_l_.ki = params.speed_ki;
+    pid_l_.kd = params.speed_kd;
+
     // エンコーダによる速度推定は、モード(速度PID経由かDUTY_DIRECTか)に
     // 関わらず常に行う。DUTY_DIRECT中もテレメトリ(#Vのvr/vl)を意味の
     // あるものにするため。
@@ -195,8 +207,8 @@ void MotionController::apply_speed_pid(uint32_t dt_ms) {
     const float vl_mps = (dt > 0) ? (dist_l_m / dt) : 0.0f;
 
     // 量子化ノイズ対策のLPF(EMA)
-    vr_filt_mps_ += SPEED_LPF_ALPHA * (vr_mps - vr_filt_mps_);
-    vl_filt_mps_ += SPEED_LPF_ALPHA * (vl_mps - vl_filt_mps_);
+    vr_filt_mps_ += params.speed_lpf_alpha * (vr_mps - vr_filt_mps_);
+    vl_filt_mps_ += params.speed_lpf_alpha * (vl_mps - vl_filt_mps_);
 
     if (mode_ == Mode::DUTY_DIRECT) {
         // duty は set_duty_direct() が既に直接設定済み。速度PIDは経由しない。
@@ -225,19 +237,19 @@ void MotionController::apply_speed_pid(uint32_t dt_ms) {
 
         // 個別車輪PID(速い応答)と結合して振動しないよう、同期誤差は
         // さらに緩いLPFを通してから使う(低周波の定常ずれのみ反応)。
-        turn_sync_err_filt_ += SYNC_ERR_LPF_ALPHA * (sync_err_raw - turn_sync_err_filt_);
+        turn_sync_err_filt_ += params.sync_lpf_alpha * (sync_err_raw - turn_sync_err_filt_);
         const float sync_err = turn_sync_err_filt_;
 
         turn_sync_integ_ += sync_err * dt;
-        if (TURN_SYNC_KI > 0.0f) {
-            const float sync_integ_max = TURN_SYNC_MAX_CORR_MPS / TURN_SYNC_KI;
+        if (params.turn_sync_ki > 0.0f) {
+            const float sync_integ_max = params.sync_max_corr / params.turn_sync_ki;
             if (turn_sync_integ_ > sync_integ_max) turn_sync_integ_ = sync_integ_max;
             if (turn_sync_integ_ < -sync_integ_max) turn_sync_integ_ = -sync_integ_max;
         }
 
-        float sync_corr = TURN_SYNC_KP * sync_err + TURN_SYNC_KI * turn_sync_integ_;
-        if (sync_corr > TURN_SYNC_MAX_CORR_MPS) sync_corr = TURN_SYNC_MAX_CORR_MPS;
-        if (sync_corr < -TURN_SYNC_MAX_CORR_MPS) sync_corr = -TURN_SYNC_MAX_CORR_MPS;
+        float sync_corr = params.turn_sync_kp * sync_err + params.turn_sync_ki * turn_sync_integ_;
+        if (sync_corr > params.sync_max_corr) sync_corr = params.sync_max_corr;
+        if (sync_corr < -params.sync_max_corr) sync_corr = -params.sync_max_corr;
 
         const float dir_r = (vr_ref_mps_ >= 0.0f) ? 1.0f : -1.0f;
         const float dir_l = (vl_ref_mps_ >= 0.0f) ? 1.0f : -1.0f;
@@ -253,8 +265,8 @@ void MotionController::apply_speed_pid(uint32_t dt_ms) {
 
     // フィードフォワード + PID補正（出力は duty: −1023〜+1023）
     float vbatt = sensors_.get_battery_voltage();
-    if (vbatt < 6.0f) vbatt = VBATT_NOM;  // 起動直後・異常値ガード
-    const float kf = KF_DUTY_PER_MPS * (VBATT_NOM / vbatt);
+    if (vbatt < 6.0f) vbatt = params.vbatt_nom;  // 起動直後・異常値ガード
+    const float kf = params.kf_duty_per_mps * (params.vbatt_nom / vbatt);
     float u_r = kf * vr_ref_eff + pid_r_.step(err_r, dt);
     float u_l = kf * vl_ref_eff + pid_l_.step(err_l, dt);
     if (u_r > 1023.0f) u_r = 1023.0f;

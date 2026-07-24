@@ -11,6 +11,7 @@
 #include "encoder.h"
 #include "sensors.h"
 #include "motion_controller.h"
+#include "params.h"
 #include "fan.h"
 #include "servo.h"
 #include "ball_sensor.h"
@@ -40,12 +41,9 @@ static float stop_elapsed_s = 0.0f;       // STOP経過時間 [s]
 static bool stop_backoff_active = false;  // タイムアウト後の後退中か
 static float stop_backoff_target_dist_mm = 0.0f; // 後退完了目標距離 [mm]
 
-static constexpr float FINAL_APPROACH_SPEED_MMPS = 50.0f;  // STOP時の最終進入速度
-static constexpr float STOP_MIN_SPEED_MMPS = 40.0f;        // STOP時の最低速度 [mm/s]
-                                                           // 20だと静止摩擦に負けて目標手前でスタックする(2026-07-18実機)
-static constexpr float STOP_TIMEOUT_SEC = 4.0f;            // STOPのタイムアウト [s]
-static constexpr float STOP_BACKOFF_DIST_MM = 30.0f;       // タイムアウト時の後退距離 [mm]
-static constexpr float STOP_BACKOFF_SPEED_MPS = 0.12f;     // タイムアウト時の後退速度 [m/s]
+// STOPプロファイルのパラメータは params.final_appr_mmps/stop_min_mmps/
+// stop_timeout_s/backoff_dist_mm/backoff_mps に移動(params.h)。
+// stop_min_mmps: 20だと静止摩擦に負けて目標手前でスタックする(2026-07-18実機)。
 
 // 停止完了後の角度維持(2026-07-24追加)。duty=0で制御を切ると慣性で
 // 機体が回る(実機: 停止の17ms後にgz=1.1rad/s、角度+0.7°→+1.7°)ため、
@@ -59,7 +57,7 @@ static constexpr float STOP_BACKOFF_SPEED_MPS = 0.12f;     // タイムアウト
 static bool stop_hold_active = false;
 static float stop_hold_elapsed_s = 0.0f;
 static float stop_hold_target_angle_rad = 0.0f;
-static constexpr float STOP_HOLD_SEC = 0.5f;
+// ホールド時間は params.stop_hold_sec(params.h)
 
 // 旋回コマンド（その場旋回）状態
 static bool turn_active = false;
@@ -83,16 +81,15 @@ static bool latch_active = false;
 static LatchMode latch_mode = LatchMode::NONE;
 static float latch_turn_target_rad = 0.0f;
 
-static constexpr float LATCH_SPEED_MPS = 0.05f;        // 50mm/s（Lowspeed）
-static constexpr float LATCH_TURN_SPEED_MPS = 0.06f;   // 約90deg/s相当（Lowspeed）
-static constexpr float LATCH_TURN_TARGET_RAD = 1000000.0f; // 低速連続旋回の仮想目標角
+// 低速動作の速度は params.latch_mps/latch_turn_mps(params.h)
+static constexpr float LATCH_TURN_TARGET_RAD = 1000000.0f; // 低速連続旋回の仮想目標角(実装用の定数、機体差で調整するものではないためparams化しない)
 
 // JOGコマンド（距離指定低速動作）状態
 static bool jog_active = false;
 static bool jog_is_forward = true;  // true: 前進, false: 後退
 static float jog_target_dist_mm = 0.0f;
 static float jog_start_dist_mm = 0.0f;
-static constexpr float JOG_SPEED_MPS = 0.05f;  // 50mm/s
+// 速度は params.jog_mps(params.h)
 
 // ジャイロキャリブレーション状態
 static bool gyro_calib_done_pending = false;  // キャリブレーション完了時にDONEを返す
@@ -102,11 +99,11 @@ static bool qstp_active = false;
 static float qstp_v_cmd_mmps = 0.0f;      // 現在指令速度 [mm/s]
 static float qstp_target_angle_rad = 0.0f; // 目標角度 [rad] （角度フィードバック用）
 static float qstp_original_goal_dist_mm = 0.0f; // 元の目標距離 [mm]（FWD/STOPの目標）
-static constexpr float QSTP_DECEL_MMPS2 = 1000.0f;  // QSTP時の最大減速度 [mm/s^2]
+// 最大減速度は params.qstp_decel(params.h)
 
 // 角度制御パラメータ（PID + 速度制限）
 // P単独では減速が間に合わず、目標付近で毎回7〜15°程度オーバーシュートして
-// 整定待ち(TURN_SETTLE_SEC)→再サーボのリトライを消費していた(2026-07-22
+// 整定待ち(params.turn_settle_s)→再サーボのリトライを消費していた(2026-07-22
 // 実機 Pattern Test ログで確認)。
 //
 // 第1版(I・D常時有効)では90°旋回は改善した(7〜15°→1.5〜3.7°)が、
@@ -115,24 +112,24 @@ static constexpr float QSTP_DECEL_MMPS2 = 1000.0f;  // QSTP時の最大減速度
 // 遅らせていたと考え、Iを条件付き積分(残角小のみ)にしたところ、
 // 今度は複数の旋回でオーバーシュート・振動がさらに悪化した
 // (例: 180°で-20.7°、7°旋回で3回リトライ)。原因はDにあった:
-// TURN_KD_MPS_PER_RADPS×gz は巡航中の高い gz(6〜8rad/s)だけで
+// params.turn_kd×gz は巡航中の高い gz(6〜8rad/s)だけで
 // 単独で約0.4m/sにも達し、Pがまだ十分な速度を要求している最中でも
 // cmdを最低速度まで落としてしまい、減速タイミングを乱していた
 // (残角0.7rad=40°でもcmdが60まで低下、実機ログで確認)。
 //
-// このため I・D いずれも残角が TURN_FINE_ENABLE_RAD 以下(=Pだけで
+// このため I・D いずれも残角が params.turn_fine_rad 以下(=Pだけで
 // 既に最低速度域に入っている、目標間際の最終アプローチ)のときのみ
 // 有効化する「条件付きPID」にした。巡航中はPのみの素直な減速
 // プロファイルを保ち、最終アプローチでだけI(残留誤差解消)と
 // D(オーバーシュート抑制)を効かせる狙い。KI/KDは初期値であり、
 // 実機の Pattern Test ログ(#V の ang/gz 推移)で要再チューニング。
-static constexpr float TURN_KP_MPS_PER_RAD = 0.35f;      // [m/s]/rad
-static constexpr float TURN_KI_MPS_PER_RAD_S = 0.3f;     // [m/s]/(rad*s)
-static constexpr float TURN_KD_MPS_PER_RADPS = 0.05f;    // [m/s]/(rad/s)（実測角速度=gyro_zに掛ける）
-static constexpr float TURN_FINE_ENABLE_RAD = 0.2f;     // 条件付き積分: |err|がこれ以下の間だけ積分を加算
+// params.turn_kp: [m/s]/rad
+// params.turn_ki: [m/s]/(rad*s)
+// params.turn_kd: [m/s]/(rad/s)（実測角速度=gyro_zに掛ける）
+// params.turn_fine_rad: 条件付き積分: |err|がこれ以下の間だけ積分を加算
 // オーバーシュートの根本原因(整定判定の瞬間にduty=0にして
-// TURN_SETTLE_SEC=80ms無制動で待つため、その時点のgzがそのまま飛び出し
-// 量になる)を踏まえ、減速レート(TURN_ACCEL_MPS2)側のチューニングでは
+// params.turn_settle_s=80ms無制動で待つため、その時点のgzがそのまま飛び出し
+// 量になる)を踏まえ、減速レート(params.turn_accel)側のチューニングでは
 // 方向によって効きムラが大きく限界だったため、そもそもの最高角速度
 // 自体を下げて飛び出す物理量を減らす方針に変更(2026-07-22)。
 // 0.25→0.15でオーバーシュート3.6〜6.6°・最終誤差0.9〜1.3°まで改善
@@ -141,13 +138,10 @@ static constexpr float TURN_FINE_ENABLE_RAD = 0.2f;     // 条件付き積分: |
 // (4.6°→7.7°、リトライ1→2回)。左右差は速度を下げるだけでは解消しない
 // (方向依存の非対称性がある)ため、0.15に戻して左右速度同期の検証に
 // 切り替える。
-static constexpr float TURN_MAX_SPEED_MPS = 0.15f;
-static constexpr float TURN_MIN_SPEED_MPS = 0.06f;  // 0.04では終端が遅すぎた(2026-07-19)
-static constexpr float TURN_DONE_TOL_RAD = 0.01f;     // 約0.57deg
-static constexpr float TURN_SETTLE_SEC = 0.08f;       // 整定確認の待ち時間 [s]
-static constexpr uint8_t TURN_MAX_RETRY = 3;          // 整定不足時の再サーボ最大回数
-// 整定判定(|err|<=TURN_DONE_TOL_RAD)の瞬間にmotion.stop()でduty=0にして
-// TURN_SETTLE_SEC待つが、その時点でgzがまだ8〜10rad/s残っていると
+// params.turn_max_mps/turn_min_mps/turn_tol_rad(≈0.57deg)/
+// turn_settle_s/turn_max_retry(params.h)
+// 整定判定(|err|<=turn_tol_rad)の瞬間にmotion.stop()でduty=0にして
+// turn_settle_s待つが、その時点でgzがまだ8〜10rad/s残っていると
 // 無制動の80ms慣性だけで10〜24°も飛び出すことが実機ログで確認された
 // (2026-07-22)。1.2m/s²では巡航速度(250mm/s)から最低速度(60mm/s)まで
 // 絞り切る前に整定判定に突入してしまうため、大幅に引き上げる。
@@ -156,7 +150,7 @@ static constexpr uint8_t TURN_MAX_RETRY = 3;          // 整定不足時の再�
 // 引き続き0°だったが右90°(14°→17°)と180°(4.5°→14.4°)はむしろ悪化した
 // ため、4.0に戻す(単純に強いほど良いわけではなく、方向によって最適値が
 // 違う可能性がある。左右差は wheel sync 無効化と合わせて要調査)。
-static constexpr float TURN_ACCEL_MPS2 = 4.0f;        // 旋回時の車輪速度加速度制限 [m/s^2]
+// 加速度制限は params.turn_accel [m/s^2](params.h)
 
 // 直進時の角度フィードバックゲイン
 //
@@ -171,20 +165,15 @@ static constexpr float TURN_ACCEL_MPS2 = 4.0f;        // 旋回時の車輪速�
 // に下げる。
 // 0.15では角度保持が緩く±1.5°程度ふらついたため段階的に増強
 // (0.15→0.3→0.5、2026-07-24)
-static constexpr float ANGLE_FB_GAIN = 0.5f;  // [m/s]/rad
-static constexpr float ANGULAR_RATE_FB_GAIN = 0.05f;  // [m/s]/(rad/s)
+// params.angle_fb_gain/rate_fb_gain [m/s]/rad, [m/s]/(rad/s)(params.h)
 
-// 壁センサフィードバックパラメータ
-static constexpr float WALL_SENSOR_THRESHOLD = 100.0f;  // 壁検出閾値
-// １号機
-//static constexpr float WALL_SENSOR_TARGET_LS = 250.0f;     // 中央時の目標値
-//static constexpr float WALL_SENSOR_TARGET_RS = 234.0f;     // 中央時の目標値
-// ２号機(2026-07-24 セル中央実測 ls=339-351 / rs=233-247 の平均、
-// n=20。2026-07-19の実測値 ls=311/rs=229 から再校正)
-static constexpr float WALL_SENSOR_TARGET_LS = 348.0f;     // 中央時の目標値
-static constexpr float WALL_SENSOR_TARGET_RS = 241.0f;     // 中央時の目標値
+// 壁センサフィードバックパラメータは params.wall_threshold/
+// wall_target_ls/wall_target_rs(params.h)。
+// wall_target_ls/rs は機体固有(2026-07-24 セル中央実測 ls=339-351 /
+// rs=233-247 の平均、n=20。2026-07-19の実測値 ls=311/rs=229 から再校正)。
 
-// 壁センサ誤差→目標角オフセット(比例)のゲインとクランプ。
+// 壁センサ誤差→目標角オフセット(比例)のゲインとクランプ
+// (params.wall_tilt_gain/wall_tilt_max/wall_cutoff_mm、params.h)。
 //
 // 旧実装は誤差を毎msで目標角に積算していた(WALL_SENSOR_GAIN)が、
 // 「横位置→誤差→積分→傾き→横速度→横位置」は減衰項のない二重積分
@@ -194,9 +183,6 @@ static constexpr float WALL_SENSOR_TARGET_RS = 241.0f;     // 中央時の目標
 // 横速度∝-横位置の一次系になり、指数収束・オーバーシュートなし。
 // 0.0005では左25mmずれ→3マスで数mm左まで収束(オーバーシュートなし)。
 // 収束を速めるため増強(2026-07-24)
-static constexpr float WALL_TILT_RAD_PER_UNIT = 0.0015f;  // [rad] per sensor unit
-static constexpr float WALL_TILT_MAX_RAD = 0.12f;         // 傾きクランプ(約7°)
-static constexpr float WALL_CORRECTION_CUT_OFF_DISTANCE = 30.0f; // 壁センサ補正を行う残距離の閾値 [mm]
 
 // 壁センサを使用した横方向誤差を計算
 // 戻り値: センサ値単位の誤差。正の値は右に寄せたい(左に寄っている)状態
@@ -204,22 +190,22 @@ static float calculate_wall_error_units(const Sensors& sensors_ref) {
     const uint16_t rs_val = sensors_ref.get_rs();  // 右側センサ
     const uint16_t ls_val = sensors_ref.get_ls();  // 左側センサ
 
-    const bool rs_valid = (rs_val >= WALL_SENSOR_THRESHOLD);
-    const bool ls_valid = (ls_val >= WALL_SENSOR_THRESHOLD);
+    const bool rs_valid = (rs_val >= params.wall_threshold);
+    const bool ls_valid = (ls_val >= params.wall_threshold);
 
     float error_units = 0.0f;
 
     if (rs_valid && ls_valid) {
         // 両方のセンサが有効な場合：両方を使用
-        const float rs_error = WALL_SENSOR_TARGET_RS - static_cast<float>(rs_val);
-        const float ls_error = static_cast<float>(ls_val) - WALL_SENSOR_TARGET_LS;
+        const float rs_error = params.wall_target_rs - static_cast<float>(rs_val);
+        const float ls_error = static_cast<float>(ls_val) - params.wall_target_ls;
         error_units = (rs_error + ls_error) * 0.5f;
     } else if (ls_valid) {
         // 左センサのみ有効：左センサを使用して右に寄せる
-        error_units = static_cast<float>(ls_val) - WALL_SENSOR_TARGET_LS;
+        error_units = static_cast<float>(ls_val) - params.wall_target_ls;
     } else if (rs_valid) {
         // 右センサのみ有効：右センサを使用して左に寄せる
-        error_units = WALL_SENSOR_TARGET_RS - static_cast<float>(rs_val);
+        error_units = params.wall_target_rs - static_cast<float>(rs_val);
     }
     // 両方無効な場合は error_units = 0.0f のまま
 
@@ -229,9 +215,9 @@ static float calculate_wall_error_units(const Sensors& sensors_ref) {
 // 壁センサ誤差に比例した目標角オフセット [rad] (クランプ付き)。
 // 正の値 = 右に傾けて右へ寄せる。目標角からこの値を引いて使う。
 static float calculate_wall_tilt_rad(const Sensors& sensors_ref) {
-    float tilt = WALL_TILT_RAD_PER_UNIT * calculate_wall_error_units(sensors_ref);
-    if (tilt > WALL_TILT_MAX_RAD) tilt = WALL_TILT_MAX_RAD;
-    if (tilt < -WALL_TILT_MAX_RAD) tilt = -WALL_TILT_MAX_RAD;
+    float tilt = params.wall_tilt_gain * calculate_wall_error_units(sensors_ref);
+    if (tilt > params.wall_tilt_max) tilt = params.wall_tilt_max;
+    if (tilt < -params.wall_tilt_max) tilt = -params.wall_tilt_max;
     return tilt;
 }
 
@@ -685,20 +671,20 @@ bool updateLatch(float dt_s) {
 
     switch (latch_mode) {
         case LatchMode::FWD:
-            target_vr_mps = LATCH_SPEED_MPS;
-            target_vl_mps = LATCH_SPEED_MPS;
-            motion.forward(LATCH_SPEED_MPS, 0.0f);
+            target_vr_mps = params.latch_mps;
+            target_vl_mps = params.latch_mps;
+            motion.forward(params.latch_mps, 0.0f);
             return true;
 
         case LatchMode::BACK:
-            target_vr_mps = -LATCH_SPEED_MPS;
-            target_vl_mps = -LATCH_SPEED_MPS;
-            motion.backward(LATCH_SPEED_MPS);
+            target_vr_mps = -params.latch_mps;
+            target_vl_mps = -params.latch_mps;
+            motion.backward(params.latch_mps);
             return true;
 
         case LatchMode::TURN_L:
         case LatchMode::TURN_R: {
-            const float s = LATCH_TURN_SPEED_MPS;
+            const float s = params.latch_turn_mps;
             motion.turn_in_place(s, latch_turn_target_rad);
             target_vr_mps = (latch_mode == LatchMode::TURN_L) ? +s : -s;
             target_vl_mps = (latch_mode == LatchMode::TURN_L) ? -s : +s;
@@ -732,13 +718,13 @@ bool updateJog(float dt_s) {
 
     // 低速で前進または後退
     if (jog_is_forward) {
-        target_vr_mps = JOG_SPEED_MPS;
-        target_vl_mps = JOG_SPEED_MPS;
-        motion.forward(JOG_SPEED_MPS, 0.0f);
+        target_vr_mps = params.jog_mps;
+        target_vl_mps = params.jog_mps;
+        motion.forward(params.jog_mps, 0.0f);
     } else {
-        target_vr_mps = -JOG_SPEED_MPS;
-        target_vl_mps = -JOG_SPEED_MPS;
-        motion.backward(JOG_SPEED_MPS);
+        target_vr_mps = -params.jog_mps;
+        target_vl_mps = -params.jog_mps;
+        motion.backward(params.jog_mps);
     }
 
     return true;
@@ -776,17 +762,17 @@ void updateForward(float dt_s) {
         // 壁センサフィードバック: 誤差に比例した傾きを目標角に直接与える
         // (残距離が短いときはオフ)
         float wall_tilt_rad = 0.0f;
-        if (remain_mm >= WALL_CORRECTION_CUT_OFF_DISTANCE) {
+        if (remain_mm >= params.wall_cutoff_mm) {
             wall_tilt_rad = calculate_wall_tilt_rad(sensors);
         }
 
         // 角度フィードバック: 現在角度と目標角度(壁補正の傾き込み)の差分
         const float angle_error = sensors.get_angle() - (fwd_target_angle_rad - wall_tilt_rad);
-        const float angle_correction = ANGLE_FB_GAIN * angle_error;
+        const float angle_correction = params.angle_fb_gain * angle_error;
 
         // 角速度フィードバック: 角速度をゼロに保つ
         const float gyro_z = sensors.get_gyro_z();
-        const float rate_correction = ANGULAR_RATE_FB_GAIN * gyro_z;
+        const float rate_correction = params.rate_fb_gain * gyro_z;
         
 
         {
@@ -830,9 +816,9 @@ void updateStop(float dt_s) {
             stop_hold_target_angle_rad = stop_target_angle_rad;
             // DONEはホールド完了後(updateStopHold)に送る
         } else {
-            target_vr_mps = -STOP_BACKOFF_SPEED_MPS;
-            target_vl_mps = -STOP_BACKOFF_SPEED_MPS;
-            motion.backward(STOP_BACKOFF_SPEED_MPS);
+            target_vr_mps = -params.backoff_mps;
+            target_vl_mps = -params.backoff_mps;
+            motion.backward(params.backoff_mps);
         }
         return;
     }
@@ -840,14 +826,14 @@ void updateStop(float dt_s) {
     if (!stop_active) return;
 
     stop_elapsed_s += dt_s;
-    if (stop_elapsed_s >= STOP_TIMEOUT_SEC) {
+    if (stop_elapsed_s >= params.stop_timeout_s) {
         stop_active = false;
         stop_v_cmd_mmps = 0.0f;
         target_vr_mps = 0.0f;
         target_vl_mps = 0.0f;
         motion.stop();
         stop_backoff_active = true;
-        stop_backoff_target_dist_mm = sensors.get_distance() - STOP_BACKOFF_DIST_MM;
+        stop_backoff_target_dist_mm = sensors.get_distance() - params.backoff_dist_mm;
         return;
     }
 
@@ -874,14 +860,14 @@ void updateStop(float dt_s) {
         // まず 50mm/s まで減速する必要があるかを判断
         float dist_to_50 = 0.0f;
         if (a_mag > 1e-3f) {
-            const float dv2 = (v * v) - (FINAL_APPROACH_SPEED_MMPS * FINAL_APPROACH_SPEED_MMPS);
+            const float dv2 = (v * v) - (params.final_appr_mmps * params.final_appr_mmps);
             dist_to_50 = dv2 > 0.0f ? (dv2 / (2.0f * a_mag)) : 0.0f;
         }
 
         // 次に 50mm/s から 0 まで止めるのに必要な距離
         float dist_50_to_0 = 0.0f;
         if (a_mag > 1e-3f) {
-            dist_50_to_0 = (FINAL_APPROACH_SPEED_MMPS * FINAL_APPROACH_SPEED_MMPS) / (2.0f * a_mag);
+            dist_50_to_0 = (params.final_appr_mmps * params.final_appr_mmps) / (2.0f * a_mag);
         }
 
         float v_next = v;
@@ -889,11 +875,11 @@ void updateStop(float dt_s) {
         // 残距離が「50->0の距離」以下なら、優先して停止に向けて減速（ただし20mm/s未満にはしない）
         if (remain_mm <= dist_50_to_0) {
             if (a_mag > 1e-3f) v_next = v - a_mag * dt_s;
-            if (v_next < STOP_MIN_SPEED_MMPS) v_next = STOP_MIN_SPEED_MMPS;
+            if (v_next < params.stop_min_mmps) v_next = params.stop_min_mmps;
         } else if (remain_mm <= (dist_to_50 + dist_50_to_0)) {
             // そろそろ 50mm/s まで落とすフェーズ
             if (a_mag > 1e-3f) v_next = v - a_mag * dt_s;
-            if (v_next < FINAL_APPROACH_SPEED_MMPS) v_next = FINAL_APPROACH_SPEED_MMPS;
+            if (v_next < params.final_appr_mmps) v_next = params.final_appr_mmps;
         } else {
             // まだ余裕がある: 今の速度維持（必要なら指定速度へ合わせる）
             // STOPの引数 speed_mmps は「巡航速度想定」なので、現在がそれ以下なら軽く合わせる
@@ -915,20 +901,20 @@ void updateStop(float dt_s) {
         // 値が取れないケースがあるため壁FBを使わない(STOPは前壁に
         // 向かって止まる用途が多い)
         const bool front_wall =
-            (sensors.get_lf() >= WALL_SENSOR_THRESHOLD) ||
-            (sensors.get_rf() >= WALL_SENSOR_THRESHOLD);
+            (sensors.get_lf() >= params.wall_threshold) ||
+            (sensors.get_rf() >= params.wall_threshold);
         float wall_tilt_rad = 0.0f;
-        if (!front_wall && remain_mm >= WALL_CORRECTION_CUT_OFF_DISTANCE) {
+        if (!front_wall && remain_mm >= params.wall_cutoff_mm) {
             wall_tilt_rad = calculate_wall_tilt_rad(sensors);
         }
 
         // 角度フィードバック: 現在角度と目標角度(壁補正の傾き込み)の差分
         const float angle_error = sensors.get_angle() - (stop_target_angle_rad - wall_tilt_rad);
-        const float angle_correction = ANGLE_FB_GAIN * angle_error;
+        const float angle_correction = params.angle_fb_gain * angle_error;
 
         // 角速度フィードバック: 角速度をゼロに保つ
         const float gyro_z = sensors.get_gyro_z();
-        const float rate_correction = ANGULAR_RATE_FB_GAIN * gyro_z;
+        const float rate_correction = params.rate_fb_gain * gyro_z;
 
         // 合計補正値
         const float lateral_correction = angle_correction + rate_correction;
@@ -970,7 +956,7 @@ void updateStopHold(float dt_s) {
     }
 
     stop_hold_elapsed_s += dt_s;
-    if (stop_hold_elapsed_s >= STOP_HOLD_SEC) {
+    if (stop_hold_elapsed_s >= params.stop_hold_sec) {
         stop_hold_active = false;
         target_vr_mps = 0.0f;
         target_vl_mps = 0.0f;
@@ -982,8 +968,8 @@ void updateStopHold(float dt_s) {
     // v=0のまま角度・角速度FBだけを継続し、慣性による回頭を打ち消して
     // 目標角度(STOP=直進の基準角、TURN=旋回目標角)へ戻す
     const float angle_error = sensors.get_angle() - stop_hold_target_angle_rad;
-    const float angle_correction = ANGLE_FB_GAIN * angle_error;
-    const float rate_correction = ANGULAR_RATE_FB_GAIN * sensors.get_gyro_z();
+    const float angle_correction = params.angle_fb_gain * angle_error;
+    const float rate_correction = params.rate_fb_gain * sensors.get_gyro_z();
     const float lateral_correction = angle_correction + rate_correction;
 
     target_vr_mps = 0.0f;
@@ -1000,8 +986,8 @@ void updateTurn(float dt_s) {
     // 整定確認フェーズ: 一旦停止して待ち、慣性で流れた分を再確認する
     if (turn_settling) {
         turn_settle_elapsed_s += dt_s;
-        if (turn_settle_elapsed_s < TURN_SETTLE_SEC) return;
-        if (fabsf(err) <= TURN_DONE_TOL_RAD || turn_retry_count >= TURN_MAX_RETRY) {
+        if (turn_settle_elapsed_s < params.turn_settle_s) return;
+        if (fabsf(err) <= params.turn_tol_rad || turn_retry_count >= params.turn_max_retry) {
             turn_active = false;
             turn_settling = false;
             // 旋回目標角を維持しつつ慣性を減衰させてからDONEを返す
@@ -1018,7 +1004,7 @@ void updateTurn(float dt_s) {
         return;
     }
 
-    if (fabsf(err) <= TURN_DONE_TOL_RAD) {
+    if (fabsf(err) <= params.turn_tol_rad) {
         turn_settling = true;
         turn_settle_elapsed_s = 0.0f;
         turn_speed_cmd_mps = 0.0f;
@@ -1033,10 +1019,10 @@ void updateTurn(float dt_s) {
         //    ブレーキ不足によるオーバーシュートを抑える
         //    (err = goal - now_ang なので d(err)/dt = -gyro_z)。
         //
-        // I・Dとも TURN_FINE_ENABLE_RAD 以下(最終アプローチ)でのみ有効化
+        // I・Dとも params.turn_fine_rad 以下(最終アプローチ)でのみ有効化
         // する条件付き制御にしている。理由: 巡航中(残角が大きい間)は
         // gzが6〜8rad/s程度まで達するため、D単独で
-        // TURN_KD_MPS_PER_RADPS×gz ≈ 0.4m/s もの制動項になり、Pがまだ
+        // params.turn_kd×gz ≈ 0.4m/s もの制動項になり、Pがまだ
         // 十分な速度を要求している最中でもcmdが最低速度まで落ちてしまう
         // (2026-07-22 実機ログで確認: 残角0.7rad=40°でもcmdが60まで低下)。
         // これが減速タイミングを乱し、無条件Dにしたところ180°旋回で
@@ -1044,29 +1030,29 @@ void updateTurn(float dt_s) {
         // 残角が小さい最終アプローチでのみDを効かせることで、巡航中は
         // Pだけの素直な減速プロファイルを保ちつつ、目標間際の
         // オーバーシュート抑制効果だけを残す狙い。
-        const bool turn_fine_phase = (fabsf(err) <= TURN_FINE_ENABLE_RAD);
+        const bool turn_fine_phase = (fabsf(err) <= params.turn_fine_rad);
         if (turn_fine_phase) {
             turn_integ += err * dt_s;
         }
         // アンチワインドアップ: 積分項単独で最大速度を超えないようクランプ
-        if (TURN_KI_MPS_PER_RAD_S > 0.0f) {
-            const float integ_max = TURN_MAX_SPEED_MPS / TURN_KI_MPS_PER_RAD_S;
+        if (params.turn_ki > 0.0f) {
+            const float integ_max = params.turn_max_mps / params.turn_ki;
             if (turn_integ > integ_max) turn_integ = integ_max;
             if (turn_integ < -integ_max) turn_integ = -integ_max;
         }
 
         const float gyro_z = sensors.get_gyro_z();
-        const float d_term = turn_fine_phase ? (-TURN_KD_MPS_PER_RADPS * gyro_z) : 0.0f;
-        const float pid_out = TURN_KP_MPS_PER_RAD * err
-                             + TURN_KI_MPS_PER_RAD_S * turn_integ
+        const float d_term = turn_fine_phase ? (-params.turn_kd * gyro_z) : 0.0f;
+        const float pid_out = params.turn_kp * err
+                             + params.turn_ki * turn_integ
                              + d_term;
 
         float v_target = fabsf(pid_out);
-        if (v_target > TURN_MAX_SPEED_MPS) v_target = TURN_MAX_SPEED_MPS;
-        if (v_target < TURN_MIN_SPEED_MPS) v_target = TURN_MIN_SPEED_MPS;
+        if (v_target > params.turn_max_mps) v_target = params.turn_max_mps;
+        if (v_target < params.turn_min_mps) v_target = params.turn_min_mps;
 
         // 加減速をなめらかにする（slew rate limit）
-        const float dv_max = TURN_ACCEL_MPS2 * dt_s;
+        const float dv_max = params.turn_accel * dt_s;
         turn_speed_cmd_mps = slew_rate_limit(turn_speed_cmd_mps, v_target, dv_max);
 
         const float target_rel = err; // 現在から見た残り角度
@@ -1121,7 +1107,7 @@ bool updateQstp(float dt_s) {
     }
 
     // 最大減速度で減速
-    const float decel_delta = QSTP_DECEL_MMPS2 * dt_s;
+    const float decel_delta = params.qstp_decel * dt_s;
     qstp_v_cmd_mmps -= decel_delta;
     if (qstp_v_cmd_mmps < 0.0f) {
         qstp_v_cmd_mmps = 0.0f;
@@ -1134,11 +1120,11 @@ bool updateQstp(float dt_s) {
 
     // 角度フィードバック: 現在角度と目標角度(壁補正の傾き込み)の差分
     const float angle_error = sensors.get_angle() - (qstp_target_angle_rad - wall_tilt_rad);
-    const float angle_correction = ANGLE_FB_GAIN * angle_error;
+    const float angle_correction = params.angle_fb_gain * angle_error;
 
     // 角速度フィードバック: 角速度をゼロに保つ
     const float gyro_z = sensors.get_gyro_z();
-    const float rate_correction = ANGULAR_RATE_FB_GAIN * gyro_z;
+    const float rate_correction = params.rate_fb_gain * gyro_z;
 
     // 最終速度計算: 車輪の速度差で補正
     const float vr = v_cmd_mps - angle_correction - rate_correction;
@@ -1248,6 +1234,10 @@ void setup() {
     fan.begin();
     servo.begin();
     ball_sensor.begin();
+
+    // 機体固有パラメータ: NVSに保存済みならそれを読み込む(無ければ
+    // params.cppのビルド時デフォルトのまま)
+    params_begin();
 
     // 起動時に赤色LEDを消灯
     led.red_off();
@@ -1397,6 +1387,56 @@ void loop() {
             } else {
                 Serial.printf("#Invalid BALL format\n");
             }
+        } else if (cmd == "PGET") {
+            // 全パラメータを列挙: PVAL,<name>,<value> を1行ずつ、
+            // 最後に PLISTEND
+            for (size_t i = 0; i < PARAM_COUNT; i++) {
+                float value = 0.0f;
+                params_get(PARAM_TABLE[i].name, value);
+                Serial.printf("PVAL,%s,%.6f\n", PARAM_TABLE[i].name, value);
+            }
+            Serial.printf("PLISTEND\n");
+        } else if (cmd.startsWith("PGET,")) {
+            // 単一パラメータ取得: PGET,<name>
+            String name = cmd.substring(5);
+            float value = 0.0f;
+            if (params_get(name.c_str(), value)) {
+                Serial.printf("PVAL,%s,%.6f\n", name.c_str(), value);
+            } else {
+                Serial.printf("#Unknown param: %s\n", name.c_str());
+            }
+        } else if (cmd.startsWith("PSET,")) {
+            // パラメータ即時変更(RAM上のみ): PSET,<name>,<value>
+            int comma1 = cmd.indexOf(',');
+            int comma2 = (comma1 >= 0) ? cmd.indexOf(',', comma1 + 1) : -1;
+            if (comma2 > 0) {
+                String name = cmd.substring(comma1 + 1, comma2);
+                float value = cmd.substring(comma2 + 1).toFloat();
+                if (params_set(name.c_str(), value)) {
+                    Serial.printf("#PSET %s=%.6f\n", name.c_str(), value);
+                } else {
+                    Serial.printf("#Unknown param: %s\n", name.c_str());
+                }
+            } else {
+                Serial.printf("#Invalid PSET format\n");
+            }
+        } else if (cmd == "PSAVE") {
+            // 現在のパラメータを丸ごとNVSへ保存(機体固有の恒久設定)
+            if (params_save()) {
+                Serial.printf("DONE\n");
+            } else {
+                Serial.printf("#PSAVE failed\n");
+            }
+        } else if (cmd == "PLOAD") {
+            // NVSから読み込みRAMへ反映(未保存の項目は現在値を維持)
+            if (!params_load()) {
+                Serial.printf("#PLOAD: no saved params\n");
+            }
+            Serial.printf("DONE\n");
+        } else if (cmd == "PRESET") {
+            // RAM上のパラメータをビルド時デフォルトへ戻す(NVSは変更しない)
+            params_reset_to_defaults();
+            Serial.printf("DONE\n");
         } else if (cmd.startsWith("FWD,")) {
             // FWD: FWD,<speed_mmps>,<accel_mmps2>,<distance_mm>
             int comma1 = cmd.indexOf(',');

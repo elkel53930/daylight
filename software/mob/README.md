@@ -101,6 +101,8 @@ PWM 周波数: 50Hz、パルス幅: 500–2500µs（0–180°）。
 | `fan.h/cpp` | 吸引ファン PWM ドライバ（LEDC、IO2） |
 | `servo.h/cpp` | RC サーボドライバ（MCPWM group 1、IO1） |
 | `ball_sensor.h/cpp` | ボールセンサドライバ（内蔵ADC、IO14） |
+| `motion_controller.h/cpp` | 車輪速度PID・旋回同期・フィードフォワード |
+| `params.h/cpp` | 機体固有チューニングパラメータ（NVS永続化、PGET/PSET等） |
 | `spi_manager.h/cpp` | IMU 用 HSPI バス管理 |
 | `Makefile` | ビルド / 書き込み / モニタ |
 
@@ -166,8 +168,34 @@ esp32:esp32`）が必要。ビルドサーバー側の `arduino-cli` が PATH �
 | `SRV,<0-180>` | サーボ角度設定（度） |
 | `SRVOFF` | サーボのトルクオフ（脱力） |
 | `BALL,<0-4095>` | ボールセンサしきい値設定 |
+| `PGET` | 全パラメータ一覧取得(`PVAL,<name>,<value>` を1行ずつ、最後に `PLISTEND`) |
+| `PGET,<name>` | 単一パラメータ取得(`PVAL,<name>,<value>`) |
+| `PSET,<name>,<value>` | パラメータ即時変更(RAM上のみ、NVSには保存しない) |
+| `PSAVE` | 現在のパラメータを丸ごとNVSへ保存(機体固有の恒久設定) |
+| `PLOAD` | NVSから読み込みRAMへ反映(起動時にも自動実行) |
+| `PRESET` | RAM上のパラメータをビルド時デフォルトへ戻す(NVSは変更しない) |
 | `SEN` | センサデータ一括取得 |
 | `STOP` | モーター・ファン停止 |
+
+### パラメータ(PGET/PSET/PSAVE/PLOAD/PRESET)
+
+旋回PID・壁センサ基準値など機体差の出やすいチューニング値は
+`params.h`/`params.cpp` の `Params` 構造体にまとめてあり、ビルドし直さず
+シリアル経由で調整・機体ごとに恒久保存できる。
+
+```
+PGET                        # 一覧
+PGET,angle_fb_gain          # 単一取得
+PSET,angle_fb_gain,0.5      # RAM上で即時変更(次のモーションから反映)
+PSAVE                       # 現在のRAM値をNVS(内蔵フラッシュ)へ保存
+PLOAD                       # NVSから再読込(起動時にも自動実行)
+PRESET                      # RAM値をビルド時デフォルトへ戻す(NVSは無変更)
+```
+
+パラメータはパラメータ名ごとに個別のNVSキーで保存されるため、将来
+`Params` にフィールドを追加/削除しても他の調整済み値には影響しない
+(新フィールドは保存キーが無いのでデフォルトのまま動く)。
+一覧・各パラメータの意味は `params.h` のコメント参照。
 
 ### SEN レスポンス形式
 
