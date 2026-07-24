@@ -52,10 +52,19 @@ MELODY_START = "ceg"
 MELODY_FINISH = "CCGG"
 MELODY_ERROR = "CcCc"
 
-# 固定テストパターン(壁センサFB確認用: 壁付きコリドーで3マス直進のみ。
-# 閉路パターンは git 履歴を参照)
+# 固定テストパターン(直進+旋回の閉路。開始位置・開始向きに戻る:
+# 旋回合計 -90+90+90+90+180 = +360度)
 PATTERN: List[Motion] = [
+    Motion(MotionType.STRAIGHT, 1),
+    Motion(MotionType.TURN_RIGHT),
+    Motion(MotionType.STRAIGHT, 1),
+    Motion(MotionType.TURN_LEFT),
+    Motion(MotionType.STRAIGHT, 2),
+    Motion(MotionType.TURN_LEFT),
+    Motion(MotionType.STRAIGHT, 1),
+    Motion(MotionType.TURN_LEFT),
     Motion(MotionType.STRAIGHT, 3),
+    Motion(MotionType.TURN_BACK),
 ]
 
 
