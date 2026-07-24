@@ -57,14 +57,21 @@ class FutabaServo:
         time.sleep(0.1)  # 安定化待ち
 
     def close(self) -> None:
-        """シリアルポートを閉じる"""
+        """トルクを切ってからシリアルポートを閉じる"""
         if self._serial is not None and self._serial.is_open:
+            try:
+                self.set_torque(False)
+            except Exception:
+                pass
             self._serial.close()
 
     def __enter__(self) -> "FutabaServo":
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.close()
+
+    def __del__(self) -> None:
         self.close()
 
     # ------------------------------------------------------------------
