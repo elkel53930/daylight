@@ -128,6 +128,31 @@ make clean-all
 
 ビルド成果物は `.build/` に保存され、変更ファイルのみ再コンパイルされます。
 
+### リモートビルド（任意）
+
+`make build`（`make upload` 経由も含む）は、リモートビルドサーバーが
+設定・到達可能ならそちらでコンパイルし、成果物だけを持ち帰る。未設定・
+到達不可・リモート側のビルド失敗（arduino-cli 未導入等）の場合は自動的に
+Raspberry Pi 上でのローカルビルドにフォールバックするため、設定しなくても
+今まで通り動く。設計の詳細は `/remote_build.md` を参照。
+
+有効にするには:
+
+```bash
+cp Makefile.local.example Makefile.local
+# Makefile.local を編集して BUILD_HOST を設定
+```
+
+`Makefile.local` は `.gitignore` 対象（ホスト名・ユーザー名を含むため）。
+ビルドサーバー側にも同じ FQBN の Arduino Core（`arduino-cli core install
+esp32:esp32`）が必要。ビルドサーバー側の `arduino-cli` が PATH に無い場合
+（SSH の非対話シェルでは `.bashrc` の PATH 追加が反映されないため）は
+`scripts/arduino-build.sh` 内のパスを実際の設置場所に合わせて修正する。
+
+⚠️ ローカルとリモートで Arduino Core のバージョンが異なると、生成される
+バイナリも変わりうる（実測: 3.3.10 と 3.3.11 でサイズが約1.4%異なった）。
+両ビルド環境のコアバージョンは揃えておくこと。
+
 ## シリアルコマンド（3,000,000 bps）
 
 コマンドはエンター（`\n`）で確定します。`\r\n` にも対応しています。
