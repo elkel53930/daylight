@@ -20,6 +20,7 @@ Twilight solve_maze_threaded.py の generate_action() の 90mm 定数を
 from __future__ import annotations
 
 import math
+from typing import Callable, Optional
 
 from config import MicromouseConfig
 from path_planner import Motion, MotionType
@@ -86,15 +87,26 @@ class CellRunner:
     def turn_back(self) -> None:
         self.base.turn(TURN_BACK_RAD)
 
-    def explore_action(self, action: str) -> None:
+    def explore_action(
+        self, action: str, *, on_stopped: Optional[Callable[[], None]] = None
+    ) -> None:
         """探索時の 1 アクション(判断点 → 次の判断点)。
 
         action: 'fwd' | 'left' | 'right' | 'back'
+
+        on_stopped: 'fwd' 以外(旋回を伴うアクション)で、stop_at_center()
+        により機体が実際に静止した直後・旋回前に呼ばれるコールバック。
+        'fwd' は FWD が距離到達で DONE を返しても停止しない(連続走行用)
+        ため、機体が確実に静止するのはこのタイミングだけであり、カメラ
+        撮影やジャイロ再キャリブレーションなど静止を要する処理は
+        ここでのみ安全に行える。
         """
         if action == "fwd":
             self.forward_one_cell()
             return
         self.stop_at_center()
+        if on_stopped is not None:
+            on_stopped()
         if action == "left":
             self.turn_left()
         elif action == "right":

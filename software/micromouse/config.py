@@ -49,6 +49,14 @@ class MicromouseConfig:
     sensor_retry: int = 3
     sensor_max_consecutive_failures: int = 5
 
+    # --- カメラによる位置補正(camera_correction.py) ---
+    # 前壁がある判断点で、前回の補正からこのセル数以上移動していたら
+    # カメラでヨー角・前進距離を補正し、ジャイロも再キャリブレーションする。
+    # 実機(MobileBase)でのみ有効(SimMobileBaseにはjog_turn等が無いため
+    # 自動的に無効になる、state_machine.py参照)。
+    camera_correction_enabled: bool = False
+    camera_correction_interval_cells: int = 10
+
     # --- その他 ---
     log_dir: str = str(Path(__file__).parent / "logs")
 

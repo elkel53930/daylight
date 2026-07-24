@@ -84,6 +84,16 @@ class MicromouseMission:
         self.step_count = 0
         self.error_message = ""
 
+        # カメラによる位置補正(camera_correction.py)。実機(MobileBase)
+        # にしか jog_turn 等が無いため、シミュレーションでは
+        # config.camera_correction_enabled が true でも自動的に無効になる。
+        self.camera_corrector = None
+        if config.camera_correction_enabled and hasattr(base, "jog_turn"):
+            from camera_correction import CameraCorrector
+
+            self.camera_corrector = CameraCorrector()
+        self.cells_since_camera_correction = 0
+
     # ---- 共通処理 ----
 
     def _set_state(self, state: MissionState, **info) -> None:
@@ -155,7 +165,7 @@ class MicromouseMission:
                 self._fail(f"exceeded max steps: {self.config.max_exploration_steps}")
 
             try:
-                self._observe_and_update()
+                _, obs = self._observe_and_update()
             except MobileBaseError:
                 consecutive_failures += 1
                 if consecutive_failures >= self.config.sensor_max_consecutive_failures:
@@ -179,8 +189,45 @@ class MicromouseMission:
             action = relative_action(self.pose.heading, heading)
             self._log(event="action", action=action, heading=heading.name)
 
-            self.runner.explore_action(action)
+            should_correct = (
+                self.camera_corrector is not None
+                and obs.front
+                and action != "fwd"
+                and self.cells_since_camera_correction
+                >= self.config.camera_correction_interval_cells
+            )
+            self.runner.explore_action(
+                action,
+                on_stopped=self._do_camera_correction if should_correct else None,
+            )
+            if should_correct:
+                self.cells_since_camera_correction = 0
+            else:
+                self.cells_since_camera_correction += 1
             self._advance_pose(heading)
+
+    def _do_camera_correction(self) -> None:
+        """判断点で静止した直後に呼ばれる: カメラでヨー角・前進距離を
+        補正し(信頼できる推定のみ、camera_correction.is_confident 参照)、
+        補正の成否によらずジャイロを再キャリブレーションする。
+
+        カメラ・GCALいずれも失敗しても探索は継続する(補助的な保守処理
+        のため、失敗をミッション全体の失敗にはしない)。
+        """
+        estimate = None
+        try:
+            estimate = self.camera_corrector.try_correct(self.base)
+        except Exception as e:
+            self._log(event="camera_correction_error", error=str(e))
+        self._log(
+            event="camera_correction",
+            applied=estimate is not None,
+            estimate=asdict(estimate) if estimate is not None else None,
+        )
+        try:
+            self.base.gyro_calibrate()
+        except Exception as e:
+            self._log(event="gyro_recalibrate_error", error=str(e))
 
     def _resume_from_center(
         self, goal_cells: List[Tuple[int, int]], *, is_start: bool = False
@@ -307,3 +354,5 @@ class MicromouseMission:
                 self.base.wall_led(False)
             except Exception:
                 pass
+            if self.camera_corrector is not None:
+                self.camera_corrector.close()

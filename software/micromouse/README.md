@@ -20,6 +20,7 @@ state_machine.py             ミッション状態機械 (探索→帰還→計�
     ├── path_planner.py      最短経路計算と走行命令列への変換
     ├── maze.py              迷路データ構造 (壁3状態・訪問・距離マップ)
     ├── wall_detector.py     センサ値→壁有無の判定 / SENパース
+    ├── camera_correction.py カメラによるヨー角・前進距離補正(前壁がある判断点でのみ)
     └── cell_runner.py       セル単位走行 (1セル直進・旋回)
             │
         mobile_base.py       mobシリアルドライバ (FWD/STOP/TURN/SEN...)
@@ -27,6 +28,13 @@ state_machine.py             ミッション状態機械 (探索→帰還→計�
             │
         /dev/ttyUSB0         mob (ESP32-S3) 3Mbps
 ```
+
+`camera_correction.py` は `vision.py`(壁上面の赤帯検出、`software/arm/
+futaba_servo.py` のFutabaサーボ・Picamera2を使用)の較正済みロジックを
+ラップしたもので、実機(`mobile_base.MobileBase`)にのみ`jog_turn`等が
+存在するため、シミュレーションでは自動的に無効になる(`config.py`の
+`camera_correction_enabled`をtrueにしていても)。較正の精度・既知の限界は
+`TODO.md`参照。
 
 依存方向は必ず「ハードウェア → センサ抽象 → 迷路アルゴリズム」。
 `maze.py` / `explorer.py` / `path_planner.py` はハードウェアに一切依存せず、
