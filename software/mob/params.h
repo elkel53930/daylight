@@ -43,6 +43,7 @@ struct Params {
     float latch_mps;
     float latch_turn_mps;
     float jog_mps;
+    float jog_turn_mps;
 
     // 急停止(mob.ino QSTP)
     float qstp_decel;

@@ -13,7 +13,9 @@
     python3 hw_test.py stop               # モータ停止(MOT,0,0)
     python3 hw_test.py camera-capture     # カメラで1枚撮影しlogs/camera/へ保存
     python3 hw_test.py camera-sweep       # 既知の角度・横位置ズレで自動走行しカメラ較正用画像セットを撮影
+    python3 hw_test.py camera-sweep-distance  # 既知の前進距離で自動走行し壁との距離較正用画像セットを撮影
     python3 hw_test.py camera-correct     # カメラで壁上面を撮影し、推定ヨー角でmobの角度を補正(暫定較正式、TODO.md参照)
+    python3 hw_test.py camera-straighten  # 推定ヨー角・距離オフセットぶん機体を物理的に動かしまっすぐ・基準距離に戻す(デモ用)
 """
 
 from __future__ import annotations
@@ -306,6 +308,93 @@ def cmd_camera_sweep(base: MobileBase, config: MicromouseConfig, args) -> None:
     print(f"done: {len(manifest)} images, manifest: {manifest_path}")
 
 
+# camera-sweep-distance: 較正用に撮影する、基準姿勢からの累積前進距離[mm]。
+# 角度は変えず前進方向にのみ動かす(camera-sweepの横位置ズレとは直交する軸)。
+# 壁までの実際の余裕距離が不明なため保守的に小さめの値にしてある。
+CAMERA_DIST_SWEEP_STEPS_MM = [0, 10, 20, 30]
+
+
+def cmd_camera_sweep_distance(base: MobileBase, config: MicromouseConfig, args) -> None:
+    """既知の前進距離のパターンで機体を動かし、壁との距離較正用の画像セットを撮影する。
+
+    実行前に機体をセル中心・直進方向(基準姿勢)に置いておくこと。角度・
+    横位置ズレは変えず、前進方向にのみ既知の距離だけ進めながら撮影する。
+    最後に180度旋回して合計移動距離ぶん戻り、元の位置・向きへ復帰する
+    (camera-sweepの横ズレ用90度旋回トリックと同じ考え方)。
+
+    カメラ・Futabaサーボの扱いは camera-capture と同じ(mob/ESP32とは
+    独立した経路)。撮影した画像とメタデータ(指令の累積距離、実測
+    オドメトリ)は logs/camera/calib_dist/ 以下に残す(較正用データセット
+    のため蓄積する方針)。
+    """
+    import json
+    import math
+
+    check_battery(base, config)
+    sys.path.insert(0, str(Path(__file__).parent.parent / "arm"))
+    from futaba_servo import FutabaServo
+    from picamera2 import Picamera2
+    from PIL import Image
+
+    speed = config.explore_speed_mmps
+    accel = config.explore_accel_mmps2
+
+    log_dir = Path(config.log_dir) / "camera" / "calib_dist"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    manifest = []
+
+    base.reset_distance()
+
+    with FutabaServo() as servo:
+        servo.set_torque(True)
+        servo.set_angle(0.0, move_time_ms=500)
+        time.sleep(0.8)  # サーボ静定待ち
+
+        cam = Picamera2()
+        still_config = cam.create_still_configuration(
+            main={"size": (args.width, args.height), "format": "RGB888"}
+        )
+        cam.configure(still_config)
+        cam.start()
+        time.sleep(1.0)  # 露出安定待ち
+
+        try:
+            prev_target_mm = 0
+            for target_mm in CAMERA_DIST_SWEEP_STEPS_MM:
+                increment_mm = target_mm - prev_target_mm
+                if increment_mm > 0:
+                    base.stop_at(speed, accel, increment_mm)
+                prev_target_mm = target_mm
+
+                time.sleep(0.3)  # 撮影姿勢での露出再安定待ち
+                array = cam.capture_array("main")
+                img = Image.fromarray(array[:, :, ::-1]).convert("RGB")
+                name = f"calib_dist_d{target_mm:+04d}.jpg"
+                img.save(log_dir / name, format="JPEG", quality=95)
+
+                frame = base.read_sensors()
+                entry = {
+                    "file": name,
+                    "target_mm": target_mm,
+                    "dist_mm_actual": frame.odo_dist_mm if frame is not None else None,
+                }
+                manifest.append(entry)
+                print(f"saved {name}: {entry}")
+
+            total_mm = prev_target_mm
+            if total_mm > 0:
+                base.turn(math.pi)
+                base.stop_at(speed, accel, total_mm)
+                base.turn(math.pi)
+        finally:
+            cam.stop()
+
+    manifest_path = log_dir / "manifest.json"
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, ensure_ascii=False, indent=2)
+    print(f"done: {len(manifest)} images, manifest: {manifest_path}")
+
+
 # 較正定数(2026-07-24、camera-sweepで撮った9点のみの経験的フィット)。
 # slope_deg = GAIN * yaw_deg + INTERCEPT_DEG の逆算に使う。
 # サンプル数が少なく、横位置ズレとの分離もできていない暫定値
@@ -320,11 +409,20 @@ CAMERA_YAW_SLOPE_INTERCEPT_DEG = 3.1225
 # 符号: 正=左(CCW)方向へのズレ。推定ヨー角に加算してから補正量を計算する。
 CAMERA_YAW_BIAS_DEG = 2.0
 
+# 較正定数(2026-07-24、camera-sweep-distanceで撮った4点のみの経験的フィット)。
+# row_at_center = GAIN_PX_PER_MM * dist_mm + INTERCEPT_PX の逆算に使う。
+# dist_mm は基準位置(reset_distance()した時点)からの前進距離。
+# サンプル数が少なく、ヨー角との分離もできていない暫定値
+# (TODO.md「micromouse: カメラ角度補正(vision.py)の較正精度」参照)。
+CAMERA_DIST_GAIN_PX_PER_MM = 11.599
+CAMERA_DIST_INTERCEPT_PX = 691.55
 
-def _estimate_yaw_deg(cam, args):
-    """Picamera2から1枚撮影し、赤帯検出→推定ヨー角(バイアス補正込み)を返す。
 
-    検出できなければ (None, None)。
+def _estimate_pose(cam, args):
+    """Picamera2から1枚撮影し、赤帯検出結果から推定ヨー角[deg]と推定距離
+    オフセット[mm](基準位置より壁に近いほど正)を返す。
+
+    検出できなければ (None, None, None)。
     """
     import math
 
@@ -339,10 +437,31 @@ def _estimate_yaw_deg(cam, args):
 
     edge = detect_red_band_top_edge(cropped)
     if edge is None:
-        return None, None
+        return None, None, None
+
     slope_deg = math.degrees(math.atan(edge.slope))
     yaw_deg = (slope_deg - CAMERA_YAW_SLOPE_INTERCEPT_DEG) / CAMERA_YAW_SLOPE_GAIN + CAMERA_YAW_BIAS_DEG
-    return yaw_deg, edge
+
+    cropped_width = cropped.shape[1]
+    row_at_center = edge.slope * (cropped_width / 2) + edge.intercept
+    dist_offset_mm = (row_at_center - CAMERA_DIST_INTERCEPT_PX) / CAMERA_DIST_GAIN_PX_PER_MM
+
+    return yaw_deg, dist_offset_mm, edge
+
+
+def _move_signed_mm(base: MobileBase, delta_mm: float) -> None:
+    """前進方向に符号付きの距離だけ、低速固定速度(JOGFWD/JOGBACK)で機体を
+    移動させる(正=前進、負=後退)。
+
+    以前はmobに後退コマンドが無いという前提で180度旋回→前進→180度旋回の
+    トリックを使っていたが、その2回の旋回自体が誤差(既に補正したはずの
+    ヨーが数度ズレて戻る)を持ち込んでいた(2026-07-24 実機で確認)。
+    JOGBACKを使えば旋回無しで直接後退でき、この問題が構造的に無くなる。
+    """
+    if delta_mm > 0:
+        base.jog_forward(delta_mm)
+    elif delta_mm < 0:
+        base.jog_backward(abs(delta_mm))
 
 
 def cmd_camera_correct(base: MobileBase, config: MicromouseConfig, args) -> None:
@@ -375,7 +494,7 @@ def cmd_camera_correct(base: MobileBase, config: MicromouseConfig, args) -> None
         cam.start()
         time.sleep(1.0)  # 露出安定待ち
         try:
-            yaw_deg, edge = _estimate_yaw_deg(cam, args)
+            yaw_deg, _dist_offset_mm, edge = _estimate_pose(cam, args)
         finally:
             cam.stop()
 
@@ -397,14 +516,29 @@ def cmd_camera_correct(base: MobileBase, config: MicromouseConfig, args) -> None
     print(f"補正後 odo_ang_rad = {frame_after.odo_ang_rad if frame_after is not None else None}")
 
 
+CAMERA_STRAIGHTEN_DEFAULT_ITERATIONS = 3
+
+
 def cmd_camera_straighten(base: MobileBase, config: MicromouseConfig, args) -> None:
-    """カメラで推定したヨー角ぶん機体を物理的に旋回させ、まっすぐに戻す。
+    """カメラで推定したヨー角・壁との距離ぶん機体を物理的に動かし、
+    まっすぐ・基準距離に戻す。これを複数回(既定3回)繰り返す。
 
     camera-correct は mob 内部の角度(SANG)を書き換えるだけで機体は
     動かさない(本来の使い方: 判断点でのオドメトリ補正)。こちらは
-    「実際にまっすぐに戻る」ことをその場で確認するためのデモ用に、
-    推定ヨー角の分だけ TURN で物理的に旋回し、補正前後で再撮影して
-    残差ヨー角を比較する。較正式は暫定(TODO.md参照)。
+    実際に姿勢が戻ることをその場で確認するためのデモ用に、まず推定
+    ヨー角の分だけ JOGTURN で低速旋回・角度を補正してから、その後の
+    推定距離オフセットの分だけ JOGFWD/JOGBACK で低速前後移動・距離を
+    補正する(角度がズレたままだと距離推定も乱れるため、角度→距離の
+    順で行う)。通常のTURN/STOPは速度が高くオーバーシュート・慣性が
+    残差の一因になっていたため、低速固定速度のJOG系コマンドに変更した
+    (2026-07-24)。
+
+    較正済み範囲(±10度程度)を大きく超えるズレでは1回の推定・補正が
+    不正確なことがある(2026-07-24 実機で確認: 残差145px相当の壊れた
+    推定から旋回した結果、大きく残留した例あり)が、旋回方向自体は
+    大きく間違っていない前提のもと、複数回繰り返すことで徐々に真値へ
+    収束することを期待する(過去の手動再実行での収束を踏まえた設計)。
+    較正式はどちらも暫定(TODO.md参照)。
     """
     import math
 
@@ -412,6 +546,8 @@ def cmd_camera_straighten(base: MobileBase, config: MicromouseConfig, args) -> N
     sys.path.insert(0, str(Path(__file__).parent.parent / "arm"))
     from futaba_servo import FutabaServo
     from picamera2 import Picamera2
+
+    n = args.iterations
 
     with FutabaServo() as servo:
         servo.set_torque(True)
@@ -426,30 +562,47 @@ def cmd_camera_straighten(base: MobileBase, config: MicromouseConfig, args) -> N
         cam.start()
         time.sleep(1.0)  # 露出安定待ち
 
+        last_yaw = last_dist = last_edge = None
         try:
-            yaw_before, edge_before = _estimate_yaw_deg(cam, args)
-            if yaw_before is None:
-                print("赤帯を検出できませんでした。補正は行いません。")
-                return
-            print(
-                f"補正前: 推定ヨー角={yaw_before:.2f}deg "
-                f"(slope={edge_before.slope:.4f}, resid={edge_before.residual_std:.2f}px)"
-            )
+            for i in range(n):
+                yaw, dist, edge = _estimate_pose(cam, args)
+                if yaw is None:
+                    print(f"[{i + 1}/{n}] 赤帯を検出できませんでした。ここで打ち切ります。")
+                    break
+                print(
+                    f"[{i + 1}/{n}] 補正前: 推定ヨー角={yaw:.2f}deg "
+                    f"推定距離オフセット={dist:.1f}mm (resid={edge.residual_std:.2f}px)"
+                )
 
-            base.turn(math.radians(-yaw_before))
-            base.correct_angle(0.0)  # ここを新しい基準(まっすぐ)とする
+                base.jog_turn(math.radians(-yaw))
+                base.correct_angle(0.0)  # ここを新しい基準(まっすぐ)とする
 
-            time.sleep(0.3)  # 露出再安定待ち
-            yaw_after, edge_after = _estimate_yaw_deg(cam, args)
+                time.sleep(0.3)  # 露出再安定待ち
+                yaw_mid, dist_mid, edge_mid = _estimate_pose(cam, args)
+                if dist_mid is None:
+                    print(f"[{i + 1}/{n}] 角度補正後、赤帯を検出できませんでした。距離補正は行いません。")
+                    last_yaw, last_dist, last_edge = yaw_mid, dist_mid, edge_mid
+                    continue
+
+                _move_signed_mm(base, -dist_mid)
+                base.reset_distance()  # ここを新しい基準距離とする
+
+                time.sleep(0.3)  # 露出再安定待ち
+                last_yaw, last_dist, last_edge = _estimate_pose(cam, args)
+                if last_yaw is not None:
+                    print(
+                        f"[{i + 1}/{n}] 補正後: 推定ヨー角={last_yaw:.2f}deg "
+                        f"推定距離オフセット={last_dist:.1f}mm (resid={last_edge.residual_std:.2f}px)"
+                    )
         finally:
             cam.stop()
 
-    if yaw_after is None:
-        print("補正後、赤帯を検出できませんでした。")
+    if last_yaw is None:
+        print("最終的に赤帯を検出できませんでした。")
         return
     print(
-        f"補正後: 推定ヨー角={yaw_after:.2f}deg "
-        f"(slope={edge_after.slope:.4f}, resid={edge_after.residual_std:.2f}px)"
+        f"最終結果: 推定ヨー角={last_yaw:.2f}deg 推定距離オフセット={last_dist:.1f}mm "
+        f"(resid={last_edge.residual_std:.2f}px)"
     )
 
 
@@ -475,12 +628,18 @@ def main() -> int:
     p_sweep = sub.add_parser("camera-sweep")
     p_sweep.add_argument("--width", type=int, default=2304)
     p_sweep.add_argument("--height", type=int, default=1296)
+    p_sweep_dist = sub.add_parser("camera-sweep-distance")
+    p_sweep_dist.add_argument("--width", type=int, default=2304)
+    p_sweep_dist.add_argument("--height", type=int, default=1296)
     p_correct = sub.add_parser("camera-correct")
     p_correct.add_argument("--width", type=int, default=2304)
     p_correct.add_argument("--height", type=int, default=1296)
     p_straighten = sub.add_parser("camera-straighten")
     p_straighten.add_argument("--width", type=int, default=2304)
     p_straighten.add_argument("--height", type=int, default=1296)
+    p_straighten.add_argument(
+        "--iterations", type=int, default=CAMERA_STRAIGHTEN_DEFAULT_ITERATIONS
+    )
 
     args = ap.parse_args()
     config = MicromouseConfig.load(args.config)
@@ -500,6 +659,7 @@ def main() -> int:
         "stop": cmd_stop,
         "camera-capture": cmd_camera_capture,
         "camera-sweep": cmd_camera_sweep,
+        "camera-sweep-distance": cmd_camera_sweep_distance,
         "camera-correct": cmd_camera_correct,
         "camera-straighten": cmd_camera_straighten,
     }

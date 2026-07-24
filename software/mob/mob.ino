@@ -21,8 +21,29 @@
 static float target_vr_mps = 0.0f;
 static float target_vl_mps = 0.0f;
 
+// Core0が今どのモーションを実行中か。以前は fwd_active/stop_active/...
+// という個別boolを8個以上持っていたが、これらは常に排他(同時に2つ以上
+// trueにならない)であるにもかかわらず、新しいモーションを開始する
+// ハンドラごとに「他の全フラグをfalseにする」処理を手で書く必要があり、
+// 書き漏れ(例: CMD_LATCH_START が jog_active をリセットしていなかった)
+// が起きやすかった(2026-07-24、JOG_TURN追加時に発見)。単一のenumに
+// することで、新しい状態に遷移する代入1回だけで「他の状態ではない」が
+// 構造的に保証される。
+enum class MotionState : uint8_t {
+    IDLE,
+    FWD,
+    STOP,
+    STOP_BACKOFF,
+    STOP_HOLD,
+    TURN,
+    LATCH,
+    JOG,
+    JOG_TURN,
+    QSTP,
+};
+static MotionState motion_state = MotionState::IDLE;
+
 // 前進コマンド（プロファイル走行）状態
-static bool fwd_active = false;
 static float fwd_v_cmd_mmps = 0.0f;     // 現在指令速度 [mm/s]
 static float fwd_v_target_mmps = 0.0f;  // 目標巡航速度 [mm/s]
 static float fwd_a_mmps2 = 0.0f;        // 加速度 [mm/s^2]（符号付き）
@@ -31,14 +52,12 @@ static float fwd_target_angle_rad = 0.0f; // 目標角度 [rad] （角度フィ�
 static float cumulative_goal_dist_mm = 0.0f; // 累積目標距離 [mm]（RDSTでリセット）
 
 // 停止コマンド（減速して停止する）状態
-static bool stop_active = false;
 static float stop_v_cmd_mmps = 0.0f;      // 現在指令速度 [mm/s]
 static float stop_a_mmps2 = 0.0f;         // 減速度 [mm/s^2]（負ではなく絶対値として扱う）
 static float stop_goal_dist_mm = 0.0f;    // 絶対目標距離 [mm]
 static float stop_target_angle_rad = 0.0f; // 目標角度 [rad] （角度フィードバック用）
 static float stop_cruise_mmps = 0.0f;     // STOP引数speed_mmps（巡航速度想定）[mm/s]
 static float stop_elapsed_s = 0.0f;       // STOP経過時間 [s]
-static bool stop_backoff_active = false;  // タイムアウト後の後退中か
 static float stop_backoff_target_dist_mm = 0.0f; // 後退完了目標距離 [mm]
 
 // STOPプロファイルのパラメータは params.final_appr_mmps/stop_min_mmps/
@@ -53,14 +72,13 @@ static float stop_backoff_target_dist_mm = 0.0f; // 後退完了目標距離 [mm
 // 慣性で回転中の角度を基準角として取り込んでしまうのを防ぐため
 // (実機の閉路走行で、旋回直後の直進だけ基準角が2〜5°汚染されていた)。
 // ホールド中に新しいモーションコマンドが来たら即解除する
-// (この場合DONEは送られない: QSTP等の中断経路のみが該当)。
-static bool stop_hold_active = false;
+// (この場合DONEは送られない: QSTP等の中断経路のみが該当。motion_stateが
+// 別の状態に変わるので、updateStopHoldは自然に呼ばれなくなる)。
 static float stop_hold_elapsed_s = 0.0f;
 static float stop_hold_target_angle_rad = 0.0f;
 // ホールド時間は params.stop_hold_sec(params.h)
 
 // 旋回コマンド（その場旋回）状態
-static bool turn_active = false;
 static float turn_goal_angle_rad = 0.0f;
 static float turn_speed_cmd_mps = 0.0f; // 指令速度（加減速制限後）
 static bool turn_settling = false;      // 整定確認フェーズ中
@@ -77,7 +95,6 @@ enum class LatchMode : uint8_t {
     TURN_R,
 };
 
-static bool latch_active = false;
 static LatchMode latch_mode = LatchMode::NONE;
 static float latch_turn_target_rad = 0.0f;
 
@@ -85,17 +102,20 @@ static float latch_turn_target_rad = 0.0f;
 static constexpr float LATCH_TURN_TARGET_RAD = 1000000.0f; // 低速連続旋回の仮想目標角(実装用の定数、機体差で調整するものではないためparams化しない)
 
 // JOGコマンド（距離指定低速動作）状態
-static bool jog_active = false;
 static bool jog_is_forward = true;  // true: 前進, false: 後退
 static float jog_target_dist_mm = 0.0f;
 static float jog_start_dist_mm = 0.0f;
 // 速度は params.jog_mps(params.h)
 
+// JOGTURNコマンド（角度指定低速旋回）状態
+static float jog_turn_target_rad = 0.0f;   // 相対目標角度(正=左)
+static float jog_turn_start_angle_rad = 0.0f;
+// 速度は params.jog_turn_mps(params.h)
+
 // ジャイロキャリブレーション状態
 static bool gyro_calib_done_pending = false;  // キャリブレーション完了時にDONEを返す
 
 // QSTPコマンド（クイック停止）状態
-static bool qstp_active = false;
 static float qstp_v_cmd_mmps = 0.0f;      // 現在指令速度 [mm/s]
 static float qstp_target_angle_rad = 0.0f; // 目標角度 [rad] （角度フィードバック用）
 static float qstp_original_goal_dist_mm = 0.0f; // 元の目標距離 [mm]（FWD/STOPの目標）
@@ -292,6 +312,7 @@ enum CommandID : uint8_t {
     CMD_QSTP = 0x0D,
     CMD_SET_DUTY_DIRECT = 0x0E,
     CMD_SET_ANGLE = 0x0F,
+    CMD_JOG_TURN_START = 0x10,
 };
 
 struct Command {
@@ -305,6 +326,7 @@ struct Command {
         JogCommand jog;
         SetDutyCommand set_duty;
         float set_angle_rad;
+        float jog_turn_rad;
     } parameter;
 };
 
@@ -364,6 +386,7 @@ void handleQstpCommand();
 void processCommandQueue();
 bool updateLatch(float dt_s);
 bool updateJog(float dt_s);
+bool updateJogTurn(float dt_s);
 void updateForward(float dt_s);
 void updateStop(float dt_s);
 void updateStopHold(float dt_s);
@@ -379,15 +402,8 @@ void handleSetMotorSpeedCommand(const SetMotorSpeedCommand& cmd) {
     const float vl = static_cast<float>(cmd.left_speed) / 1000.0f;
 
     // 手動MOTが来たらプロファイルは停止（競合回避）
-    fwd_active = false;
-    stop_active = false;
-    turn_active = false;
-    latch_active = false;
+    motion_state = MotionState::IDLE;
     latch_mode = LatchMode::NONE;
-    jog_active = false;
-    qstp_active = false;
-    stop_backoff_active = false;
-    stop_hold_active = false;
     stop_elapsed_s = 0.0f;
 
     target_vr_mps = vr;
@@ -397,15 +413,8 @@ void handleSetMotorSpeedCommand(const SetMotorSpeedCommand& cmd) {
 
 void handleSetDutyCommand(const SetDutyCommand& cmd) {
     // 手動DUTYが来たらプロファイルは停止（競合回避、MOTと同様）
-    fwd_active = false;
-    stop_active = false;
-    turn_active = false;
-    latch_active = false;
+    motion_state = MotionState::IDLE;
     latch_mode = LatchMode::NONE;
-    jog_active = false;
-    qstp_active = false;
-    stop_backoff_active = false;
-    stop_hold_active = false;
     stop_elapsed_s = 0.0f;
 
     motion.set_duty_direct(cmd.right_duty, cmd.left_duty);
@@ -414,15 +423,8 @@ void handleSetDutyCommand(const SetDutyCommand& cmd) {
 void handleForwardCommand(const ForwardCommand& cmd) {
     // FWD: 加速して指定速度へ、距離到達でDONE（停止しない）
     led.red_on();  // FWD開始時に赤色LED点灯
-    fwd_active = true;
-    stop_active = false;
-    turn_active = false;
-    latch_active = false;
+    motion_state = MotionState::FWD;
     latch_mode = LatchMode::NONE;
-    jog_active = false;
-    qstp_active = false;
-    stop_backoff_active = false;
-    stop_hold_active = false;
     stop_elapsed_s = 0.0f;
 
     fwd_v_target_mmps = cmd.speed_mmps;
@@ -456,14 +458,8 @@ void handleForwardCommand(const ForwardCommand& cmd) {
 
 void handleStopCommand(const StopCommand& cmd) {
     // STOP: 指定距離で停止（必要に応じて50mm/sまで減速して進入）
-    stop_active = true;
-    fwd_active = false;
-    turn_active = false;
-    latch_active = false;
+    motion_state = MotionState::STOP;
     latch_mode = LatchMode::NONE;
-    jog_active = false;
-    stop_backoff_active = false;
-    stop_hold_active = false;
     stop_elapsed_s = 0.0f;
     stop_backoff_target_dist_mm = 0.0f;
 
@@ -496,23 +492,16 @@ void handleQstpCommand() {
     
     // 元の目標距離を記録（FWDまたはSTOPが実行中の場合）
     qstp_original_goal_dist_mm = 0.0f;  // デフォルト値
-    if (fwd_active) {
+    if (motion_state == MotionState::FWD) {
         qstp_original_goal_dist_mm = fwd_goal_dist_mm;
-    } else if (stop_active) {
+    } else if (motion_state == MotionState::STOP) {
         qstp_original_goal_dist_mm = stop_goal_dist_mm;
     }
-    
-    qstp_active = true;
-    fwd_active = false;
-    stop_active = false;
-    turn_active = false;
-    latch_active = false;
+
+    motion_state = MotionState::QSTP;
     latch_mode = LatchMode::NONE;
-    jog_active = false;
-    stop_backoff_active = false;
-    stop_hold_active = false;
     stop_elapsed_s = 0.0f;
-    
+
     // 現在の指令速度を取得
     qstp_v_cmd_mmps = ((target_vr_mps + target_vl_mps) * 0.5f) * 1000.0f;
     if (qstp_v_cmd_mmps < 0.0f) {
@@ -529,17 +518,9 @@ void handleQstpCommand() {
 
 void handleTurnCommand(float target_rad) {
     // TURN: その場旋回（角度のみ）
-    turn_active = true;
-
     // 競合回避: ほかのプロファイルを停止
-    fwd_active = false;
-    stop_active = false;
-    latch_active = false;
+    motion_state = MotionState::TURN;
     latch_mode = LatchMode::NONE;
-    jog_active = false;
-    qstp_active = false;
-    stop_backoff_active = false;
-    stop_hold_active = false;
     stop_elapsed_s = 0.0f;
 
     // 角度制御の基準を確定
@@ -618,16 +599,10 @@ void processCommandQueue() {
                 break;
 
             case CMD_LATCH_START: {
-                latch_active = true;
+                // 競合回避: ほかのプロファイルを停止
+                motion_state = MotionState::LATCH;
                 latch_mode = static_cast<LatchMode>(q.parameter.latch.mode);
                 latch_turn_target_rad = 0.0f;
-
-                // 競合回避: ほかのプロファイルを停止
-                fwd_active = false;
-                stop_active = false;
-                turn_active = false;
-                qstp_active = false;
-                stop_backoff_active = false;
                 stop_elapsed_s = 0.0f;
 
                 if (latch_mode == LatchMode::TURN_L || latch_mode == LatchMode::TURN_R) {
@@ -640,29 +615,30 @@ void processCommandQueue() {
             }
 
             case CMD_LATCH_STOP:
-                latch_active = false;
+                motion_state = MotionState::IDLE;
                 latch_mode = LatchMode::NONE;
                 latch_turn_target_rad = 0.0f;
-                qstp_active = false;
                 target_vr_mps = 0.0f;
                 target_vl_mps = 0.0f;
                 motion.stop();
                 break;
 
             case CMD_JOG_START:
-                jog_active = true;
+                // 競合回避: ほかのプロファイルを停止
+                motion_state = MotionState::JOG;
+                latch_mode = LatchMode::NONE;
                 jog_is_forward = q.parameter.jog.is_forward;
                 jog_target_dist_mm = q.parameter.jog.distance_mm;
                 jog_start_dist_mm = sensors.get_distance();
+                stop_elapsed_s = 0.0f;
+                break;
 
+            case CMD_JOG_TURN_START:
                 // 競合回避: ほかのプロファイルを停止
-                fwd_active = false;
-                stop_active = false;
-                turn_active = false;
-                latch_active = false;
+                motion_state = MotionState::JOG_TURN;
                 latch_mode = LatchMode::NONE;
-                qstp_active = false;
-                stop_backoff_active = false;
+                jog_turn_target_rad = q.parameter.jog_turn_rad;
+                jog_turn_start_angle_rad = sensors.get_angle();
                 stop_elapsed_s = 0.0f;
                 break;
 
@@ -678,7 +654,7 @@ void processCommandQueue() {
 
 bool updateLatch(float dt_s) {
     (void)dt_s;
-    if (!latch_active) return false;
+    if (motion_state != MotionState::LATCH) return false;
 
     switch (latch_mode) {
         case LatchMode::FWD:
@@ -703,7 +679,7 @@ bool updateLatch(float dt_s) {
         }
 
         default:
-            latch_active = false;
+            motion_state = MotionState::IDLE;
             latch_mode = LatchMode::NONE;
             return false;
     }
@@ -711,7 +687,7 @@ bool updateLatch(float dt_s) {
 
 bool updateJog(float dt_s) {
     (void)dt_s;
-    if (!jog_active) return false;
+    if (motion_state != MotionState::JOG) return false;
 
     const float current_dist_mm = sensors.get_distance();
     const float traveled_mm = fabsf(current_dist_mm - jog_start_dist_mm);  // 絶対値を取る
@@ -719,7 +695,7 @@ bool updateJog(float dt_s) {
 
     // 目標距離到達判定（±2mm許容）
     if (remaining_mm <= 2.0f) {
-        jog_active = false;
+        motion_state = MotionState::IDLE;
         target_vr_mps = 0.0f;
         target_vl_mps = 0.0f;
         motion.stop();
@@ -741,14 +717,42 @@ bool updateJog(float dt_s) {
     return true;
 }
 
+bool updateJogTurn(float dt_s) {
+    (void)dt_s;
+    if (motion_state != MotionState::JOG_TURN) return false;
+
+    const float current_angle_rad = sensors.get_angle();
+    const float traveled_rad = fabsf(current_angle_rad - jog_turn_start_angle_rad);
+    const float target_abs_rad = fabsf(jog_turn_target_rad);
+    const float remaining_rad = target_abs_rad - traveled_rad;
+
+    // 目標角度到達判定（±0.02rad≈1.1度許容、JOGFWD/JOGBACKの±2mmと同じ考え方）
+    if (remaining_rad <= 0.02f) {
+        motion_state = MotionState::IDLE;
+        target_vr_mps = 0.0f;
+        target_vl_mps = 0.0f;
+        motion.stop();
+        enqueue_msg_line("DONE\n");
+        return true;
+    }
+
+    // 低速で旋回(turn_in_place経由でturn_sync同期フィードバックを効かせる)
+    const float s = params.jog_turn_mps;
+    motion.turn_in_place(s, jog_turn_target_rad);
+    target_vr_mps = (jog_turn_target_rad >= 0.0f) ? +s : -s;
+    target_vl_mps = (jog_turn_target_rad >= 0.0f) ? -s : +s;
+
+    return true;
+}
+
 void updateForward(float dt_s) {
-    if (!fwd_active) return;
+    if (motion_state != MotionState::FWD) return;
 
     const float now_dist = sensors.get_distance();
     const float remain_mm = fwd_goal_dist_mm - now_dist;
 
     if (remain_mm <= 0.0f) {
-        fwd_active = false;
+        motion_state = MotionState::IDLE;
         led.red_off();  // FWD完了時に赤色LED消灯
         enqueue_msg_line("DONE\n");
     } else {
@@ -815,14 +819,13 @@ void updateForward(float dt_s) {
 }
 
 void updateStop(float dt_s) {
-    if (stop_backoff_active) {
+    if (motion_state == MotionState::STOP_BACKOFF) {
         const float now_dist = sensors.get_distance();
         if (now_dist <= stop_backoff_target_dist_mm) {
-            stop_backoff_active = false;
             target_vr_mps = 0.0f;
             target_vl_mps = 0.0f;
             motion.stop();
-            stop_hold_active = true;
+            motion_state = MotionState::STOP_HOLD;
             stop_hold_elapsed_s = 0.0f;
             stop_hold_target_angle_rad = stop_target_angle_rad;
             // DONEはホールド完了後(updateStopHold)に送る
@@ -834,16 +837,15 @@ void updateStop(float dt_s) {
         return;
     }
 
-    if (!stop_active) return;
+    if (motion_state != MotionState::STOP) return;
 
     stop_elapsed_s += dt_s;
     if (stop_elapsed_s >= params.stop_timeout_s) {
-        stop_active = false;
         stop_v_cmd_mmps = 0.0f;
         target_vr_mps = 0.0f;
         target_vl_mps = 0.0f;
         motion.stop();
-        stop_backoff_active = true;
+        motion_state = MotionState::STOP_BACKOFF;
         stop_backoff_target_dist_mm = sensors.get_distance() - params.backoff_dist_mm;
         return;
     }
@@ -853,14 +855,12 @@ void updateStop(float dt_s) {
 
     // 目標距離に到達したら、まず停止指令を出し、次のループでDONEを返す
     if (remain_mm <= 0.0f) {
-        stop_active = false;
         stop_v_cmd_mmps = 0.0f;
         target_vr_mps = 0.0f;
         target_vl_mps = 0.0f;
         motion.stop();
         stop_elapsed_s = 0.0f;
-        stop_backoff_active = false;
-        stop_hold_active = true;
+        motion_state = MotionState::STOP_HOLD;
         stop_hold_elapsed_s = 0.0f;
         stop_hold_target_angle_rad = stop_target_angle_rad;
         // DONEはホールド完了後(updateStopHold)に送る
@@ -959,16 +959,15 @@ void updateStop(float dt_s) {
 }
 
 void updateStopHold(float dt_s) {
-    if (!stop_hold_active) return;
-    // 他のモーションが動き出していたら何もしない(ハンドラ側でも解除するが念のため)
-    if (fwd_active || stop_active || stop_backoff_active || turn_active || qstp_active) {
-        stop_hold_active = false;
-        return;
-    }
+    if (motion_state != MotionState::STOP_HOLD) return;
+    // 他のモーションコマンドが来ればハンドラ側でmotion_stateが別の値に
+    // 変わるため、ここに来た時点で常にホールド中で確定している
+    // (旧実装ではフラグ書き忘れに備えて他フラグの防御チェックが
+    // 必要だったが、単一状態変数化により構造的に不要になった)。
 
     stop_hold_elapsed_s += dt_s;
     if (stop_hold_elapsed_s >= params.stop_hold_sec) {
-        stop_hold_active = false;
+        motion_state = MotionState::IDLE;
         target_vr_mps = 0.0f;
         target_vl_mps = 0.0f;
         motion.stop();
@@ -989,7 +988,7 @@ void updateStopHold(float dt_s) {
 }
 
 void updateTurn(float dt_s) {
-    if (!turn_active) return;
+    if (motion_state != MotionState::TURN) return;
 
     const float now_ang = sensors.get_angle();
     const float err = turn_goal_angle_rad - now_ang;   // +: 左回り目標が残っている
@@ -999,11 +998,10 @@ void updateTurn(float dt_s) {
         turn_settle_elapsed_s += dt_s;
         if (turn_settle_elapsed_s < params.turn_settle_s) return;
         if (fabsf(err) <= params.turn_tol_rad || turn_retry_count >= params.turn_max_retry) {
-            turn_active = false;
             turn_settling = false;
             // 旋回目標角を維持しつつ慣性を減衰させてからDONEを返す
             // (リトライ上限で残った誤差もホールド中のFBで引き戻される)
-            stop_hold_active = true;
+            motion_state = MotionState::STOP_HOLD;
             stop_hold_elapsed_s = 0.0f;
             stop_hold_target_angle_rad = turn_goal_angle_rad;
         } else {
@@ -1094,11 +1092,11 @@ void updateTurn(float dt_s) {
 }
 
 bool updateQstp(float dt_s) {
-    if (!qstp_active) return false;
+    if (motion_state != MotionState::QSTP) return false;
 
     // 現在速度が十分低ければ停止完了
     if (qstp_v_cmd_mmps <= 5.0f) {
-        qstp_active = false;
+        motion_state = MotionState::IDLE;
         target_vr_mps = 0.0f;
         target_vl_mps = 0.0f;
         motion.stop();
@@ -1198,15 +1196,18 @@ void Core0RealtimeTask(void* parameter) {
 
         const float dt_s = static_cast<float>(time_delta) / 1000.0f;
 
-        // 各モーション状態の更新
-        if (!updateLatch(dt_s) && !updateJog(dt_s)) {
-            if (!updateQstp(dt_s)) {
-                updateForward(dt_s);
-                updateStop(dt_s);
-                updateTurn(dt_s);
-                updateStopHold(dt_s);
-            }
-        }
+        // 各モーション状態の更新。motion_stateが単一の排他状態のため、
+        // 各update*は自分の状態でなければ何もせず即returnする
+        // (以前はLatch/Jog/JogTurn/Qstpとその他が競合しないようネストした
+        // if文で手動排他していたが、単一状態変数化で不要になった)。
+        updateLatch(dt_s);
+        updateJog(dt_s);
+        updateJogTurn(dt_s);
+        updateQstp(dt_s);
+        updateForward(dt_s);
+        updateStop(dt_s);
+        updateTurn(dt_s);
+        updateStopHold(dt_s);
 
         // ジャイロキャリブレーション完了チェック
         if (gyro_calib_done_pending && !sensors.is_calibrating()) {
@@ -1592,6 +1593,22 @@ void loop() {
                 }
             } else {
                 Serial.printf("#Invalid JOGBACK format\n");
+            }
+        } else if (cmd.startsWith("JOGTURN,")) {
+            // JOGTURN: 低速で指定相対角度まで旋回 JOGTURN,<angle_rad>（正=左）
+            int comma1 = cmd.indexOf(',');
+            if (comma1 > 0) {
+                Command q;
+                q.cmd_id = CMD_JOG_TURN_START;
+                q.parameter.jog_turn_rad = cmd.substring(comma1 + 1).toFloat();
+
+                if (xQueueSend(cmd_queue, &q, pdMS_TO_TICKS(10)) == pdTRUE) {
+                    Serial.printf("#JOGTURN angle=%.4frad\n", q.parameter.jog_turn_rad);
+                } else {
+                    Serial.printf("#Queue full!\n");
+                }
+            } else {
+                Serial.printf("#Invalid JOGTURN format\n");
             }
         } else if (cmd == "RDST") {
             // 距離リセット（オドメトリ）

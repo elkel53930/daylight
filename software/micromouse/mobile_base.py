@@ -129,6 +129,18 @@ class MobileBase:
         """その場旋回。正: 左(CCW)。"""
         self._command_and_wait_done(f"TURN,{angle_rad:.6f}\n")
 
+    def jog_forward(self, distance_mm: float) -> None:
+        """低速固定速度(params.jog_mps)で指定距離前進。加減速なし。"""
+        self._command_and_wait_done(f"JOGFWD,{distance_mm:.1f}\n")
+
+    def jog_backward(self, distance_mm: float) -> None:
+        """低速固定速度(params.jog_mps)で指定距離後退。加減速なし。"""
+        self._command_and_wait_done(f"JOGBACK,{distance_mm:.1f}\n")
+
+    def jog_turn(self, angle_rad: float) -> None:
+        """低速固定速度(params.jog_turn_mps)でその場旋回。正: 左(CCW)。"""
+        self._command_and_wait_done(f"JOGTURN,{angle_rad:.6f}\n")
+
     def quick_stop(self) -> float:
         """最大減速度で停止し、元目標までの残距離 [mm] を返す。"""
         self._send("QSTP\n")

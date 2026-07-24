@@ -31,6 +31,7 @@ const Params kDefaultParams = {
     .latch_mps = 0.05f,
     .latch_turn_mps = 0.06f,
     .jog_mps = 0.05f,
+    .jog_turn_mps = 0.04f,
 
     // 急停止
     .qstp_decel = 1000.0f,
@@ -85,6 +86,7 @@ const ParamDef PARAM_TABLE[] = {
     {"latch_mps", offsetof(Params, latch_mps)},
     {"latch_turn_mps", offsetof(Params, latch_turn_mps)},
     {"jog_mps", offsetof(Params, jog_mps)},
+    {"jog_turn_mps", offsetof(Params, jog_turn_mps)},
 
     {"qstp_decel", offsetof(Params, qstp_decel)},
 

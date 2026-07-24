@@ -174,7 +174,9 @@ $V $M turn back           # 180度旋回
 $V $M cycle               # 探索1サイクル(半セル→判断→半セル)
 $V $M camera-capture      # カメラ角度補正の実機データ収集(1枚撮影しlogs/camera/latest.jpgへ上書き保存)
 $V $M camera-sweep        # 既知の角度(±10度)・横位置ズレ(±25mm)で自動走行しながら較正用画像セットを撮影(logs/camera/calib/)
+$V $M camera-sweep-distance  # 既知の前進距離(0/10/20/30mm)で自動走行しながら壁との距離較正用画像セットを撮影(logs/camera/calib_dist/)
 $V $M camera-correct      # 壁上面の赤帯を撮影し、推定ヨー角でmobの角度(SANG)を補正(暫定較正式、TODO.md参照)
+$V $M camera-straighten   # 推定ヨー角・距離オフセットぶん機体を物理的に動かしまっすぐ・基準距離に戻す(デモ用)
 ```
 
 ### 固定走行パターンテスト (pattern_test.py)
