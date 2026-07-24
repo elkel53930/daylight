@@ -46,14 +46,21 @@ software/
 
 ## mob シリアルプロトコルの落とし穴
 
-- 現行 `mob.ino` の SEN 応答は **11 フィールド**:
-  `SEN,gyro[rad/s],vbatt[V],lf,ls,rs,rf,enc_r,enc_l,odo_dist[mm],odo_ang[rad]`
-  — `software/mob/README.md` の SEN 記述は古い(9フィールド)ので注意。
+- 現行 `mob.ino` の SEN 応答は **12 フィールド**(2026-07-24〜、ボールセンサ拡張):
+  `SEN,gyro[rad/s],vbatt[V],lf,ls,rs,rf,enc_r,enc_l,odo_dist[mm],odo_ang[rad],ball_raw,ball_det`
+  (`software/mob/README.md` の SEN 記述と一致)。
 - **引数なし `STOP` コマンドは存在しない**(`STOP,<v>,<a>,<d>` のみ)。
   無条件のモータ停止は `MOT,0,0`、減速停止は `QSTP`(`QSTPDONE,<残距離>` が返る)。
 - `FWD` は距離到達で DONE を返すが**停止しない**(連続走行用)。停止するのは `STOP`。
+- `STOP`/`TURN` の DONE は「動作完了かつ整定済み」(2026-07-24〜)。完了後
+  0.5 秒の角度維持ホールド(v=0+角度FB)を済ませてから DONE が返るため、
+  DONE 待ちに従来より最大+0.5秒かかる。DONE のタイミングを早める変更は
+  慣性回転中の角度を次コマンドが基準角として取り込む問題を再発させるので不可。
 - `WALL,<0|1>`(壁センサ LED)には DONE 応答が**ない**。
 - `GCAL`/`RDST`/`RANG` は DONE を返す。TURN は正=左回り(CCW)、単位 rad。
+- `make upload` 直後の初回シリアル接続は SEN 応答を取りこぼしやすい
+  (ポートオープン時の ESP32 自動リセットとの競合)。`sensor read failed` で
+  落ちたら再実行すればよい。
 - ⚠️ 2026-07-17 時点、**実機の ESP32 には旧ファーム**(SEN 7フィールド、
   FWD/STOP/TURN 非対応)が入っていた。走行系の作業前に
   `cd software/mob && make upload PORT=/dev/ttyUSB0` で要更新。
@@ -98,8 +105,10 @@ software/
 
 ## micromouse の設計要点(software/micromouse/)
 
-- **実装一式は `micromouse_hw_test` ブランチにあり、master には未マージ**
-  (2026-07-18 時点)。master 上に `software/micromouse/` は存在しない。
+- 実装一式は **2026-07-24 に master へマージ済み**(7416797、fast-forward)。
+  走行チューニングも同日完了: 閉路パターン(8マス+旋回5回)で物理ずれ
+  2mm・1°、壁センサFB有効(比例方式、左25mmずれを1.8マスで回収)。
+  経緯は c816154/b94f658/cd86ad1/dc23386/7416797 のコミットメッセージ参照。
 - 依存方向は「ハードウェア → センサ抽象 → 迷路アルゴリズム」。
   `maze.py`/`explorer.py`/`path_planner.py` は純 Python でハード非依存。
   `simulator.py` は `mobile_base.py` と同一インターフェース(ダックタイピング)。
