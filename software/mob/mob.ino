@@ -291,6 +291,7 @@ enum CommandID : uint8_t {
     CMD_JOG_START = 0x0C,
     CMD_QSTP = 0x0D,
     CMD_SET_DUTY_DIRECT = 0x0E,
+    CMD_SET_ANGLE = 0x0F,
 };
 
 struct Command {
@@ -303,6 +304,7 @@ struct Command {
         LatchCommand latch;
         JogCommand jog;
         SetDutyCommand set_duty;
+        float set_angle_rad;
     } parameter;
 };
 
@@ -584,6 +586,15 @@ void processCommandQueue() {
             case CMD_RESET_ANGLE:
                 sensors.reset_angle();
                 enqueue_msg_line("#angle reset\n");
+                enqueue_msg_line("DONE\n");
+                break;
+
+            case CMD_SET_ANGLE:
+                // カメラ補正等、外部の絶対基準で角度を上書きする。
+                // RANG/RDST同様、セグメント間の停止中にのみ呼ぶこと
+                // (走行中の制御ループが参照する目標角には触れない)。
+                sensors.set_angle(q.parameter.set_angle_rad);
+                enqueue_msg_line("#angle set\n");
                 enqueue_msg_line("DONE\n");
                 break;
 
@@ -1599,6 +1610,22 @@ void loop() {
                 Serial.printf("#RANG\n");
             } else {
                 Serial.printf("#Queue full!\n");
+            }
+        } else if (cmd.startsWith("SANG,")) {
+            // 角度上書き（外部の絶対基準での補正用）: SANG,<angle_rad>
+            int comma1 = cmd.indexOf(',');
+            if (comma1 > 0) {
+                Command q;
+                q.cmd_id = CMD_SET_ANGLE;
+                q.parameter.set_angle_rad = cmd.substring(comma1 + 1).toFloat();
+
+                if (xQueueSend(cmd_queue, &q, pdMS_TO_TICKS(10)) == pdTRUE) {
+                    Serial.printf("#SANG angle=%.4frad\n", q.parameter.set_angle_rad);
+                } else {
+                    Serial.printf("#Queue full!\n");
+                }
+            } else {
+                Serial.printf("#Invalid SANG format\n");
             }
         } else if (cmd == "GCAL") {
             // ジャイロキャリブレーション

@@ -137,6 +137,10 @@ void Sensors::reset_angle() {
     angle_.store(0.0f, std::memory_order_relaxed);
 }
 
+void Sensors::set_angle(float rad) {
+    angle_.store(rad, std::memory_order_relaxed);
+}
+
 void Sensors::calibrate_gyro() {
     calibrating_.store(true, std::memory_order_relaxed);
     calib_count_ = 0;

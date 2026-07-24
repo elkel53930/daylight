@@ -172,6 +172,9 @@ $V $M turn left           # 90度左旋回
 $V $M turn right          # 90度右旋回
 $V $M turn back           # 180度旋回
 $V $M cycle               # 探索1サイクル(半セル→判断→半セル)
+$V $M camera-capture      # カメラ角度補正の実機データ収集(1枚撮影しlogs/camera/latest.jpgへ上書き保存)
+$V $M camera-sweep        # 既知の角度(±10度)・横位置ズレ(±25mm)で自動走行しながら較正用画像セットを撮影(logs/camera/calib/)
+$V $M camera-correct      # 壁上面の赤帯を撮影し、推定ヨー角でmobの角度(SANG)を補正(暫定較正式、TODO.md参照)
 ```
 
 ### 固定走行パターンテスト (pattern_test.py)

@@ -29,7 +29,8 @@ public:
     float get_distance() const;              // 移動距離（mm）
     float get_angle() const;                 // 姿勢角度（rad）
     void reset_distance();                   // 距離リセット
-    void reset_angle();                      // 角度リセット
+    void reset_angle();                      // 角度リセット(0にする)
+    void set_angle(float rad);               // 角度を任意の値に上書き(カメラ補正等、外部の絶対基準での補正用)
     
     // ジャイロキャリブレーション
     void calibrate_gyro();                   // ジャイロオフセットを計算（100回 サンプル平均）

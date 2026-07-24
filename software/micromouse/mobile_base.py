@@ -171,6 +171,15 @@ class MobileBase:
     def reset_angle(self) -> None:
         self._command_and_wait_done("RANG\n", timeout_s=3.0)
 
+    def correct_angle(self, angle_rad: float) -> None:
+        """外部の絶対基準(カメラ補正等)で角度を上書きする。
+
+        RANG/RDST同様、セグメント間の停止中にのみ呼ぶこと(走行中の
+        制御ループが参照する目標角には触れないため安全だが、動作中に
+        呼ぶと基準角が汚染される)。
+        """
+        self._command_and_wait_done(f"SANG,{angle_rad:.6f}\n", timeout_s=3.0)
+
     def wall_led(self, enabled: bool) -> None:
         """壁センサ LED の有効化。応答が無いコマンドなので送りっぱなし。"""
         self._send(f"WALL,{1 if enabled else 0}\n")
