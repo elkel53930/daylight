@@ -37,8 +37,12 @@ from state_machine import MicromouseMission, MissionState
 # ui_client は software/ui にある(リポジトリレイアウトで自動解決)
 sys.path.insert(0, str(Path(__file__).parent.parent / "ui"))
 
-MELODY_START = "ceg"
-MELODY_GOAL = "gCEG"
+# メロディ文字列: 1文字=1音(150ms)。小文字c〜b=低オクターブ、
+# 大文字C〜B=高オクターブ、それ以外の文字(_ 等)は休符(software/ui/
+# ui_server.py の NOTE_FREQ / _play_melody 参照)。
+MELODY_START = "ceg"      # スタート前(Rボタン押下後・走行開始前)
+MELODY_GOAL = "g_gC__D_EC__a_gC__C__C"  # ゴール到達時
+MELODY_PATH_READY = "gCEG"  # 最短経路計画が完成し最短走行の承認を求めるとき
 MELODY_FINISH = "CCGG"
 MELODY_ERROR = "CcCc"
 
@@ -168,7 +172,7 @@ class OledUI:
         return self._wait_button() == "right"
 
     def confirm_speed_run(self) -> bool:
-        self._play(MELODY_GOAL)
+        self._play(MELODY_PATH_READY)
         self._draw(["PATH READY", "", "R: Speed run", "L: Skip"])
         ok = self._wait_button() == "right"
         self._abort_latched = False  # 承認待ちの L は中断ではない
@@ -201,8 +205,13 @@ class OledUI:
                 batt,
             ]
         )
-        if state == MissionState.EXPLORATION and mission.step_count == 0:
+        if state == MissionState.CALIBRATION:
+            # スタート前: Rボタン押下直後・キャリブレーション(静止)中に鳴らす。
+            # キャリブレーション〜最初の観測が済むまで機体は動かないため、
+            # メロディが「これから走り出す」合図になる。
             self._play(MELODY_START)
+        elif state == MissionState.GOAL_REACHED:
+            self._play(MELODY_GOAL)
         elif state == MissionState.FINISHED:
             self._play(MELODY_FINISH)
         elif state in (MissionState.ERROR, MissionState.EMERGENCY_STOP):

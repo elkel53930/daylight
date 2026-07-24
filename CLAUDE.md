@@ -138,7 +138,15 @@ software/
 
 - コミットメッセージは `<dir>: <日本語の要約>` 形式(git log 参照)。
 - `default_app` へのアプリ追加はコード変更不要
-  (`/etc/robot-ui/applications.yaml` に追記。実機にはまだこのファイルが無い)。
+  (`/etc/robot-ui/applications.yaml` に追記。default_ui.py がメニューの
+  「Applications」選択のたびに読み直すのでサービス再起動も不要)。実機の
+  同ファイルは root 所有で、リポジトリ作業ツリーを直接参照する形式
+  (`software/venv/bin/python3` で `software/micromouse/micromouse_app.py` 等を
+  起動)。2026-07-24 に Micromouse / Pattern Test を登録済み。YAML の
+  `priority` フィールドは子プロセスへ渡らず装飾的(所有権は default_ui が
+  子起動時に自ら disconnect して解放し、子アプリが自前の priority で
+  ui_server に接続する)。リポジトリ側 `config/applications.yaml.example` は
+  /opt デプロイ時の理想形の例。
 - Discord Webhook 設定は 環境変数 `DISCORD_WEBHOOK_URL` → `beacon/.env` →
   `beacon/config.json` の優先順(camera/default_app/beacon で共通)。
   投稿処理を書くときは `beacon/discord_ip.py` の `load_webhook_url()` を
