@@ -29,6 +29,12 @@ applications:
       - /opt/robot/apps/camera/camera_test.py
     priority: 20
 
+  - name: Manual Control
+    command:
+      - python3
+      - /opt/robot/apps/manual_controller/remote_server.py
+    priority: 20
+
   - name: Maze
     command:
       - python3

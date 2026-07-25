@@ -1,0 +1,58 @@
+"""PC 側: pygame のジョイスティック入力を protocol.py のボタン名に変換する。
+
+pygame 自体には依存しない(値の変換ロジックのみ)ので、PC 実機が無くても
+ユニットテストできる。DualSense を pygame で開いた場合の実測マッピング
+(software/manual_controller/dualsense_test.py で確認済み)を使う。
+"""
+
+from __future__ import annotations
+
+from typing import List, Tuple
+
+import protocol as proto
+
+# pygame の JOYBUTTONDOWN/UP の event.button → protocol のボタン名
+# (dualsense_test.py の BUTTON_NAMES と同じ実測マッピング)
+BUTTON_INDEX_TO_NAME = {
+    0: proto.CROSS,
+    1: proto.CIRCLE,
+    2: proto.SQUARE,
+    3: proto.TRIANGLE,
+    4: proto.L1,
+    5: proto.R1,
+}
+
+HatValue = Tuple[int, int]
+
+
+def hat_to_events(prev: HatValue, cur: HatValue) -> List[Tuple[str, str]]:
+    """十字キー(pygame の hat 値、(x,y))の変化をボタンイベント列に変換する。
+
+    x: -1=左, +1=右, 0=どちらも解放。y: +1=上, -1=下, 0=どちらも解放。
+    斜め入力(例: (1,1))は上下それぞれのイベントを個別に発行する。
+    """
+    events: List[Tuple[str, str]] = []
+    prev_x, prev_y = prev
+    cur_x, cur_y = cur
+
+    if prev_x != cur_x:
+        if prev_x == -1:
+            events.append((proto.DPAD_LEFT, proto.ACTION_UP))
+        elif prev_x == 1:
+            events.append((proto.DPAD_RIGHT, proto.ACTION_UP))
+        if cur_x == -1:
+            events.append((proto.DPAD_LEFT, proto.ACTION_DOWN))
+        elif cur_x == 1:
+            events.append((proto.DPAD_RIGHT, proto.ACTION_DOWN))
+
+    if prev_y != cur_y:
+        if prev_y == 1:
+            events.append((proto.DPAD_UP, proto.ACTION_UP))
+        elif prev_y == -1:
+            events.append((proto.DPAD_DOWN, proto.ACTION_UP))
+        if cur_y == 1:
+            events.append((proto.DPAD_UP, proto.ACTION_DOWN))
+        elif cur_y == -1:
+            events.append((proto.DPAD_DOWN, proto.ACTION_DOWN))
+
+    return events

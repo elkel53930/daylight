@@ -1,0 +1,10 @@
+# manual_controller/ の依存(2つの別マシンにまたがるので分けて記載)。
+#
+# 機体側(ラズパイ、remote_server.py): software/venv を使う。
+#   software/venv/bin/pip install -r software/requirements.txt
+#   (zeroconf は software/requirements.txt に含まれている)
+#
+# 操縦PC側(Ubuntu、remote_client.py / dualsense_test.py): このリポジトリの
+# venv とは別環境(通常は同一ネットワーク上の別PC)。
+pygame
+zeroconf

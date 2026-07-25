@@ -57,6 +57,11 @@ software/
   DONE 待ちに従来より最大+0.5秒かかる。DONE のタイミングを早める変更は
   慣性回転中の角度を次コマンドが基準角として取り込む問題を再発させるので不可。
 - `WALL,<0|1>`(壁センサ LED)には DONE 応答が**ない**。
+- `LFWD`/`LBACK`/`LTURNL`/`LTURNR`(LATCH系)・`LSTOP` も DONE 応答が**ない**
+  送りっぱなしコマンド。`LSTOP` が来るまで低速固定速度(`params.latch_mps`/
+  `latch_turn_mps`)で動き続ける「ボタン押下中だけ動かす」手動操作向け
+  (ゲームパッド遠隔操作、`software/manual_controller/` 参照)。距離/角度
+  指定で自動停止・DONE を返す `JOGFWD`/`JOGBACK`/`JOGTURN` とは用途が違う。
 - `GCAL`/`RDST`/`RANG` は DONE を返す。TURN は正=左回り(CCW)、単位 rad。
 - `SANG,<angle_rad>`(2026-07-24〜)は `RANG` の0固定版ではなく任意値版:
   ジャイロ積分角度を外部の絶対基準(カメラによる壁上面検出など、

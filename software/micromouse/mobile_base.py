@@ -141,6 +141,34 @@ class MobileBase:
         """低速固定速度(params.jog_turn_mps)でその場旋回。正: 左(CCW)。"""
         self._command_and_wait_done(f"JOGTURN,{angle_rad:.6f}\n")
 
+    # ---- ラッチ動作(手動操作向け。LSTOP まで継続、DONE 無し) ----
+    #
+    # JOG* は「指定距離/角度だけ動いて自動停止・DONE」なのに対し、LATCH は
+    # 「ボタンが押されている間だけ動かす」手動遠隔操作向けの動作(params.
+    # latch_mps / latch_turn_mps で低速固定)。DONE を返さない送りっぱなし
+    # コマンドなので、呼び出し側でボタン押下/解放に応じて開始・停止を
+    # 呼び分ける(software/manual_controller/remote_controller.py 参照)。
+
+    def latch_forward(self) -> None:
+        """低速前進を開始する(latch_stop() まで継続)。"""
+        self._send("LFWD\n")
+
+    def latch_backward(self) -> None:
+        """低速後退を開始する(latch_stop() まで継続)。"""
+        self._send("LBACK\n")
+
+    def latch_turn_left(self) -> None:
+        """低速左旋回(CCW)を開始する(latch_stop() まで継続)。"""
+        self._send("LTURNL\n")
+
+    def latch_turn_right(self) -> None:
+        """低速右旋回(CW)を開始する(latch_stop() まで継続)。"""
+        self._send("LTURNR\n")
+
+    def latch_stop(self) -> None:
+        """latch_* 動作を停止する。"""
+        self._send("LSTOP\n")
+
     def quick_stop(self) -> float:
         """最大減速度で停止し、元目標までの残距離 [mm] を返す。"""
         self._send("QSTP\n")
