@@ -105,6 +105,7 @@ static constexpr float LATCH_TURN_TARGET_RAD = 1000000.0f; // 低速連続旋回
 static bool jog_is_forward = true;  // true: 前進, false: 後退
 static float jog_target_dist_mm = 0.0f;
 static float jog_start_dist_mm = 0.0f;
+static float jog_target_angle_rad = 0.0f;  // 開始時角度（直進保持の角度FB用、2026-07-25追加）
 // 速度は params.jog_mps(params.h)
 
 // JOGTURNコマンド（角度指定低速旋回）状態
@@ -630,6 +631,7 @@ void processCommandQueue() {
                 jog_is_forward = q.parameter.jog.is_forward;
                 jog_target_dist_mm = q.parameter.jog.distance_mm;
                 jog_start_dist_mm = sensors.get_distance();
+                jog_target_angle_rad = sensors.get_angle();
                 stop_elapsed_s = 0.0f;
                 break;
 
@@ -703,15 +705,23 @@ bool updateJog(float dt_s) {
         return true;
     }
 
+    // 直進保持の角度FB(FWD/STOPと同じ角度+角速度FB。壁センサ補正は無し)。
+    // 従来は左右輪に同じ目標速度を与えるだけの完全オープンループで、
+    // 走行中の進行方向ドリフトを一切補正していなかった(2026-07-25修正)。
+    const float angle_error = sensors.get_angle() - jog_target_angle_rad;
+    const float angle_correction = params.angle_fb_gain * angle_error;
+    const float rate_correction = params.rate_fb_gain * sensors.get_gyro_z();
+    const float lateral_correction = angle_correction + rate_correction;
+
     // 低速で前進または後退
     if (jog_is_forward) {
         target_vr_mps = params.jog_mps;
         target_vl_mps = params.jog_mps;
-        motion.forward(params.jog_mps, 0.0f);
+        motion.forward(params.jog_mps, lateral_correction);
     } else {
         target_vr_mps = -params.jog_mps;
         target_vl_mps = -params.jog_mps;
-        motion.backward(params.jog_mps);
+        motion.backward(params.jog_mps, lateral_correction);
     }
 
     return true;
@@ -726,13 +736,19 @@ bool updateJogTurn(float dt_s) {
     const float target_abs_rad = fabsf(jog_turn_target_rad);
     const float remaining_rad = target_abs_rad - traveled_rad;
 
-    // 目標角度到達判定（±0.02rad≈1.1度許容、JOGFWD/JOGBACKの±2mmと同じ考え方）
+    // 目標角度到達判定（±0.02rad≈1.1度許容、JOGFWD/JOGBACKの±2mmと同じ考え方）。
+    // 従来はここで即座に停止・DONEを返しており、STOP/TURNと違って慣性の
+    // 減衰待ち(角度FBによるホールド)が無かったため、低速とはいえ停止直後の
+    // 残留回頭がそのまま基準角の誤差として残っていた。STOP/TURN と同じ
+    // STOP_HOLD 状態に遷移させ、角度+角速度FBで整定させてからDONEを返す
+    // (2026-07-25修正)。
     if (remaining_rad <= 0.02f) {
-        motion_state = MotionState::IDLE;
         target_vr_mps = 0.0f;
         target_vl_mps = 0.0f;
         motion.stop();
-        enqueue_msg_line("DONE\n");
+        motion_state = MotionState::STOP_HOLD;
+        stop_hold_elapsed_s = 0.0f;
+        stop_hold_target_angle_rad = jog_turn_start_angle_rad + jog_turn_target_rad;
         return true;
     }
 

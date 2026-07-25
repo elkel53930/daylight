@@ -62,6 +62,13 @@ software/
   `latch_turn_mps`)で動き続ける「ボタン押下中だけ動かす」手動操作向け
   (ゲームパッド遠隔操作、`software/manual_controller/` 参照)。距離/角度
   指定で自動停止・DONE を返す `JOGFWD`/`JOGBACK`/`JOGTURN` とは用途が違う。
+- `JOGFWD`/`JOGBACK`(2026-07-25〜)は開始時角度を基準にした角度+角速度FB
+  (`angle_fb_gain`/`rate_fb_gain`、壁センサ補正は無し)で直進を保持する
+  (それまでは左右輪に同じ速度を与えるだけの完全オープンループで、走行中の
+  進行方向ドリフトを補正していなかった)。`JOGTURN`(同日〜)は目標角度到達後
+  即座に停止・DONEではなく、STOP/TURNと同じ`STOP_HOLD`(角度FBでの整定待ち、
+  0.5秒)を経てからDONEを返すようになった(DONE待ちに最大+0.5秒)。
+  LATCH系は対象外(このリポジトリでの用途上、意図的にオープンループのまま)。
 - `GCAL`/`RDST`/`RANG` は DONE を返す。TURN は正=左回り(CCW)、単位 rad。
 - `SANG,<angle_rad>`(2026-07-24〜)は `RANG` の0固定版ではなく任意値版:
   ジャイロ積分角度を外部の絶対基準(カメラによる壁上面検出など、

@@ -98,9 +98,14 @@ void MotionController::forward(float speed_mps, float lateral_error) {
     set_targets_mps(speed_mps - corr, speed_mps + corr);
 }
 
-void MotionController::backward(float speed_mps) {
+void MotionController::backward(float speed_mps, float lateral_error) {
     mode_ = Mode::BACKWARD;
-    set_targets_mps(-fabsf(speed_mps), -fabsf(speed_mps));
+    // yaw_rate は (vr-vl) に線形なので、forward() と同じ符号の補正で
+    // (基準速度が負であっても)同じ向きに効く。lateral_error 未指定
+    // (既定0.0)なら従来と同じ左右等速。
+    const float corr = k_lateral_ * lateral_error;
+    const float s = -fabsf(speed_mps);
+    set_targets_mps(s - corr, s + corr);
 }
 
 void MotionController::turn_in_place(float speed_mps, float target_angle_rad) {

@@ -22,7 +22,8 @@ public:
     void forward(float speed_mps, float lateral_error);
 
     // Start/continue backward motion.
-    void backward(float speed_mps);
+    // lateral_error: same convention as forward()(既定0.0で従来と同じ動作)。
+    void backward(float speed_mps, float lateral_error = 0.0f);
 
     // Start/continue a turn in place. Positive angle: turn left (CCW) by convention.
     // Completion is judged by the caller (absolute angle vs. tolerance); this
