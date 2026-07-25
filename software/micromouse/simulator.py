@@ -180,6 +180,8 @@ class SimMobileBase:
             enc_l=0,
             odo_dist_mm=self.odo_dist_mm,
             odo_ang_rad=self.odo_ang_rad,
+            ball_raw=0,
+            ball_det=False,
         )
 
     # ---- テスト用ヘルパ ----

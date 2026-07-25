@@ -7,7 +7,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from wall_detector import SensorFrame, WallDetector, parse_sen_line
 
 
-def make_frame(lf=0, ls=0, rs=0, rf=0, vbatt=7.4) -> SensorFrame:
+def make_frame(lf=0, ls=0, rs=0, rf=0, vbatt=7.4, ball_raw=0, ball_det=False) -> SensorFrame:
     return SensorFrame(
         gyro_radps=0.0,
         vbatt=vbatt,
@@ -19,6 +19,8 @@ def make_frame(lf=0, ls=0, rs=0, rf=0, vbatt=7.4) -> SensorFrame:
         enc_l=0,
         odo_dist_mm=0.0,
         odo_ang_rad=0.0,
+        ball_raw=ball_raw,
+        ball_det=ball_det,
     )
 
 
@@ -37,6 +39,15 @@ class TestParseSenLine(unittest.TestCase):
         self.assertEqual(frame.enc_l, 2000)
         self.assertAlmostEqual(frame.odo_dist_mm, 90.5)
         self.assertAlmostEqual(frame.odo_ang_rad, 0.02)
+        self.assertEqual(frame.ball_raw, 0)
+        self.assertEqual(frame.ball_det, False)
+
+    def test_ball_fields(self):
+        line = "SEN,0.01,7.42,120,250,240,130,1000,2000,90.50,0.02,3200,1"
+        frame = parse_sen_line(line)
+        self.assertIsNotNone(frame)
+        self.assertEqual(frame.ball_raw, 3200)
+        self.assertEqual(frame.ball_det, True)
 
     def test_invalid_lines(self):
         self.assertIsNone(parse_sen_line("DONE"))

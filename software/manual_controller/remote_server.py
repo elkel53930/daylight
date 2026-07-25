@@ -41,6 +41,7 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent / "micromouse"))
+sys.path.insert(0, str(Path(__file__).parent.parent / "arm"))
 
 import remote_protocol as proto  # noqa: E402
 from remote_controller import RemoteController  # noqa: E402
@@ -59,9 +60,27 @@ OPERATION_GUIDE = """\
   ○          : 押している間、低速右旋回
   ×          : 押している間、低速後退
   ▢          : 押している間、低速左旋回
-  L1 / R1     : 未実装(将来: アーム/リロードサーボ/ボールセンサ操作)
+  L1          : 押した瞬間にボール回収シーケンスを実行(数秒かかる)
+  R1          : 押した瞬間にリロードサーボを180度へ
 ================
 """
+
+
+def make_arm_servo():
+    """Futaba アームサーボ(mob とは別の Pi UART 接続)を初期化する。
+
+    未接続・シリアルエラー等で失敗しても None を返すだけで続行する
+    (L1のボール回収シーケンスだけが使えなくなり、他の操作には影響しない)。
+    """
+    try:
+        from futaba_servo import FutabaServo
+
+        servo = FutabaServo()
+        servo.set_torque(True)
+        return servo
+    except Exception as e:
+        print(f"# アームサーボに接続できません(L1は無効になります): {e}")
+        return None
 
 
 def get_local_ip() -> str:
@@ -92,7 +111,9 @@ def register_zeroconf(control_port: int, service_name: str):
     return zc, info
 
 
-def ui_loop(should_stop: threading.Event, status: dict, ip_port: str) -> None:
+def ui_loop(
+    should_stop: threading.Event, status: dict, ip_port: str, controller: RemoteController
+) -> None:
     """OLED に状態表示し、Lボタンで should_stop を立てる(ベストエフォート)。
 
     ui_server が無い/接続できない環境では何もせず即座に返る(標準出力での
@@ -124,11 +145,12 @@ def ui_loop(should_stop: threading.Event, status: dict, ip_port: str) -> None:
                 should_stop.set()
                 break
 
-            lines = ["Manual Control", ip_port, status.get("text", ""), "L: Quit"]
+            ball_text = "BALL: OK" if controller.ball_held else "BALL: --"
+            lines = ["Manual Control", ip_port, status.get("text", ""), ball_text, "L: Quit"]
             img = Image.new("RGB", (96, 64), "black")
             draw = ImageDraw.Draw(img)
             for i, line in enumerate(lines[:5]):
-                draw.text((2, 2 + i * 14), line, fill="white")
+                draw.text((2, 2 + i * 12), line, fill="white")
             try:
                 client.display(img)
             except Exception:
@@ -243,6 +265,7 @@ def main() -> int:
     zc = None
     info = None
     server_sock: Optional[socket.socket] = None
+    arm = None
 
     try:
         if not args.no_gyro_calibrate:
@@ -253,8 +276,11 @@ def main() -> int:
             except Exception as e:
                 print(f"# キャリブレーション失敗(続行します): {e}")
 
+        arm = make_arm_servo()
+
         controller = RemoteController(
             base,
+            arm=arm,
             cell_speed_mmps=args.speed_mmps,
             cell_accel_mmps2=args.accel_mmps2,
             cell_size_mm=args.cell_mm,
@@ -277,7 +303,7 @@ def main() -> int:
         status = {"text": "waiting..."}
         ip_port = f"{get_local_ip()}:{args.control_port}"
         ui_thread = threading.Thread(
-            target=ui_loop, args=(should_stop, status, ip_port), daemon=True
+            target=ui_loop, args=(should_stop, status, ip_port, controller), daemon=True
         )
         ui_thread.start()
 
@@ -299,6 +325,8 @@ def main() -> int:
             zc.close()
         base.emergency_stop()
         base.close()
+        if arm is not None:
+            arm.close()  # トルクオフしてシリアルを閉じる(futaba_servo.pyが自動実施)
         if server_sock is not None:
             server_sock.close()
 

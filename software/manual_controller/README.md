@@ -22,7 +22,8 @@ remote_client.py  ──── TCP ────▶  remote_server.py
 |---|---|---|
 | `remote_protocol.py` | 両方 | 通信メッセージ形式・zeroconfサービス種別の共有定義(依存無し) |
 | `remote_controller.py` | 機体側 | ボタン→機体動作の変換ロジック本体(ハード非依存、ユニットテスト済み) |
-| `remote_server.py` | 機体側 | zeroconf広告 + TCPサーバー + MobileBase制御(実行スクリプト) |
+| `ball_pickup.py` | 機体側 | L1のボール回収シーケンス本体(ハード非依存、duck-typedなbase/arm) |
+| `remote_server.py` | 機体側 | zeroconf広告 + TCPサーバー + MobileBase/Futabaアーム制御(実行スクリプト) |
 | `input_mapping.py` | PC側 | pygameの十字キー(hat)/ボタン値 → protocolのボタン名への変換(pygame非依存) |
 | `remote_client.py` | PC側 | zeroconf検索 + pygame入力 + TCP送信(実行スクリプト) |
 | `dualsense_test.py` | PC側 | コントローラ入力の生確認用(既存、参考にした) |
@@ -87,11 +88,32 @@ zeroconfで機体を自動検索して接続する。`--host <IP> --port <PORT>`
 | ○ | 押している間、低速その場右旋回(離すと停止) |
 | × | 押している間、低速後退(離すと停止) |
 | ▢ | 押している間、低速その場左旋回(離すと停止) |
-| L1 / R1 | 未実装(将来: アームサーボ・リロードサーボ・ボールセンサ操作用) |
+| L1 | 押した瞬間にボール回収シーケンスを1回実行(下記、数秒かかる) |
+| R1 | 押した瞬間にリロードサーボを180度へ(1回のみ、離しても何もしない) |
 
 △○×▢ は mob の LATCH 系コマンド(`LFWD`/`LBACK`/`LTURNL`/`LTURNR`/`LSTOP`、
 `software/mob/README.md`)を使う低速連続動作。十字キー上/左右/下は
 `MobileBase.stop_at()`/`turn()`(1区間ごとに完全停止・90/180度旋回)を使う。
+
+### L1: ボール回収シーケンス(`ball_pickup.py`)
+
+1. アームサーボ(Futaba)・リロードサーボ(mob SRV)を0度へ
+2. 0.5秒待つ
+3. リロードサーボを140度へ
+4. アームサーボを1000msかけて103度へ
+5. アームサーボが103度に到達したらファンDuty 50%
+6. ボールセンサ値(ball_raw)が100を3回連続で超えたらアームサーボを
+   1000msかけて0度へ。100を超えずに2秒経過したらリロードサーボを0度に
+   戻して失敗終了(以降の手順はスキップ)
+7. アームサーボが0度に到達したらファンDuty 0%
+8. 最終確認でball_rawが100未満ならリロードサーボを0度へ戻す(失敗)
+9. 100以上ならボール保持成功(`RemoteController.ball_held = True`、
+   OLEDに `BALL: OK` 表示)
+
+アームサーボが未接続(Futaba接続失敗)の場合、L1は警告を出して何もしない
+(他の操作には影響しない)。`software/arm/ball_sequence.py`(単体スクリプト
+版)とは似ているが別物で、こちらは連続検出の判定・タイムアウト時間が異なる
+(リモート操作用に個別に設計)。
 
 `stop_at()`/`turn()` は mob の DONE 応答(STOP/TURN は完了後0.5秒の角度
 維持ホールドを経てから返る)を待つブロッキング呼び出しのため、前の動作の
@@ -118,7 +140,9 @@ software/venv/bin/python3 -m unittest discover -s software/manual_controller/tes
 ```
 
 `remote_controller.py`(ボタン→動作の変換ロジック、duck-typedなフェイク
-base で検証)、`input_mapping.py`(十字キーの hat 値変換)、`remote_protocol.py`
-(メッセージのエンコード/デコード)、`remote_server.py` のTCP受信・watchdog・
-切断処理(ローカルループバックソケットで検証)をハードウェア・実ネットワーク
-・pygame・zeroconf無しでテストできる。
+base で検証)、`ball_pickup.py`(L1シーケンス、sleep/nowを差し替え可能な
+偽時計で実時間待機なしに手順・タイミング・分岐を検証)、`input_mapping.py`
+(十字キーの hat 値変換)、`remote_protocol.py`(メッセージのエンコード/
+デコード)、`remote_server.py` のTCP受信・watchdog・切断処理(ローカル
+ループバックソケットで検証)をハードウェア・実ネットワーク・pygame・
+zeroconf無しでテストできる。

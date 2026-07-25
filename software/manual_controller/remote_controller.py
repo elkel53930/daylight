@@ -10,6 +10,12 @@ remote_server.py から呼ばれる中核クラス RemoteController を提供す
     latch_turn_left() / latch_turn_right()
     latch_stop()
     emergency_stop()
+    set_reload_servo(angle_deg) / set_fan_percent(percent) / read_sensors(timeout_s)
+
+L1(ボール回収)はさらに Futaba アームサーボ(mob とは別のPi UART接続、
+software/arm/futaba_servo.py)が要る。RemoteBase とは別に duck-typed な
+`arm`(set_angle(angle_deg, move_time_ms=0))をコンストラクタで受け取る
+(未接続なら arm=None で、L1は警告してスキップする)。
 
 on_event() はボタンの押下/解放で内部状態を更新するだけ(ネットワーク受信
 スレッドから呼ぶ)。実際に base のメソッドを呼ぶのは step()(モーション
@@ -17,13 +23,14 @@ on_event() はボタンの押下/解放で内部状態を更新するだけ(ネ�
 「1区間前進の完了待ち(stop_at のブロッキング)」中でもボタンの押下/解放
 イベント自体は取りこぼさない。
 
-十字キー左/右/下(旋回)は1回押すごとに FIFO キューへ積む(押下イベント
-そのものを溜め込む)。stop_at()/turn() は mob 側の DONE 応答(STOP/TURNは
-完了後0.5秒の角度維持ホールドを経てから返る)を待つブロッキング呼び出し
-のため、前の動作の完了待ち中に複数回押しても、単一変数で最後の1回だけを
-残す実装だと押下イベントが失われる(取りこぼし)。キューにすることで、
-モーション実行スレッドが空くたびに古い順から確実に1回ずつ消化される
-(2026-07-25、体感レイテンシの原因調査を受けて単一変数からキューに変更)。
+十字キー左/右/下(旋回)・L1(ボール回収)・R1(リロード解放)は押すごとに
+FIFO キューへ積む(押下イベントそのものを溜め込む)。stop_at()/turn() は
+mob 側の DONE 応答(STOP/TURNは完了後0.5秒の角度維持ホールドを経てから
+返る)を待つブロッキング呼び出しのため、前の動作の完了待ち中に複数回
+押しても、単一変数で最後の1回だけを残す実装だと押下イベントが失われる
+(取りこぼし)。キューにすることで、モーション実行スレッドが空くたびに
+古い順から確実に1回ずつ消化される(2026-07-25、体感レイテンシの原因調査を
+受けて単一変数からキューに変更)。
 
 操作仕様(software/manual_controller/README.md も参照):
     十字キー上   : 押している間、1区間前進を繰り返す。離したら現在の
@@ -33,7 +40,9 @@ on_event() はボタンの押下/解放で内部状態を更新するだけ(ネ�
     十字キー下   : 押した瞬間に180度旋回(同上)。
     △/○/×/▢  : 押している間、低速前進/右旋回/後退/左旋回(LATCH動作)。
                    離したら停止。
-    L1/R1        : 未実装(将来: アーム・リロードサーボ・ボールセンサ操作)。
+    L1           : 押した瞬間にボール回収シーケンス(ball_pickup.py)を1回
+                   実行(数秒かかるブロッキング動作)。
+    R1           : 押した瞬間にリロードサーボを180度へ(1回のみ)。
 """
 
 from __future__ import annotations
@@ -43,13 +52,14 @@ import sys
 import threading
 from collections import deque
 from pathlib import Path
-from typing import Deque, Optional, Protocol
+from typing import Deque, Optional, Protocol, Tuple
 
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent / "micromouse"))
 from errors import AbortRequested, MobileBaseError  # noqa: E402
 
 import remote_protocol as proto  # noqa: E402
+from ball_pickup import BallPickupArm, BallPickupBase, RELOAD_RELEASE_DEG, run_ball_pickup  # noqa: E402
 
 HALF_PI = math.pi / 2.0
 
@@ -63,8 +73,13 @@ TURN_ANGLES = {
 # ボタン → LATCH 動作(押している間だけ低速で動く)の対応
 JOG_BUTTONS = frozenset({proto.TRIANGLE, proto.CIRCLE, proto.CROSS, proto.SQUARE})
 
+# アクションキューの種別タグ
+ACTION_TURN = "turn"
+ACTION_BALL_PICKUP = "ball_pickup"
+ACTION_RELOAD_RELEASE = "reload_release"
 
-class RemoteBase(Protocol):
+
+class RemoteBase(BallPickupBase, Protocol):
     """RemoteController が要求する base の最小インターフェース。"""
 
     def stop_at(self, speed_mmps: float, accel_mmps2: float, distance_mm: float) -> None: ...
@@ -75,6 +90,7 @@ class RemoteBase(Protocol):
     def latch_turn_right(self) -> None: ...
     def latch_stop(self) -> None: ...
     def emergency_stop(self) -> None: ...
+    # set_reload_servo/set_fan_percent/read_sensors は BallPickupBase から継承
 
 
 class RemoteController:
@@ -82,19 +98,24 @@ class RemoteController:
         self,
         base: RemoteBase,
         *,
+        arm: Optional[BallPickupArm] = None,
         cell_speed_mmps: float = 300.0,
         cell_accel_mmps2: float = 1000.0,
         cell_size_mm: float = 180.0,
     ):
         self.base = base
+        self.arm = arm
         self.cell_speed_mmps = cell_speed_mmps
         self.cell_accel_mmps2 = cell_accel_mmps2
         self.cell_size_mm = cell_size_mm
 
+        self.ball_held = False  # L1シーケンス成功で True(OLED表示等に利用)
+
         self._lock = threading.Lock()
         self._dpad_up_held = False
         self._jog_active: Optional[str] = None       # on_event() が更新
-        self._turn_queue: Deque[float] = deque()      # 旋回の押下イベントをFIFOで保持
+        # 旋回・L1・R1 の押下イベントをFIFOで保持: (種別タグ, ペイロード)
+        self._action_queue: Deque[Tuple[str, object]] = deque()
 
         self._jog_sent: Optional[str] = None          # step() 専用(単一スレッドのみ触る)
 
@@ -113,7 +134,19 @@ class RemoteController:
         if name in TURN_ANGLES:
             if pressed:
                 with self._lock:
-                    self._turn_queue.append(TURN_ANGLES[name])
+                    self._action_queue.append((ACTION_TURN, TURN_ANGLES[name]))
+            return
+
+        if name == proto.L1:
+            if pressed:
+                with self._lock:
+                    self._action_queue.append((ACTION_BALL_PICKUP, None))
+            return
+
+        if name == proto.R1:
+            if pressed:
+                with self._lock:
+                    self._action_queue.append((ACTION_RELOAD_RELEASE, None))
             return
 
         if name in JOG_BUTTONS:
@@ -126,9 +159,6 @@ class RemoteController:
                     # 自身の解放のときだけ止める)。
                     self._jog_active = None
             return
-
-        if name in (proto.L1, proto.R1):
-            return  # TODO: アーム/リロードサーボ/ボールセンサ操作
 
         # 未知ボタンは無視
 
@@ -144,9 +174,9 @@ class RemoteController:
             self._jog_sent = jog
             return
 
-        turn = self._pop_queued_turn()
-        if turn is not None:
-            self._safe_call(self.base.turn, turn)
+        action = self._pop_queued_action()
+        if action is not None:
+            self._dispatch_action(action)
             return
 
         with self._lock:
@@ -158,23 +188,48 @@ class RemoteController:
             return
 
     def handle_disconnect(self) -> None:
-        """接続断・異常検出時に呼ぶ: 緊急停止し内部状態を初期化する。"""
+        """接続断・異常検出時に呼ぶ: 緊急停止し内部状態を初期化する。
+
+        ball_held(物理的にボールを保持しているかの状態)は接続断で変わる
+        ものではないため初期化しない。
+        """
         self._safe_call(self.base.emergency_stop)
         with self._lock:
             self._dpad_up_held = False
             self._jog_active = None
-            self._turn_queue.clear()
+            self._action_queue.clear()
         self._jog_sent = None
 
     # ------------------------------------------------------------------
     # 内部
     # ------------------------------------------------------------------
 
-    def _pop_queued_turn(self) -> Optional[float]:
+    def _pop_queued_action(self) -> Optional[Tuple[str, object]]:
         with self._lock:
-            if self._turn_queue:
-                return self._turn_queue.popleft()
+            if self._action_queue:
+                return self._action_queue.popleft()
             return None
+
+    def _dispatch_action(self, action: Tuple[str, object]) -> None:
+        kind, payload = action
+        if kind == ACTION_TURN:
+            self._safe_call(self.base.turn, payload)
+        elif kind == ACTION_BALL_PICKUP:
+            self._run_ball_pickup()
+        elif kind == ACTION_RELOAD_RELEASE:
+            self._safe_call(self.base.set_reload_servo, RELOAD_RELEASE_DEG)
+
+    def _run_ball_pickup(self) -> None:
+        if self.arm is None:
+            print("# RemoteController: アームサーボ未接続のためL1シーケンスをスキップ")
+            return
+        try:
+            self.ball_held = run_ball_pickup(self.base, self.arm)
+        except Exception as e:
+            # アームサーボ(Futaba)はmobとは別のシリアル接続で、
+            # AbortRequested/MobileBaseError以外の例外(pyserial由来等)も
+            # 起こりうるため、ここは広く捕捉してワーカースレッドを守る。
+            print(f"# RemoteController: L1シーケンス中にエラー: {e}")
 
     def _dispatch_jog(self, name: Optional[str]) -> None:
         if name is None:

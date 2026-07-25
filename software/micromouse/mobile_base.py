@@ -225,6 +225,17 @@ class MobileBase:
         self._send(f"WALL,{1 if enabled else 0}\n")
         time.sleep(0.05)
 
+    # ---- リロードサーボ・ファン(ボール回収機構、DONE応答なし) ----
+
+    def set_reload_servo(self, angle_deg: float) -> None:
+        """リロードサーボ(mob 経由の RC サーボ)角度設定。"""
+        self._send(f"SRV,{int(round(angle_deg))}\n")
+
+    def set_fan_percent(self, percent: float) -> None:
+        """吸引ファン Duty 設定(0-100%)。"""
+        duty = max(0, min(255, round(255 * percent / 100.0)))
+        self._send(f"FAN,{duty}\n")
+
     # ---- センサ ----
 
     def read_sensors(self, timeout_s: float = 2.0) -> Optional[SensorFrame]:

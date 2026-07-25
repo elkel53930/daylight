@@ -27,8 +27,10 @@ class SensorFrame:
 
     SEN,<gyro rad/s>,<batt V>,<lf>,<ls>,<rs>,<rf>,<enc_r>,<enc_l>,<dist mm>,<ang rad>,<ball_raw>,<ball_det>
 
-    ball_raw/ball_det は迷路走行では未使用だが、mob.ino の SEN 応答に
-    含まれるためパース対象として受け取る(桁数チェックのみに使う)。
+    ball_raw/ball_det は迷路走行では未使用だが、manual_controller のボール
+    回収シーケンス(L1ボタン)で使う(2026-07-25)。ball_det は mob 側の
+    しきい値(BALL コマンド、既定2048)による判定で、manual_controller が
+    使う低いしきい値(既定100)とは別物のため、ball_raw を直接見ること。
     """
 
     gyro_radps: float
@@ -41,6 +43,8 @@ class SensorFrame:
     enc_l: int
     odo_dist_mm: float
     odo_ang_rad: float
+    ball_raw: int
+    ball_det: bool
 
 
 def parse_sen_line(line: str) -> Optional[SensorFrame]:
@@ -60,6 +64,8 @@ def parse_sen_line(line: str) -> Optional[SensorFrame]:
             enc_l=int(parts[8]),
             odo_dist_mm=float(parts[9]),
             odo_ang_rad=float(parts[10]),
+            ball_raw=int(parts[11]),
+            ball_det=bool(int(parts[12])),
         )
     except ValueError:
         return None

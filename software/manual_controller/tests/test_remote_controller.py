@@ -2,6 +2,7 @@ import math
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -45,6 +46,24 @@ class FakeBase:
 
     def emergency_stop(self):
         self._record("emergency_stop")
+
+    def set_reload_servo(self, angle_deg):
+        self._record("set_reload_servo", angle_deg)
+
+    def set_fan_percent(self, percent):
+        self._record("set_fan_percent", percent)
+
+    def read_sensors(self, timeout_s=2.0):
+        self._record("read_sensors", timeout_s)
+        return None
+
+
+class FakeArm:
+    def __init__(self):
+        self.calls = []
+
+    def set_angle(self, angle, move_time_ms=0):
+        self.calls.append((angle, move_time_ms))
 
 
 def make_controller():
@@ -249,6 +268,76 @@ class TestAbortDuringMotionDoesNotCrash(unittest.TestCase):
         ctrl.on_event(proto.DPAD_UP, proto.ACTION_DOWN)
         ctrl.step()  # 例外を吸収して落ちないこと
         self.assertEqual(base.calls, [])  # raise_on の記録はしない設計(_record内でraise)
+
+
+class TestR1ReloadRelease(unittest.TestCase):
+    def test_r1_sets_reload_servo_to_180(self):
+        ctrl, base = make_controller()
+        ctrl.on_event(proto.R1, proto.ACTION_DOWN)
+        ctrl.step()
+        self.assertEqual(base.calls, [("set_reload_servo", 180.0)])
+
+    def test_r1_release_does_nothing(self):
+        ctrl, base = make_controller()
+        ctrl.on_event(proto.R1, proto.ACTION_UP)
+        ctrl.step()
+        self.assertEqual(base.calls, [])
+
+    def test_r1_fires_once_not_repeated(self):
+        ctrl, base = make_controller()
+        ctrl.on_event(proto.R1, proto.ACTION_DOWN)
+        ctrl.step()
+        ctrl.step()
+        self.assertEqual(base.calls, [("set_reload_servo", 180.0)])
+
+
+class TestL1BallPickup(unittest.TestCase):
+    # run_ball_pickup() の中身(手順・タイミング・分岐)は test_ball_pickup.py
+    # で高速な偽時計を使って検証済み。ここでは RemoteController が
+    # 正しく配線されている(L1でキューに積まれ、step()で呼ばれ、戻り値が
+    # ball_held に反映される)ことだけを、実際の待機を伴わずに確認する。
+
+    def test_l1_without_arm_skips_gracefully(self):
+        ctrl, base = make_controller()  # arm 未指定(None)
+        ctrl.on_event(proto.L1, proto.ACTION_DOWN)
+        ctrl.step()  # 例外を出さずスキップすること
+        self.assertFalse(ctrl.ball_held)
+        self.assertEqual(base.calls, [])
+
+    def test_l1_success_sets_ball_held_true(self):
+        ctrl, base = make_controller()
+        arm = FakeArm()
+        ctrl.arm = arm
+        with patch("remote_controller.run_ball_pickup", return_value=True) as mock_run:
+            ctrl.on_event(proto.L1, proto.ACTION_DOWN)
+            ctrl.step()
+        mock_run.assert_called_once_with(base, arm)
+        self.assertTrue(ctrl.ball_held)
+
+    def test_l1_failure_sets_ball_held_false(self):
+        ctrl, base = make_controller()
+        ctrl.arm = FakeArm()
+        ctrl.ball_held = True  # 前回成功していた状態から
+        with patch("remote_controller.run_ball_pickup", return_value=False):
+            ctrl.on_event(proto.L1, proto.ACTION_DOWN)
+            ctrl.step()
+        self.assertFalse(ctrl.ball_held)
+
+    def test_l1_exception_does_not_crash_worker(self):
+        ctrl, base = make_controller()
+        ctrl.arm = FakeArm()
+        with patch("remote_controller.run_ball_pickup", side_effect=RuntimeError("boom")):
+            ctrl.on_event(proto.L1, proto.ACTION_DOWN)
+            ctrl.step()  # 例外を吸収して落ちないこと
+        self.assertFalse(ctrl.ball_held)
+
+    def test_l1_release_does_nothing(self):
+        ctrl, base = make_controller()
+        ctrl.arm = FakeArm()
+        with patch("remote_controller.run_ball_pickup") as mock_run:
+            ctrl.on_event(proto.L1, proto.ACTION_UP)
+            ctrl.step()
+        mock_run.assert_not_called()
 
 
 if __name__ == "__main__":
