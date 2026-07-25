@@ -12,12 +12,13 @@ from typing import List, Tuple
 import protocol as proto
 
 # pygame の JOYBUTTONDOWN/UP の event.button → protocol のボタン名
-# (dualsense_test.py の BUTTON_NAMES と同じ実測マッピング)
+# (dualsense_test.py の BUTTON_NAMES と同じ実測マッピング。実機のDualSenseで
+# 2026-07-25 に確認: index 2=△, 3=▢。当初 2=▢, 3=△ と誤って想定していた)
 BUTTON_INDEX_TO_NAME = {
     0: proto.CROSS,
     1: proto.CIRCLE,
-    2: proto.SQUARE,
-    3: proto.TRIANGLE,
+    2: proto.TRIANGLE,
+    3: proto.SQUARE,
     4: proto.L1,
     5: proto.R1,
 }
