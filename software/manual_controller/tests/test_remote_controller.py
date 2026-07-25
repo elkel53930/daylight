@@ -121,6 +121,31 @@ class TestTurns(unittest.TestCase):
             base.calls, [("turn", -math.pi / 2), ("stop_at", 300.0, 1000.0, 180.0)]
         )
 
+    def test_multiple_presses_before_any_step_are_all_queued_in_order(self):
+        # 前の動作の完了待ち(stop_at/turnのブロッキング)中に複数回押しても
+        # 単一変数では最後の1回しか残らず取りこぼしていた。キュー化により
+        # 押した順に全て消化されることを保証する。
+        ctrl, base = make_controller()
+        ctrl.on_event(proto.DPAD_RIGHT, proto.ACTION_DOWN)
+        ctrl.on_event(proto.DPAD_LEFT, proto.ACTION_DOWN)
+        ctrl.on_event(proto.DPAD_DOWN, proto.ACTION_DOWN)
+        ctrl.step()
+        ctrl.step()
+        ctrl.step()
+        self.assertEqual(
+            base.calls,
+            [("turn", -math.pi / 2), ("turn", math.pi / 2), ("turn", math.pi)],
+        )
+
+    def test_queue_empties_and_further_steps_do_nothing(self):
+        ctrl, base = make_controller()
+        ctrl.on_event(proto.DPAD_RIGHT, proto.ACTION_DOWN)
+        ctrl.step()
+        base.calls.clear()
+        ctrl.step()
+        ctrl.step()
+        self.assertEqual(base.calls, [])
+
 
 class TestJogButtons(unittest.TestCase):
     def test_triangle_forward_start_stop(self):

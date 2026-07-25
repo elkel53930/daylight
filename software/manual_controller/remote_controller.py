@@ -17,6 +17,14 @@ on_event() はボタンの押下/解放で内部状態を更新するだけ(ネ�
 「1区間前進の完了待ち(stop_at のブロッキング)」中でもボタンの押下/解放
 イベント自体は取りこぼさない。
 
+十字キー左/右/下(旋回)は1回押すごとに FIFO キューへ積む(押下イベント
+そのものを溜め込む)。stop_at()/turn() は mob 側の DONE 応答(STOP/TURNは
+完了後0.5秒の角度維持ホールドを経てから返る)を待つブロッキング呼び出し
+のため、前の動作の完了待ち中に複数回押しても、単一変数で最後の1回だけを
+残す実装だと押下イベントが失われる(取りこぼし)。キューにすることで、
+モーション実行スレッドが空くたびに古い順から確実に1回ずつ消化される
+(2026-07-25、体感レイテンシの原因調査を受けて単一変数からキューに変更)。
+
 操作仕様(software/manual_controller/README.md も参照):
     十字キー上   : 押している間、1区間前進を繰り返す。離したら現在の
                    区間の前進が完了(=停止)し次第、次の区間には進まない。
@@ -33,8 +41,9 @@ from __future__ import annotations
 import math
 import sys
 import threading
+from collections import deque
 from pathlib import Path
-from typing import Optional, Protocol
+from typing import Deque, Optional, Protocol
 
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent / "micromouse"))
@@ -85,7 +94,7 @@ class RemoteController:
         self._lock = threading.Lock()
         self._dpad_up_held = False
         self._jog_active: Optional[str] = None       # on_event() が更新
-        self._pending_turn_rad: Optional[float] = None
+        self._turn_queue: Deque[float] = deque()      # 旋回の押下イベントをFIFOで保持
 
         self._jog_sent: Optional[str] = None          # step() 専用(単一スレッドのみ触る)
 
@@ -104,7 +113,7 @@ class RemoteController:
         if name in TURN_ANGLES:
             if pressed:
                 with self._lock:
-                    self._pending_turn_rad = TURN_ANGLES[name]
+                    self._turn_queue.append(TURN_ANGLES[name])
             return
 
         if name in JOG_BUTTONS:
@@ -135,7 +144,7 @@ class RemoteController:
             self._jog_sent = jog
             return
 
-        turn = self._pop_pending_turn()
+        turn = self._pop_queued_turn()
         if turn is not None:
             self._safe_call(self.base.turn, turn)
             return
@@ -154,18 +163,18 @@ class RemoteController:
         with self._lock:
             self._dpad_up_held = False
             self._jog_active = None
-            self._pending_turn_rad = None
+            self._turn_queue.clear()
         self._jog_sent = None
 
     # ------------------------------------------------------------------
     # 内部
     # ------------------------------------------------------------------
 
-    def _pop_pending_turn(self) -> Optional[float]:
+    def _pop_queued_turn(self) -> Optional[float]:
         with self._lock:
-            t = self._pending_turn_rad
-            self._pending_turn_rad = None
-            return t
+            if self._turn_queue:
+                return self._turn_queue.popleft()
+            return None
 
     def _dispatch_jog(self, name: Optional[str]) -> None:
         if name is None:
