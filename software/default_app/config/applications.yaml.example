@@ -23,6 +23,12 @@ applications:
       - /opt/robot/apps/micromouse/pattern_test.py
     priority: 10
 
+  - name: Camera Test
+    command:
+      - python3
+      - /opt/robot/apps/camera/camera_test.py
+    priority: 20
+
   - name: Maze
     command:
       - python3

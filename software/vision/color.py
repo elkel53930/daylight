@@ -20,7 +20,7 @@ from typing import Iterable, Sequence, Union
 import cv2
 import numpy as np
 
-from vision_types import ColorRange
+from vision_types import DEFAULT_YELLOW, ColorRange
 
 
 def bgr_to_hsv(image: np.ndarray) -> np.ndarray:
@@ -65,6 +65,16 @@ def mask_ratio(mask: np.ndarray) -> float:
     if mask.size == 0:
         return 0.0
     return float(mask.sum()) / float(mask.size)
+
+
+def color_ratio(image: np.ndarray, color_spec: ColorRangeSpec) -> float:
+    """画像中で color_spec に該当する画素が画面全体に占める割合(0.0-1.0)。"""
+    return mask_ratio(make_mask(image, color_spec))
+
+
+def yellow_ratio(image: np.ndarray, color_range: ColorRange = DEFAULT_YELLOW) -> float:
+    """画面中の黄色ピクセル領域の割合(0.0-1.0)。既定は DEFAULT_YELLOW。"""
+    return color_ratio(image, color_range)
 
 
 def clean_mask(
