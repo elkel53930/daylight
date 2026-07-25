@@ -28,7 +28,7 @@ import pygame
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-import protocol as proto
+import remote_protocol as proto
 from input_mapping import BUTTON_INDEX_TO_NAME, hat_to_events
 
 DISCOVER_POLL_S = 0.5

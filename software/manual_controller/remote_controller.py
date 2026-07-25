@@ -40,7 +40,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent / "micromouse"))
 from errors import AbortRequested, MobileBaseError  # noqa: E402
 
-import protocol as proto  # noqa: E402
+import remote_protocol as proto  # noqa: E402
 
 HALF_PI = math.pi / 2.0
 

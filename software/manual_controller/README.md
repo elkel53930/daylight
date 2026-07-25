@@ -20,7 +20,7 @@ remote_client.py  ──── TCP ────▶  remote_server.py
 
 | ファイル | 実行場所 | 役割 |
 |---|---|---|
-| `protocol.py` | 両方 | 通信メッセージ形式・zeroconfサービス種別の共有定義(依存無し) |
+| `remote_protocol.py` | 両方 | 通信メッセージ形式・zeroconfサービス種別の共有定義(依存無し) |
 | `remote_controller.py` | 機体側 | ボタン→機体動作の変換ロジック本体(ハード非依存、ユニットテスト済み) |
 | `remote_server.py` | 機体側 | zeroconf広告 + TCPサーバー + MobileBase制御(実行スクリプト) |
 | `input_mapping.py` | PC側 | pygameの十字キー(hat)/ボタン値 → protocolのボタン名への変換(pygame非依存) |
@@ -111,7 +111,7 @@ software/venv/bin/python3 -m unittest discover -s software/manual_controller/tes
 ```
 
 `remote_controller.py`(ボタン→動作の変換ロジック、duck-typedなフェイク
-base で検証)、`input_mapping.py`(十字キーの hat 値変換)、`protocol.py`
+base で検証)、`input_mapping.py`(十字キーの hat 値変換)、`remote_protocol.py`
 (メッセージのエンコード/デコード)、`remote_server.py` のTCP受信・watchdog・
 切断処理(ローカルループバックソケットで検証)をハードウェア・実ネットワーク
 ・pygame・zeroconf無しでテストできる。

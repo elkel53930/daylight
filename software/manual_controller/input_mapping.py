@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import List, Tuple
 
-import protocol as proto
+import remote_protocol as proto
 
 # pygame の JOYBUTTONDOWN/UP の event.button → protocol のボタン名
 # (dualsense_test.py の BUTTON_NAMES と同じ実測マッピング。実機のDualSenseで
