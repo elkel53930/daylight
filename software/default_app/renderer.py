@@ -37,6 +37,9 @@ BATTERY_RED_BG_COLOR = (20, 0, 0)
 
 MAX_LABEL_CHARS = 14
 
+# render_menu() で一度に表示できる項目数((画面高さ - タイトル2行分) / 1行の高さ)。
+MENU_VISIBLE_ITEMS = (HEIGHT - LINE_HEIGHT * 2) // LINE_HEIGHT
+
 
 class UIRenderer:
     """Renders Default UI screens as PIL.Image (RGB, 96x64)."""
@@ -91,7 +94,12 @@ class UIRenderer:
         return image
 
     def render_menu(self, title: str, items: List[str], selected_index: int) -> Image.Image:
-        """Render a submenu screen (e.g. Applications, System) with a highlighted selection."""
+        """Render a submenu screen (e.g. Applications, System) with a highlighted selection.
+
+        項目数が MENU_VISIBLE_ITEMS を超える場合、選択中の項目が常に画面内に
+        収まるようスクロールする(以前は常に先頭から描画していたため、
+        選択が画面外に進むと何も表示が変わらず操作不能に見える不具合があった)。
+        """
         image, draw = self._blank()
         draw.text((0, 0), title, fill=FG_COLOR, font=self._font)
 
@@ -100,7 +108,11 @@ class UIRenderer:
             draw.text((0, y), "(empty)", fill=FG_COLOR, font=self._font)
             return image
 
-        for i, item in enumerate(items):
+        start = self._scroll_start(selected_index, len(items), MENU_VISIBLE_ITEMS)
+        visible = items[start:start + MENU_VISIBLE_ITEMS]
+
+        for offset, item in enumerate(visible):
+            i = start + offset
             label = self._truncate(item)
             if i == selected_index:
                 draw.rectangle([(0, y), (WIDTH, y + LINE_HEIGHT - 1)], fill=FG_COLOR)
@@ -108,9 +120,24 @@ class UIRenderer:
             else:
                 draw.text((2, y), label, fill=FG_COLOR, font=self._font)
             y += LINE_HEIGHT
-            if y >= HEIGHT:
-                break
+
+        if start > 0:
+            draw.text((WIDTH - 7, 0), "^", fill=FG_COLOR, font=self._font)
+        if start + len(visible) < len(items):
+            # 最終行が選択中(白背景)なら黒文字、それ以外は白文字で視認性を保つ
+            last_row_selected = (start + len(visible) - 1) == selected_index
+            color = BG_COLOR if last_row_selected else FG_COLOR
+            draw.text((WIDTH - 7, y - LINE_HEIGHT), "v", fill=color, font=self._font)
+
         return image
+
+    @staticmethod
+    def _scroll_start(selected_index: int, count: int, visible_count: int) -> int:
+        """selected_index が常に可視範囲に入るような表示開始インデックスを返す。"""
+        if count <= visible_count:
+            return 0
+        start = selected_index - visible_count // 2
+        return max(0, min(start, count - visible_count))
 
     def render_confirm(self, question: str) -> Image.Image:
         """Render a Yes/No confirmation screen (L: No, R: Yes)."""
