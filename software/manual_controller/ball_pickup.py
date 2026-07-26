@@ -95,6 +95,8 @@ def run_ball_pickup(
     # 6. ball_raw > 100 が3回連続 → アーム 0度へ。2秒以内に検出できなければ失敗終了
     if not _wait_ball_detected(base, sleep=sleep, now=now):
         base.set_reload_servo(RELOAD_HOME_DEG)
+        base.set_fan_percent(FAN_OFF_PERCENT)
+        arm.set_angle(ARM_HOME_DEG, move_time_ms=ARM_MOVE_TIME_MS)
         return False
 
     move_start = now()

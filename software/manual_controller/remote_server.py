@@ -46,6 +46,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "arm"))
 import remote_protocol as proto  # noqa: E402
 from remote_controller import RemoteController  # noqa: E402
 from mobile_base import MobileBase  # noqa: E402
+from ball_pickup import ARM_HOME_DEG, ARM_MOVE_TIME_MS, FAN_OFF_PERCENT, RELOAD_HOME_DEG  # noqa: E402
 
 WATCHDOG_TIMEOUT_S = 1.0   # この間メッセージ(ハートビート含む)が来なければ緊急停止
 RECV_TIMEOUT_S = 0.2
@@ -232,7 +233,10 @@ def accept_loop(
         except socket.timeout:
             continue
         print(f"# 接続: {addr}")
-        status["text"] = f"connected\n{addr[0]}"
+        # 改行を含めると draw.text() が1行分の高さのつもりで確保した領域に
+        # 2行分描画してしまい、下のBALL/L: Quit行と重なる(OLED表示は
+        # 1エントリ=1行という前提のレイアウトのため、必ず1行に収める)。
+        status["text"] = f"conn {addr[0]}"
         link_lost.clear()
         try:
             handle_client(conn, controller, link_lost, should_stop)
@@ -324,6 +328,16 @@ def main() -> int:
             zc.unregister_service(info)
             zc.close()
         base.emergency_stop()
+        # ボール回収機構を安全な既定状態(ファンOFF・リロード/アーム0度)に
+        # 戻してから閉じる。close()後は書き込めないため、必ずclose()より前に行う。
+        try:
+            base.set_fan_percent(FAN_OFF_PERCENT)
+            base.set_reload_servo(RELOAD_HOME_DEG)
+            if arm is not None:
+                arm.set_angle(ARM_HOME_DEG, move_time_ms=ARM_MOVE_TIME_MS)
+                time.sleep(ARM_MOVE_TIME_MS / 1000.0)
+        except Exception as e:
+            print(f"# 終了時のリセットに失敗: {e}")
         base.close()
         if arm is not None:
             arm.close()  # トルクオフしてシリアルを閉じる(futaba_servo.pyが自動実施)

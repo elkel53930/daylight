@@ -14,7 +14,7 @@
   6. ボールセンサ値が 100 を超えたらアームサーボを 1000ms で 0 度へ
   7. アームサーボが 0 度に到達(動かし始めて 1000ms 経過)したらファン Duty 0%
   8. 0.2 秒待つ
-  9. アームサーボを 200ms で 15 度へ動かし、15 度に到達するまで待つ
+  9. 0.5 秒待つ
  10. リロードサーボを 180 度へ
 
 mob(/dev/ttyUSB0, 3,000,000bps)と Futaba(/dev/ttyAMA0)は別ポート。
@@ -154,13 +154,8 @@ def run_sequence(mob_port: str, servo_port: str, ball_threshold: int) -> None:
         # 8. 0.2 秒待つ
         time.sleep(0.2)
 
-        # 9. アームサーボを 15 度へ動かし、15 度に到達するまで待つ
-        print("[9] アームサーボ → 15 度 (200ms)")
-        arm_move_start = time.monotonic()
-        arm.set_angle(15, move_time_ms=200)
-        remaining = 0.2 - (time.monotonic() - arm_move_start)
-        if remaining > 0:
-            time.sleep(remaining)
+        # 9. 0.5 秒待つ
+        time.sleep(0.5)
 
         # 10. リロードサーボを 180 度へ
         print("[10] リロードサーボ → 180 度")

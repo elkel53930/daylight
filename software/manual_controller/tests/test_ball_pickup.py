@@ -121,15 +121,16 @@ class TestBallPickupTimeout(unittest.TestCase):
         result = run_ball_pickup(base, arm, sleep=clock.sleep, now=clock.now)
 
         self.assertFalse(result)
-        # アームは103度まで動かすが、0度への復帰(手順7)はしない
-        self.assertEqual(len(arm.calls), 2)
+        # アームは103度まで動かし、タイムアウト時も0度へ復帰させる
+        self.assertEqual(len(arm.calls), 3)
         self.assertEqual(arm.calls[1], (ARM_GRAB_DEG, 1000))
+        self.assertEqual(arm.calls[2], (ARM_HOME_DEG, 1000))
         # リロードは 0度→140度→(タイムアウトで)0度
         reload_calls = [c[1] for c in base.calls if c[0] == "reload"]
         self.assertEqual(reload_calls, [RELOAD_HOME_DEG, RELOAD_SCOOP_DEG, RELOAD_HOME_DEG])
-        # ファンは起動(50%)されるが、タイムアウト経路ではOFFにはしない
+        # ファンは起動(50%)後、タイムアウト時もOFFに戻す
         fan_calls = [c[1] for c in base.calls if c[0] == "fan"]
-        self.assertEqual(fan_calls, [50.0])
+        self.assertEqual(fan_calls, [50.0, 0.0])
 
     def test_non_consecutive_detections_do_not_count(self):
         clock = FakeClock()
