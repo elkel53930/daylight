@@ -138,6 +138,11 @@ class MobLink:
         line = self._readline(timeout_s=2.0)
         return line or "(no response)"
 
+    def set_wall_led(self, enabled: bool) -> None:
+        """壁センサLEDの有効/無効(WALL,<0|1>)。応答が無いコマンドなので送りっぱなし。"""
+        self.ser.write(f"WALL,{1 if enabled else 0}\n".encode("ascii"))
+        time.sleep(0.05)
+
     def read_sen(self) -> Optional[SenFrame]:
         self.ser.reset_input_buffer()
         self.ser.write(b"SEN\n")
@@ -233,6 +238,10 @@ def draw(
 def run(stdscr, link: MobLink, port: str) -> None:
     curses.curs_set(0)
     stdscr.timeout(150)
+
+    # 壁センサLEDを有効化(WALL,1)。これが無いとlf/ls/rs/rfの差分値が出ず、
+    # SEN表示が常に0のままになる(hw_test.py等と同じ起動時有効化パターン)。
+    link.set_wall_led(True)
 
     order = link.fetch_params()
     values: dict[str, float] = dict(order)
@@ -372,6 +381,10 @@ def main() -> None:
     try:
         curses.wrapper(run, link, args.port)
     finally:
+        try:
+            link.set_wall_led(False)
+        except Exception:
+            pass
         link.close()
 
 
