@@ -281,6 +281,15 @@ def main() -> int:
                 print(f"# キャリブレーション失敗(続行します): {e}")
 
         arm = make_arm_servo()
+        if arm is not None:
+            arm.set_angle(ARM_HOME_DEG, move_time_ms=ARM_MOVE_TIME_MS)
+
+        # 壁センサLEDを有効化(WALL,1)。これが無いと壁センサの差分値が
+        # 出ず、1区間前進(stop_at→mobのSTOP)の壁センサFB(lateral
+        # correction)が常に無効(error_units=0)のままになる
+        # (micromouseのhw_test.py/pattern_test.py/state_machine.pyと同じ
+        # 起動時有効化・終了時無効化のパターン)。
+        base.wall_led(True)
 
         controller = RemoteController(
             base,
@@ -331,6 +340,7 @@ def main() -> int:
         # ボール回収機構を安全な既定状態(ファンOFF・リロード/アーム0度)に
         # 戻してから閉じる。close()後は書き込めないため、必ずclose()より前に行う。
         try:
+            base.wall_led(False)
             base.set_fan_percent(FAN_OFF_PERCENT)
             base.set_reload_servo(RELOAD_HOME_DEG)
             if arm is not None:
