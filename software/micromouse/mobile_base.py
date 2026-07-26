@@ -225,6 +225,40 @@ class MobileBase:
         self._send(f"WALL,{1 if enabled else 0}\n")
         time.sleep(0.05)
 
+    # ---- パラメータ(PGET/PSET、software/util/param_tui.py と同じ形式) ----
+
+    def get_param(self, name: str, timeout_s: float = 2.0) -> Optional[float]:
+        """単一パラメータを取得する(PGET,<name> → PVAL,<name>,<value>)。
+
+        取得できなければ None(未知のパラメータ名・タイムアウト)。
+        """
+        self._send(f"PGET,{name}\n")
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            self._check_abort()
+            line = self._read_line()
+            if line is None:
+                continue
+            if line.startswith("SEN,"):
+                frame = parse_sen_line(line)
+                if frame is not None:
+                    self.last_frame = frame
+                continue
+            if line.startswith("PVAL,"):
+                parts = line.split(",")
+                if len(parts) == 3 and parts[1] == name:
+                    try:
+                        return float(parts[2])
+                    except ValueError:
+                        return None
+                continue
+        return None
+
+    def set_param(self, name: str, value: float) -> None:
+        """パラメータを RAM 上で即時変更する(NVSには保存しない、送りっぱなし)。"""
+        self._send(f"PSET,{name},{value}\n")
+        time.sleep(0.05)
+
     # ---- リロードサーボ・ファン(ボール回収機構、DONE応答なし) ----
 
     def set_reload_servo(self, angle_deg: float) -> None:

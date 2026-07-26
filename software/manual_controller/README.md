@@ -139,6 +139,21 @@ zeroconfで機体を自動検索して接続する。`--host <IP> --port <PORT>`
   pygameの`rumble()`の`duration_ms`引数は無視される既知の不具合があるため、
   `duration_ms`後に明示的に`stop_rumble()`を呼んで止める。
 
+### 制御収束待ち(STOP_HOLD)の一時短縮
+
+STOP/TURN完了後、mob側は角度整定のため`params.stop_hold_sec`(既定0.5秒)
+だけホールドしてからDONEを返す(CLAUDE.md参照、慣性回転中の角度誤取り込み
+防止のための意図的な仕様)。手動操作ではこれが体感レイテンシの主因になる
+ため、`remote_server.py`は起動時にPGET/PSETで`stop_hold_sec`を一時的に
+0.05秒へ短縮し(NVSには保存しないためRAM上のみ、mob再起動で既定値に戻る)、
+終了時に元の値へ復元する。復元はSIGTERM/SIGINTどちらでも実行される
+(SIGTERMは内部でKeyboardInterruptに変換して同じ終了経路に合流させている)。
+
+⚠️ SIGKILL・電源断など復元コードが一切走らない終了のさせ方をすると、mobの
+電源が入ったままの間(次にmicromouseの探索走行等を行うときも)ホールド
+時間が短いままになり、旋回精度に影響しうる。気づいた場合はmobを再起動する
+か、`software/util/param_tui.py`等で`stop_hold_sec`を0.5へ手動で戻すこと。
+
 ## 安全設計
 
 - PC側は実際のボタン入力が無くても一定間隔(既定0.2秒)でハートビートを

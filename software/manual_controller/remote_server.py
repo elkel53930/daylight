@@ -16,6 +16,15 @@ remote_controller.py(ハード非依存、ユニットテスト済み)が持つ�
       (micromouse の中断ボタンと同じ仕組み)。
     - 切断時・起動終了時は必ず emergency_stop()(QSTP→ダメならMOT,0,0)する。
 
+STOP/TURN 完了後の角度整定ホールド(mob の params.stop_hold_sec、既定0.5秒)
+は手動操作では体感レイテンシの主因になるため、起動時に一時的に短縮し
+(FAST_STOP_HOLD_SEC)、終了時に元の値へ復元する(PSET、NVSには保存しない
+のでRAM上のみの変更)。復元は SIGTERM/SIGINT ハンドラ経由でも必ず実行される
+ようにしているが、SIGKILL・電源断など復元コードが一切走らない終了のさせ方を
+すると、mob の電源が入ったままの間(次の実機テスト等でも)ホールド時間が
+短いままになる(micromouseの旋回精度に影響しうる)。気づいた場合は
+mob を再起動するか、PGET/PSETで手動で0.5へ戻すこと。
+
 ui_server が起動していれば OLED に状態(待機中/接続中)を表示し、Lボタンで
 終了できる(default_app のメニューから起動した場合、default_ui は子プロセスの
 終了を待つだけで強制終了しないため、これが無いとメニューに戻れなくなる)。
@@ -33,6 +42,7 @@ from __future__ import annotations
 
 import argparse
 import queue
+import signal
 import socket
 import sys
 import threading
@@ -53,6 +63,8 @@ WATCHDOG_TIMEOUT_S = 1.0   # この間メッセージ(ハートビート含む)�
 RECV_TIMEOUT_S = 0.2
 WORKER_POLL_S = 0.02
 RUMBLE_DURATION_MS = 100   # 1コマンド完了ごとにPC側コントローラを振動させる長さ
+FAST_STOP_HOLD_SEC = 0.05  # 手動操作中のSTOP/TURN整定ホールド時間(既定0.5秒からの一時短縮)
+STOP_HOLD_PARAM = "stop_hold_sec"
 
 OPERATION_GUIDE = """\
 === 操作方法 ===
@@ -287,6 +299,15 @@ def main() -> int:
     ap.add_argument("--no-gyro-calibrate", action="store_true", help="起動時のGCALを省略")
     args = ap.parse_args()
 
+    # SIGTERM でも finally の後始末(stop_hold_sec の復元・emergency_stop等)を
+    # 確実に走らせるため、既存の KeyboardInterrupt(SIGINT)経路に合流させる
+    # (software/ui/ui_server.py の signal ハンドラと同じ考え方)。SIGKILL・
+    # 電源断はこれでも防げない(モジュール docstring 参照)。
+    def _on_sigterm(signum, frame):
+        raise KeyboardInterrupt()
+
+    signal.signal(signal.SIGTERM, _on_sigterm)
+
     link_lost = threading.Event()
     should_stop = threading.Event()
     base = MobileBase(args.mob_port, args.mob_baud, abort_check=link_lost.is_set)
@@ -300,6 +321,7 @@ def main() -> int:
     info = None
     server_sock: Optional[socket.socket] = None
     arm = None
+    original_stop_hold_sec: Optional[float] = None
 
     try:
         if not args.no_gyro_calibrate:
@@ -320,6 +342,18 @@ def main() -> int:
         # (micromouseのhw_test.py/pattern_test.py/state_machine.pyと同じ
         # 起動時有効化・終了時無効化のパターン)。
         base.wall_led(True)
+
+        # STOP/TURN完了後の角度整定ホールド(既定0.5秒)を一時的に短縮する。
+        # 元の値を読めた場合のみ変更・復元する(読めなければ何もしない=安全側)。
+        original_stop_hold_sec = base.get_param(STOP_HOLD_PARAM)
+        if original_stop_hold_sec is not None:
+            base.set_param(STOP_HOLD_PARAM, FAST_STOP_HOLD_SEC)
+            print(
+                f"# {STOP_HOLD_PARAM}: {original_stop_hold_sec:.3f}s → "
+                f"{FAST_STOP_HOLD_SEC:.3f}s (終了時に復元)"
+            )
+        else:
+            print(f"# {STOP_HOLD_PARAM} を取得できなかったため変更しません")
 
         rumble_queue: "queue.Queue" = queue.Queue()
 
@@ -376,6 +410,9 @@ def main() -> int:
             base.wall_led(False)
             base.set_fan_percent(FAN_OFF_PERCENT)
             base.set_reload_servo(RELOAD_HOME_DEG)
+            if original_stop_hold_sec is not None:
+                base.set_param(STOP_HOLD_PARAM, original_stop_hold_sec)
+                print(f"# {STOP_HOLD_PARAM}: {original_stop_hold_sec:.3f}s に復元しました")
             if arm is not None:
                 arm.set_angle(ARM_HOME_DEG, move_time_ms=ARM_MOVE_TIME_MS)
                 time.sleep(ARM_MOVE_TIME_MS / 1000.0)
