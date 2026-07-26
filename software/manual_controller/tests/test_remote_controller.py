@@ -29,6 +29,9 @@ class FakeBase:
     def turn(self, angle_rad):
         self._record("turn", angle_rad)
 
+    def reset_distance(self):
+        self._record("reset_distance")
+
     def latch_forward(self):
         self._record("latch_forward")
 
@@ -79,8 +82,10 @@ class TestDpadUpRepeatForward(unittest.TestCase):
         ctrl.step()
         ctrl.step()
         ctrl.step()
+        # 毎回 reset_distance() してから stop_at() する(過去のJOG/FWDによる
+        # 位置ズレを引きずらず、常に現在位置からちょうど180mm進むため)
         self.assertEqual(
-            base.calls, [("stop_at", 300.0, 1000.0, 180.0)] * 3
+            base.calls, [("reset_distance",), ("stop_at", 300.0, 1000.0, 180.0)] * 3
         )
 
     def test_release_stops_further_cells(self):
@@ -89,7 +94,17 @@ class TestDpadUpRepeatForward(unittest.TestCase):
         ctrl.step()  # 1区間実行
         ctrl.on_event(proto.DPAD_UP, proto.ACTION_UP)
         ctrl.step()  # もう動かない
-        self.assertEqual(base.calls, [("stop_at", 300.0, 1000.0, 180.0)])
+        self.assertEqual(
+            base.calls, [("reset_distance",), ("stop_at", 300.0, 1000.0, 180.0)]
+        )
+
+    def test_reset_distance_failure_skips_stop_at_this_tick(self):
+        ctrl, base = make_controller()
+        base.raise_on = ("reset_distance", AbortRequested("link lost"))
+        ctrl.on_event(proto.DPAD_UP, proto.ACTION_DOWN)
+        ctrl.step()
+        # reset_distance が失敗したら、そのtickではstop_atを呼ばない
+        self.assertEqual(base.calls, [])
 
     def test_idle_step_calls_nothing(self):
         ctrl, base = make_controller()
@@ -137,7 +152,8 @@ class TestTurns(unittest.TestCase):
         ctrl.step()  # turn が優先
         ctrl.step()  # turn 消化済みなので dpad_up の前進
         self.assertEqual(
-            base.calls, [("turn", -math.pi / 2), ("stop_at", 300.0, 1000.0, 180.0)]
+            base.calls,
+            [("turn", -math.pi / 2), ("reset_distance",), ("stop_at", 300.0, 1000.0, 180.0)],
         )
 
     def test_multiple_presses_before_any_step_are_all_queued_in_order(self):
@@ -267,7 +283,9 @@ class TestAbortDuringMotionDoesNotCrash(unittest.TestCase):
         base.raise_on = ("stop_at", AbortRequested("link lost"))
         ctrl.on_event(proto.DPAD_UP, proto.ACTION_DOWN)
         ctrl.step()  # 例外を吸収して落ちないこと
-        self.assertEqual(base.calls, [])  # raise_on の記録はしない設計(_record内でraise)
+        # reset_distance は成功して記録される(raise_onはstop_at側のみ)。
+        # raise_on の記録はしない設計(_record内でraise)なのでstop_at自体は残らない。
+        self.assertEqual(base.calls, [("reset_distance",)])
 
 
 class TestR1ReloadRelease(unittest.TestCase):

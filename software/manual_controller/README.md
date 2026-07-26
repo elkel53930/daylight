@@ -105,6 +105,15 @@ zeroconfで機体を自動検索して接続する。`--host <IP> --port <PORT>`
 `software/mob/README.md`)を使う低速連続動作。十字キー上/左右/下は
 `MobileBase.stop_at()`/`turn()`(1区間ごとに完全停止・90/180度旋回)を使う。
 
+十字キー上は、mobのSTOPを送る前に毎回`reset_distance()`(RDST)を呼ぶ。
+mobのSTOPは指令距離を累積目標(`cumulative_goal_dist_mm`)に加算する方式で、
+JOGFWD/JOGBACK(△×)はこの累積値を更新しない。そのため直前にJOGで動いて
+いたり、過去のSTOP/FWDの実移動量が指令値からわずかにずれていたりすると、
+そのズレを引きずったまま「180mm前進」のつもりが違う距離になる(実機で
+確認: リセット無しだと指令30mmに対し実際22.7mmしか進まなかった)。毎回
+リセットすることで、常に現在位置からちょうど`--cell-mm`(既定180mm)だけ
+進むようにしている。
+
 ### L1: ボール回収シーケンス(`ball_pickup.py`)
 
 1. アームサーボ(Futaba)・リロードサーボ(mob SRV)を0度へ

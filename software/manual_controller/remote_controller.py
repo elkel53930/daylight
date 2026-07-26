@@ -84,6 +84,7 @@ class RemoteBase(BallPickupBase, Protocol):
 
     def stop_at(self, speed_mmps: float, accel_mmps2: float, distance_mm: float) -> None: ...
     def turn(self, angle_rad: float) -> None: ...
+    def reset_distance(self) -> None: ...
     def latch_forward(self) -> None: ...
     def latch_backward(self) -> None: ...
     def latch_turn_left(self) -> None: ...
@@ -187,11 +188,20 @@ class RemoteController:
         with self._lock:
             dpad_up_held = self._dpad_up_held
         if dpad_up_held:
-            ok = self._safe_call(
-                self.base.stop_at, self.cell_speed_mmps, self.cell_accel_mmps2, self.cell_size_mm
-            )
-            if ok:
-                self._notify_command_done()
+            # mob の STOP は距離を累積目標(cumulative_goal_dist_mm)に
+            # 加算する方式で、JOG系コマンド(JOGFWD/JOGBACK)はこの累積値を
+            # 更新しない。そのため直前にJOGで動いていたり、過去のFWD/STOPの
+            # 実移動量が指令値とわずかにずれていたりすると、そのズレを
+            # 引きずったまま「180mm前進」のつもりが違う距離になる。
+            # 毎回 RDST(距離リセット、cumulative_goal_dist_mmも同時に
+            # リセットされる)してから STOP することで、常に現在位置から
+            # 正確に cell_size_mm だけ進むようにする。
+            if self._safe_call(self.base.reset_distance):
+                ok = self._safe_call(
+                    self.base.stop_at, self.cell_speed_mmps, self.cell_accel_mmps2, self.cell_size_mm
+                )
+                if ok:
+                    self._notify_command_done()
             return
 
     def handle_disconnect(self) -> None:
