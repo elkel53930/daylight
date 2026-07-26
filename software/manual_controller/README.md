@@ -23,6 +23,7 @@ remote_client.py  ──── TCP ────▶  remote_server.py
 | `remote_protocol.py` | 両方 | 通信メッセージ形式・zeroconfサービス種別の共有定義(依存無し) |
 | `remote_controller.py` | 機体側 | ボタン→機体動作の変換ロジック本体(ハード非依存、ユニットテスト済み) |
 | `ball_pickup.py` | 機体側 | L1のボール回収シーケンス本体(ハード非依存、duck-typedなbase/arm) |
+| `camera_stream.py` | 機体側 | カメラ映像のHTTP配信(Picamera2、検出オーバーレイ無しの生映像) |
 | `remote_server.py` | 機体側 | zeroconf広告 + TCPサーバー + MobileBase/Futabaアーム制御(実行スクリプト) |
 | `input_mapping.py` | PC側 | pygameの十字キー(hat)/ボタン値 → protocolのボタン名への変換、受信行分割・振動(rumble)処理(pygame非依存) |
 | `remote_client.py` | PC側 | zeroconf検索 + pygame入力 + TCP送信(実行スクリプト) |
@@ -64,7 +65,16 @@ OLEDに状態(待機中/接続中のIP)を表示し、Lボタンで終了でき�
 --service-name daylight      zeroconf上のサービス名(PC側と合わせる)
 --speed-mmps / --accel-mmps2 / --cell-mm   十字キー上の1区間前進のパラメータ
 --no-gyro-calibrate          起動時のGCALを省略
+--camera-port 8080           カメラ映像配信のTCPポート
+--no-camera                  カメラ映像配信を無効化
 ```
+
+起動ログに表示される `http://<機体IP>:8080/` をPCのブラウザで開くと、
+操作中の機体カメラ映像(自動更新、検出オーバーレイ無しの生映像)を
+確認できる。カメラに接続できない場合は警告を出すだけで操作自体は続行する。
+カメラの向きはFutabaアームサーボと連動しており、走行中はホーム位置
+(論理角度0度=前方固定)だが、L1のボール回収シーケンス中はアームが動く
+ため映像の向きも一時的に変わる。
 
 PC側:
 

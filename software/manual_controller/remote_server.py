@@ -31,6 +31,10 @@ ui_server が起動していれば OLED に状態(待機中/接続中)を表示�
 ui_server が無い環境(SSH手動実行等)では自動的にスキップされ、Ctrl+C で
 終了する。
 
+カメラ映像を PC のブラウザで確認しながら操作できるよう、起動時にHTTP
+配信サーバー(camera_stream.py)も立ち上げる(既定 --camera-port 8080)。
+接続できない/失敗した場合は警告を出すだけで操作自体には影響しない。
+
 使い方:
     software/venv/bin/python3 software/manual_controller/remote_server.py
 
@@ -58,6 +62,7 @@ import remote_protocol as proto  # noqa: E402
 from remote_controller import RemoteController  # noqa: E402
 from mobile_base import MobileBase  # noqa: E402
 from ball_pickup import ARM_HOME_DEG, ARM_MOVE_TIME_MS, FAN_OFF_PERCENT, RELOAD_HOME_DEG  # noqa: E402
+from camera_stream import start_camera_server, stop_camera_server  # noqa: E402
 
 WATCHDOG_TIMEOUT_S = 1.0   # この間メッセージ(ハートビート含む)が来なければ緊急停止
 RECV_TIMEOUT_S = 0.2
@@ -297,6 +302,8 @@ def main() -> int:
     ap.add_argument("--accel-mmps2", type=float, default=1000.0, help="1区間前進の加減速度")
     ap.add_argument("--cell-mm", type=float, default=180.0, help="1区間の距離")
     ap.add_argument("--no-gyro-calibrate", action="store_true", help="起動時のGCALを省略")
+    ap.add_argument("--camera-port", type=int, default=8080, help="カメラ映像配信のTCPポート")
+    ap.add_argument("--no-camera", action="store_true", help="カメラ映像配信を無効化")
     args = ap.parse_args()
 
     # SIGTERM でも finally の後始末(stop_hold_sec の復元・emergency_stop等)を
@@ -322,6 +329,8 @@ def main() -> int:
     server_sock: Optional[socket.socket] = None
     arm = None
     original_stop_hold_sec: Optional[float] = None
+    camera_server = None
+    camera_source = None
 
     try:
         if not args.no_gyro_calibrate:
@@ -373,6 +382,11 @@ def main() -> int:
 
         zc, info = register_zeroconf(args.control_port, args.service_name)
 
+        if not args.no_camera:
+            camera_server, camera_source = start_camera_server("0.0.0.0", args.camera_port)
+            if camera_server is not None:
+                print(f"# カメラ映像: http://{get_local_ip()}:{args.camera_port}/")
+
         server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         server_sock.bind(("0.0.0.0", args.control_port))
@@ -403,6 +417,7 @@ def main() -> int:
         if zc is not None:
             zc.unregister_service(info)
             zc.close()
+        stop_camera_server(camera_server, camera_source)
         base.emergency_stop()
         # ボール回収機構を安全な既定状態(ファンOFF・リロード/アーム0度)に
         # 戻してから閉じる。close()後は書き込めないため、必ずclose()より前に行う。
