@@ -1,13 +1,18 @@
-"""PC 側: pygame のジョイスティック入力を protocol.py のボタン名に変換する。
+"""PC 側の、pygame 非依存な入出力ロジック。
 
 pygame 自体には依存しない(値の変換ロジックのみ)ので、PC 実機が無くても
-ユニットテストできる。DualSense を pygame で開いた場合の実測マッピング
-(software/manual_controller/dualsense_test.py で確認済み)を使う。
+ユニットテストできる(remote_client.py は pygame を無条件 import するため、
+テスト対象のロジックはこちらに置く)。
+
+- 入力: pygame のジョイスティック入力 → protocol.py のボタン名への変換。
+  DualSense を pygame で開いた場合の実測マッピング
+  (software/manual_controller/dualsense_test.py で確認済み)を使う。
+- 出力: 機体からの受信データの行分割・振動(rumble)通知の解釈。
 """
 
 from __future__ import annotations
 
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import remote_protocol as proto
 
@@ -57,3 +62,36 @@ def hat_to_events(prev: HatValue, cur: HatValue) -> List[Tuple[str, str]]:
             events.append((proto.DPAD_DOWN, proto.ACTION_DOWN))
 
     return events
+
+
+def process_incoming_lines(buf: bytes, chunk: bytes) -> Tuple[bytes, List[dict]]:
+    """受信バッファに chunk を追加し、完成した行を decode_line してリストで返す。
+
+    壊れた行は無視する(decode_line が None を返す行はスキップ)。戻り値は
+    (残りの未完成バッファ, メッセージ一覧)。
+    """
+    buf += chunk
+    messages: List[dict] = []
+    while b"\n" in buf:
+        line, buf = buf.split(b"\n", 1)
+        msg = proto.decode_line(line.decode("utf-8", errors="replace"))
+        if msg is not None:
+            messages.append(msg)
+    return buf, messages
+
+
+def apply_rumble_messages(joystick, messages: List[dict], now: float) -> Optional[float]:
+    """messages 中の rumble 通知を処理し、コントローラを振動させる。
+
+    複数あれば最後のものを採用する。振動を止めるべき時刻(time.monotonic()
+    と同じ基準)を返す(rumble通知が無ければ None)。duck-typed な
+    joystick(rumble(low, high, duration_ms)を持てば何でもよい)を受け取る。
+    """
+    stop_at: Optional[float] = None
+    for msg in messages:
+        if msg.get("type") != proto.MSG_TYPE_RUMBLE:
+            continue
+        duration_ms = msg.get("duration_ms", 0)
+        joystick.rumble(1.0, 1.0, int(duration_ms))
+        stop_at = now + duration_ms / 1000.0
+    return stop_at

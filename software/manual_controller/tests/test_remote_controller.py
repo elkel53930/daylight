@@ -340,5 +340,96 @@ class TestL1BallPickup(unittest.TestCase):
         mock_run.assert_not_called()
 
 
+class TestCommandDoneCallback(unittest.TestCase):
+    """1区間前進・90/180度旋回の完了時のみ on_command_done を呼ぶこと。
+
+    JOG(押しっぱなし)・L1・R1では呼ばれない(コントローラ振動フィードバックは
+    「1コマンド完了」の合図であり、押しっぱなし操作には不要なため)。
+    """
+
+    def _make(self):
+        base = FakeBase()
+        done_calls = []
+        ctrl = RemoteController(
+            base,
+            cell_speed_mmps=300.0,
+            cell_accel_mmps2=1000.0,
+            cell_size_mm=180.0,
+            on_command_done=lambda: done_calls.append(1),
+        )
+        return ctrl, base, done_calls
+
+    def test_dpad_up_success_notifies(self):
+        ctrl, base, done_calls = self._make()
+        ctrl.on_event(proto.DPAD_UP, proto.ACTION_DOWN)
+        ctrl.step()
+        self.assertEqual(len(done_calls), 1)
+
+    def test_dpad_up_repeats_notify_each_cell(self):
+        ctrl, base, done_calls = self._make()
+        ctrl.on_event(proto.DPAD_UP, proto.ACTION_DOWN)
+        ctrl.step()
+        ctrl.step()
+        ctrl.step()
+        self.assertEqual(len(done_calls), 3)
+
+    def test_turn_success_notifies(self):
+        ctrl, base, done_calls = self._make()
+        ctrl.on_event(proto.DPAD_RIGHT, proto.ACTION_DOWN)
+        ctrl.step()
+        self.assertEqual(len(done_calls), 1)
+
+    def test_failed_stop_at_does_not_notify(self):
+        ctrl, base, done_calls = self._make()
+        base.raise_on = ("stop_at", AbortRequested("link lost"))
+        ctrl.on_event(proto.DPAD_UP, proto.ACTION_DOWN)
+        ctrl.step()
+        self.assertEqual(done_calls, [])
+
+    def test_failed_turn_does_not_notify(self):
+        ctrl, base, done_calls = self._make()
+        base.raise_on = ("turn", AbortRequested("link lost"))
+        ctrl.on_event(proto.DPAD_RIGHT, proto.ACTION_DOWN)
+        ctrl.step()
+        self.assertEqual(done_calls, [])
+
+    def test_jog_does_not_notify(self):
+        ctrl, base, done_calls = self._make()
+        ctrl.on_event(proto.TRIANGLE, proto.ACTION_DOWN)
+        ctrl.step()
+        ctrl.on_event(proto.TRIANGLE, proto.ACTION_UP)
+        ctrl.step()
+        self.assertEqual(done_calls, [])
+
+    def test_l1_does_not_notify(self):
+        ctrl, base, done_calls = self._make()
+        ctrl.arm = FakeArm()
+        with patch("remote_controller.run_ball_pickup", return_value=True):
+            ctrl.on_event(proto.L1, proto.ACTION_DOWN)
+            ctrl.step()
+        self.assertEqual(done_calls, [])
+
+    def test_r1_does_not_notify(self):
+        ctrl, base, done_calls = self._make()
+        ctrl.on_event(proto.R1, proto.ACTION_DOWN)
+        ctrl.step()
+        self.assertEqual(done_calls, [])
+
+    def test_no_callback_configured_does_not_crash(self):
+        ctrl, base = make_controller()  # on_command_done未指定(None)
+        ctrl.on_event(proto.DPAD_UP, proto.ACTION_DOWN)
+        ctrl.step()  # 例外を出さないこと
+
+    def test_callback_exception_does_not_crash_step(self):
+        base = FakeBase()
+
+        def bad_callback():
+            raise RuntimeError("boom")
+
+        ctrl = RemoteController(base, on_command_done=bad_callback)
+        ctrl.on_event(proto.DPAD_UP, proto.ACTION_DOWN)
+        ctrl.step()  # コールバック内例外を吸収して落ちないこと
+
+
 if __name__ == "__main__":
     unittest.main()

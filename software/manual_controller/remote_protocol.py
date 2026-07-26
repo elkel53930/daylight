@@ -13,12 +13,18 @@ Content-Length 等のフレーミングは行わない。1メッセージが十�
 
     {"type": "button", "name": "dpad_up", "action": "down"}\n
     {"type": "heartbeat"}\n
+    {"type": "rumble", "duration_ms": 100}\n
 
 - type="button": ボタンの押下/解放イベント。name は BUTTON_NAMES のいずれか、
-  action は "down"(押下) または "up"(解放)。
+  action は "down"(押下) または "up"(解放)。PC→robot 方向のみ。
 - type="heartbeat": PC 側が接続維持を示すために一定間隔で送る(実際の
   ボタン入力が無くても送る)。robot 側はこれが一定時間途絶えたらリンク
   切断とみなし緊急停止する(remote_server.py の WATCHDOG_TIMEOUT_S)。
+  PC→robot 方向のみ。
+- type="rumble": robot→PC 方向のみ。1コマンド(1区間前進・90/180度旋回)
+  完了時に robot 側から送る通知。PC 側はこれを受けてコントローラを
+  duration_ms だけ振動させる(remote_client.py)。JOG系(押しっぱなし)や
+  L1/R1では送らない(remote_controller.py 参照)。
 
 ## zeroconf
 
@@ -58,6 +64,7 @@ ACTIONS = frozenset({ACTION_DOWN, ACTION_UP})
 
 MSG_TYPE_BUTTON = "button"
 MSG_TYPE_HEARTBEAT = "heartbeat"
+MSG_TYPE_RUMBLE = "rumble"
 
 
 @dataclass(frozen=True)
@@ -79,6 +86,12 @@ def encode_button_event(name: str, action: str) -> bytes:
 def encode_heartbeat() -> bytes:
     """ハートビートメッセージを1行分の JSON バイト列にする。"""
     return (json.dumps({"type": MSG_TYPE_HEARTBEAT}) + "\n").encode("utf-8")
+
+
+def encode_rumble(duration_ms: int) -> bytes:
+    """振動通知(robot→PC)を1行分の JSON バイト列にする。"""
+    line = json.dumps({"type": MSG_TYPE_RUMBLE, "duration_ms": int(duration_ms)})
+    return (line + "\n").encode("utf-8")
 
 
 def decode_line(line: str) -> Optional[dict]:
@@ -106,4 +119,9 @@ def decode_line(line: str) -> Optional[dict]:
         if name not in BUTTON_NAMES or action not in ACTIONS:
             return None
         return {"type": MSG_TYPE_BUTTON, "name": name, "action": action}
+    if msg_type == MSG_TYPE_RUMBLE:
+        duration_ms = data.get("duration_ms")
+        if not isinstance(duration_ms, (int, float)):
+            return None
+        return {"type": MSG_TYPE_RUMBLE, "duration_ms": duration_ms}
     return None

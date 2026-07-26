@@ -52,7 +52,7 @@ import sys
 import threading
 from collections import deque
 from pathlib import Path
-from typing import Deque, Optional, Protocol, Tuple
+from typing import Callable, Deque, Optional, Protocol, Tuple
 
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent / "micromouse"))
@@ -102,12 +102,17 @@ class RemoteController:
         cell_speed_mmps: float = 300.0,
         cell_accel_mmps2: float = 1000.0,
         cell_size_mm: float = 180.0,
+        on_command_done: Optional[Callable[[], None]] = None,
     ):
         self.base = base
         self.arm = arm
         self.cell_speed_mmps = cell_speed_mmps
         self.cell_accel_mmps2 = cell_accel_mmps2
         self.cell_size_mm = cell_size_mm
+        # 1区間前進・90/180度旋回が成功完了するたびに呼ぶコールバック
+        # (コントローラの振動フィードバック用、remote_server.py参照)。
+        # JOG系(押しっぱなし)・L1・R1では呼ばない。
+        self.on_command_done = on_command_done
 
         self.ball_held = False  # L1シーケンス成功で True(OLED表示等に利用)
 
@@ -182,9 +187,11 @@ class RemoteController:
         with self._lock:
             dpad_up_held = self._dpad_up_held
         if dpad_up_held:
-            self._safe_call(
+            ok = self._safe_call(
                 self.base.stop_at, self.cell_speed_mmps, self.cell_accel_mmps2, self.cell_size_mm
             )
+            if ok:
+                self._notify_command_done()
             return
 
     def handle_disconnect(self) -> None:
@@ -213,7 +220,8 @@ class RemoteController:
     def _dispatch_action(self, action: Tuple[str, object]) -> None:
         kind, payload = action
         if kind == ACTION_TURN:
-            self._safe_call(self.base.turn, payload)
+            if self._safe_call(self.base.turn, payload):
+                self._notify_command_done()
         elif kind == ACTION_BALL_PICKUP:
             self._run_ball_pickup()
         elif kind == ACTION_RELOAD_RELEASE:
@@ -243,13 +251,25 @@ class RemoteController:
         elif name == proto.SQUARE:
             self._safe_call(self.base.latch_turn_left)
 
-    def _safe_call(self, fn, *args) -> None:
+    def _safe_call(self, fn, *args) -> bool:
         """base 呼び出しの例外を吸収する(リンク切断による中断など)。
 
         通信スレッドの watchdog が handle_disconnect() を呼んで安全停止
         させる設計なので、ここでは実行を継続できるようにログのみ行う。
+        戻り値: 例外無く完了したら True(振動通知など、成功時のみ行う
+        処理の判断に使う)。
         """
         try:
             fn(*args)
+            return True
         except (AbortRequested, MobileBaseError) as e:
             print(f"# RemoteController: 動作中断({fn.__name__}): {e}")
+            return False
+
+    def _notify_command_done(self) -> None:
+        if self.on_command_done is None:
+            return
+        try:
+            self.on_command_done()
+        except Exception as e:
+            print(f"# RemoteController: on_command_done コールバックでエラー: {e}")

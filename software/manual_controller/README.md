@@ -24,7 +24,7 @@ remote_client.py  ──── TCP ────▶  remote_server.py
 | `remote_controller.py` | 機体側 | ボタン→機体動作の変換ロジック本体(ハード非依存、ユニットテスト済み) |
 | `ball_pickup.py` | 機体側 | L1のボール回収シーケンス本体(ハード非依存、duck-typedなbase/arm) |
 | `remote_server.py` | 機体側 | zeroconf広告 + TCPサーバー + MobileBase/Futabaアーム制御(実行スクリプト) |
-| `input_mapping.py` | PC側 | pygameの十字キー(hat)/ボタン値 → protocolのボタン名への変換(pygame非依存) |
+| `input_mapping.py` | PC側 | pygameの十字キー(hat)/ボタン値 → protocolのボタン名への変換、受信行分割・振動(rumble)処理(pygame非依存) |
 | `remote_client.py` | PC側 | zeroconf検索 + pygame入力 + TCP送信(実行スクリプト) |
 | `dualsense_test.py` | PC側 | コントローラ入力の生確認用(既存、参考にした) |
 | `tests/` | どこでも | ユニットテスト(ハード・ネットワーク・pygame不要) |
@@ -122,6 +122,23 @@ zeroconfで機体を自動検索して接続する。`--host <IP> --port <PORT>`
 中も FIFO キューに積まれ、取りこぼされずに押した順で実行される
 (`remote_controller.py`)。
 
+### 完了時の振動フィードバック
+
+十字キー上(1区間前進)・左/右/下(90/180度旋回)が**成功**完了するたびに、
+機体からPCへ振動通知(`{"type": "rumble", "duration_ms": 100}`)を送り、
+コントローラを0.1秒振動させる。JOG系(△○×▢、押しっぱなし)・L1・R1では
+送らない(完了タイミングが曖昧、または元々押しっぱなしで完了概念が無い
+ため)。失敗(リンク切断等で`AbortRequested`/`MobileBaseError`)した場合も
+送らない。
+
+- 機体側: `RemoteController(..., on_command_done=...)` に渡したコールバックが
+  成功時のみ呼ばれる(`remote_controller.py`)。`remote_server.py` は
+  `queue.Queue` 経由でこれを `handle_client()` に渡し、TCP で送信する。
+- PC側: `remote_client.py` が `select` で受信データを非ブロッキングに確認し、
+  rumble通知を受けたら `joystick.rumble(1.0, 1.0, duration_ms)` を呼ぶ。
+  pygameの`rumble()`の`duration_ms`引数は無視される既知の不具合があるため、
+  `duration_ms`後に明示的に`stop_rumble()`を呼んで止める。
+
 ## 安全設計
 
 - PC側は実際のボタン入力が無くても一定間隔(既定0.2秒)でハートビートを
@@ -140,9 +157,10 @@ software/venv/bin/python3 -m unittest discover -s software/manual_controller/tes
 ```
 
 `remote_controller.py`(ボタン→動作の変換ロジック、duck-typedなフェイク
-base で検証)、`ball_pickup.py`(L1シーケンス、sleep/nowを差し替え可能な
-偽時計で実時間待機なしに手順・タイミング・分岐を検証)、`input_mapping.py`
-(十字キーの hat 値変換)、`remote_protocol.py`(メッセージのエンコード/
-デコード)、`remote_server.py` のTCP受信・watchdog・切断処理(ローカル
-ループバックソケットで検証)をハードウェア・実ネットワーク・pygame・
-zeroconf無しでテストできる。
+base で検証。on_command_done コールバックが成功時のみ呼ばれることも含む)、
+`ball_pickup.py`(L1シーケンス、sleep/nowを差し替え可能な偽時計で実時間
+待機なしに手順・タイミング・分岐を検証)、`input_mapping.py`(十字キーの
+hat 値変換、受信行分割、rumble通知の解釈)、`remote_protocol.py`
+(メッセージのエンコード/デコード)、`remote_server.py` のTCP受信・
+watchdog・切断処理・振動通知の送信(ローカルループバックソケットで検証)を
+ハードウェア・実ネットワーク・pygame・zeroconf無しでテストできる。

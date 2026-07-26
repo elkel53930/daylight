@@ -55,5 +55,19 @@ class TestDecodeLine(unittest.TestCase):
         )
 
 
+class TestEncodeDecodeRumble(unittest.TestCase):
+    def test_roundtrip(self):
+        raw = proto.encode_rumble(100)
+        self.assertTrue(raw.endswith(b"\n"))
+        decoded = proto.decode_line(raw.decode("utf-8"))
+        self.assertEqual(decoded, {"type": "rumble", "duration_ms": 100})
+
+    def test_missing_duration_returns_none(self):
+        self.assertIsNone(proto.decode_line('{"type": "rumble"}'))
+
+    def test_non_numeric_duration_returns_none(self):
+        self.assertIsNone(proto.decode_line('{"type": "rumble", "duration_ms": "soon"}'))
+
+
 if __name__ == "__main__":
     unittest.main()

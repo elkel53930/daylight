@@ -32,6 +32,7 @@ pip install 等の環境変更はユーザーが行うこと)。
 from __future__ import annotations
 
 import argparse
+import queue
 import socket
 import sys
 import threading
@@ -51,6 +52,7 @@ from ball_pickup import ARM_HOME_DEG, ARM_MOVE_TIME_MS, FAN_OFF_PERCENT, RELOAD_
 WATCHDOG_TIMEOUT_S = 1.0   # この間メッセージ(ハートビート含む)が来なければ緊急停止
 RECV_TIMEOUT_S = 0.2
 WORKER_POLL_S = 0.02
+RUMBLE_DURATION_MS = 100   # 1コマンド完了ごとにPC側コントローラを振動させる長さ
 
 OPERATION_GUIDE = """\
 === 操作方法 ===
@@ -171,14 +173,36 @@ def worker_loop(controller: RemoteController, stop_event: threading.Event) -> No
         time.sleep(WORKER_POLL_S)
 
 
+def _drain_rumble_queue(conn: socket.socket, rumble_queue: "queue.Queue") -> bool:
+    """溜まっている振動通知を全て送信する。送信失敗したら False を返す。"""
+    while True:
+        try:
+            duration_ms = rumble_queue.get_nowait()
+        except queue.Empty:
+            return True
+        try:
+            conn.sendall(proto.encode_rumble(duration_ms))
+        except OSError as e:
+            print(f"# 振動通知の送信に失敗: {e}")
+            return False
+
+
 def handle_client(
     conn: socket.socket,
     controller: RemoteController,
     link_lost: threading.Event,
     should_stop: Optional[threading.Event] = None,
+    rumble_queue: Optional["queue.Queue"] = None,
 ) -> None:
     if should_stop is None:
         should_stop = threading.Event()  # 未指定なら「終了要求なし」として扱う
+    if rumble_queue is not None:
+        # 前回接続時(未接続中)に溜まった古い通知は捨てて開始する
+        while True:
+            try:
+                rumble_queue.get_nowait()
+            except queue.Empty:
+                break
     conn.settimeout(RECV_TIMEOUT_S)
     buf = b""
     last_msg = time.monotonic()
@@ -192,6 +216,8 @@ def handle_client(
             except socket.timeout:
                 if time.monotonic() - last_msg > WATCHDOG_TIMEOUT_S:
                     print("# 通信途絶(watchdog timeout)を検知")
+                    return
+                if rumble_queue is not None and not _drain_rumble_queue(conn, rumble_queue):
                     return
                 continue
             except OSError as e:
@@ -212,6 +238,9 @@ def handle_client(
                 if msg["type"] == proto.MSG_TYPE_BUTTON:
                     controller.on_event(msg["name"], msg["action"])
                 # heartbeat はここまでで last_msg 更新済み、他に何もしない
+
+            if rumble_queue is not None and not _drain_rumble_queue(conn, rumble_queue):
+                return
     finally:
         link_lost.set()
         controller.handle_disconnect()
@@ -223,6 +252,7 @@ def accept_loop(
     link_lost: threading.Event,
     should_stop: threading.Event,
     status: dict,
+    rumble_queue: Optional["queue.Queue"] = None,
 ) -> None:
     server_sock.settimeout(0.5)
     while not should_stop.is_set():
@@ -239,7 +269,7 @@ def accept_loop(
         status["text"] = f"conn {addr[0]}"
         link_lost.clear()
         try:
-            handle_client(conn, controller, link_lost, should_stop)
+            handle_client(conn, controller, link_lost, should_stop, rumble_queue)
         finally:
             conn.close()
         print("# 切断")
@@ -291,12 +321,15 @@ def main() -> int:
         # 起動時有効化・終了時無効化のパターン)。
         base.wall_led(True)
 
+        rumble_queue: "queue.Queue" = queue.Queue()
+
         controller = RemoteController(
             base,
             arm=arm,
             cell_speed_mmps=args.speed_mmps,
             cell_accel_mmps2=args.accel_mmps2,
             cell_size_mm=args.cell_mm,
+            on_command_done=lambda: rumble_queue.put(RUMBLE_DURATION_MS),
         )
 
         worker = threading.Thread(
@@ -320,7 +353,7 @@ def main() -> int:
         )
         ui_thread.start()
 
-        accept_loop(server_sock, controller, link_lost, should_stop, status)
+        accept_loop(server_sock, controller, link_lost, should_stop, status, rumble_queue)
     except KeyboardInterrupt:
         print("\n# 終了します")
     except Exception as e:

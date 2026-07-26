@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import queue
+import select
 import socket
 import sys
 import time
@@ -29,7 +30,12 @@ import pygame
 sys.path.insert(0, str(Path(__file__).parent))
 
 import remote_protocol as proto
-from input_mapping import BUTTON_INDEX_TO_NAME, hat_to_events
+from input_mapping import (
+    BUTTON_INDEX_TO_NAME,
+    apply_rumble_messages,
+    hat_to_events,
+    process_incoming_lines,
+)
 
 DISCOVER_POLL_S = 0.5
 LOOP_INTERVAL_S = 0.01
@@ -75,11 +81,17 @@ def discover(service_name: str, timeout_s: float) -> Optional[Tuple[str, int]]:
 
 
 def run_session(joystick: "pygame.joystick.Joystick", host: str, port: int, heartbeat_interval_s: float) -> None:
-    """1接続分のメインループ。切断されたら例外(ConnectionError)を送出する。"""
+    """1接続分のメインループ。切断されたら例外(ConnectionError)を送出する。
+
+    機体からの振動通知(rumble)を受け取り、コントローラを振動させる
+    (1区間前進・90/180度旋回の完了合図。JOG系やL1/R1では送られてこない)。
+    """
     with socket.create_connection((host, port), timeout=5.0) as sock:
         print(f"# 接続しました: {host}:{port}")
         prev_hat = (0, 0)
         last_heartbeat = time.monotonic()
+        recv_buf = b""
+        rumble_stop_at: Optional[float] = None
         try:
             while True:
                 for event in pygame.event.get():
@@ -103,6 +115,23 @@ def run_session(joystick: "pygame.joystick.Joystick", host: str, port: int, hear
                 if now - last_heartbeat >= heartbeat_interval_s:
                     sock.sendall(proto.encode_heartbeat())
                     last_heartbeat = now
+
+                # 機体からの振動通知を非ブロッキングで確認する(既存の
+                # sendall中心のループ速度に影響を与えないよう select で
+                # 先にデータの有無だけ調べる)。
+                readable, _, _ = select.select([sock], [], [], 0)
+                if readable:
+                    chunk = sock.recv(4096)
+                    if not chunk:
+                        raise ConnectionError("connection closed by robot")
+                    recv_buf, messages = process_incoming_lines(recv_buf, chunk)
+                    new_stop_at = apply_rumble_messages(joystick, messages, now)
+                    if new_stop_at is not None:
+                        rumble_stop_at = new_stop_at
+
+                if rumble_stop_at is not None and now >= rumble_stop_at:
+                    joystick.stop_rumble()
+                    rumble_stop_at = None
 
                 time.sleep(LOOP_INTERVAL_S)
         except (BrokenPipeError, ConnectionResetError, OSError) as e:

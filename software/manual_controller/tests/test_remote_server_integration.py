@@ -7,6 +7,7 @@ zeroconf 未導入でもこのファイルの import 自体は成功する
 (register_zeroconf() 自体は呼ばない)。
 """
 
+import queue
 import socket
 import sys
 import threading
@@ -168,6 +169,42 @@ class TestHandleClient(unittest.TestCase):
             self.assertFalse(t.is_alive())
             self.assertIn("emergency_stop", [c[0] for c in base.calls_snapshot()])
             client.close()
+        finally:
+            server_sock.close()
+
+    def test_rumble_notification_is_sent_to_client(self):
+        base = FakeBase()
+        rumble_queue: "queue.Queue" = queue.Queue()
+        controller = RemoteController(
+            base, on_command_done=lambda: rumble_queue.put(100)
+        )
+        link_lost = threading.Event()
+        port = free_tcp_port()
+        server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server_sock.bind(("127.0.0.1", port))
+        server_sock.listen(1)
+
+        def accept_once():
+            conn, _addr = server_sock.accept()
+            remote_server.handle_client(conn, controller, link_lost, rumble_queue=rumble_queue)
+            conn.close()
+
+        t = threading.Thread(target=accept_once, daemon=True)
+        t.start()
+        try:
+            client = socket.create_connection(("127.0.0.1", port), timeout=2.0)
+            client.sendall(proto.encode_button_event(proto.DPAD_RIGHT, proto.ACTION_DOWN))
+            time.sleep(0.1)
+            controller.step()  # turn成功 → on_command_done → rumble_queueに積まれる
+
+            client.settimeout(2.0)
+            raw = client.recv(4096)
+            decoded = proto.decode_line(raw.decode("utf-8"))
+            self.assertEqual(decoded, {"type": "rumble", "duration_ms": 100})
+
+            client.close()
+            t.join(timeout=2.0)
         finally:
             server_sock.close()
 
