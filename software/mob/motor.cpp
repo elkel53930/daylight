@@ -87,10 +87,10 @@ void Motor::set_motor(int16_t speed, mcpwm_cmpr_handle_t cmpr, int dir_pin) {
     if (speed < -PWM_MAX) speed = -PWM_MAX;
 
     if (speed >= 0) {
-        digitalWrite(dir_pin, HIGH);  // 正転 (CW)
+        digitalWrite(dir_pin, LOW);   // 正転 (CCW) — 実機の前進方向に合わせて反転(2026-07-18)
         ESP_ERROR_CHECK(mcpwm_comparator_set_compare_value(cmpr, (uint32_t)speed));
     } else {
-        digitalWrite(dir_pin, LOW);   // 逆転 (CCW)
+        digitalWrite(dir_pin, HIGH);  // 逆転 (CW)
         ESP_ERROR_CHECK(mcpwm_comparator_set_compare_value(cmpr, (uint32_t)(-speed)));
     }
 }

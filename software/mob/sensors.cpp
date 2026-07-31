@@ -63,8 +63,10 @@ void Sensors::update(uint32_t time_delta_ms) {
     int16_t delta_l = calc_delta_14bit(l_angle, prev_left_angle_);
     
     // 移動距離計算（mm）
-    float distance_r = -1 * delta_r * COUNT_TO_MM;
-    float distance_l = delta_l * COUNT_TO_MM;
+    // 前進方向の反転(2026-07-18)に合わせて符号を反転。motion_controller.cpp の
+    // 速度PID計算と揃えること。
+    float distance_r = delta_r * COUNT_TO_MM;
+    float distance_l = -1 * delta_l * COUNT_TO_MM;
     float delta_distance = (distance_r + distance_l) / 2.0f;
     
     // 角度計算（rad）
@@ -133,6 +135,10 @@ void Sensors::reset_distance() {
 
 void Sensors::reset_angle() {
     angle_.store(0.0f, std::memory_order_relaxed);
+}
+
+void Sensors::set_angle(float rad) {
+    angle_.store(rad, std::memory_order_relaxed);
 }
 
 void Sensors::calibrate_gyro() {

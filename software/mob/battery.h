@@ -14,8 +14,6 @@ public:
 private:
     static constexpr int   ADC_PIN    = 13;
     static constexpr float DIV_RATIO  = 11.0f;   // 分圧比の逆数
-    static constexpr float ADC_VREF   = 3.3f;    // [V]
-    static constexpr float ADC_SCALE  = 4095.0f; // 12bit
 };
 
 #endif

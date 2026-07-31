@@ -41,3 +41,15 @@ fp-info-cache
 
 # Local project settings
 *.kicad_prl
+
+# Python
+__pycache__/
+software/venv/
+software/beacon/venv/
+
+# Micromouse runtime artifacts
+software/micromouse/logs/
+software/micromouse/config/micromouse.yaml
+
+# ビルドサーバーのホスト名・ユーザー名等、公開したくないローカル設定
+software/mob/Makefile.local

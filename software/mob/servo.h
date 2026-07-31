@@ -17,6 +17,12 @@ public:
 
     void set_angle(uint8_t angle);  // 0–180 度
 
+    // トルクオフ（脱力）。パルス出力をLowに強制固定し、サーボへの
+    // 位置指令パルスを止める（PWM制御サーボにはトルクON/OFFレジスタが
+    // 無いため、パルスの有無でトルクを制御する）。次のset_angle()呼び出しで
+    // 自動的に解除され通常のPWM出力に戻る。
+    void detach();
+
 private:
     static constexpr int      SIGNAL_PIN          = 1;
     static constexpr uint32_t TIMER_RESOLUTION_HZ = 1000000;  // 1MHz → 1µs/tick

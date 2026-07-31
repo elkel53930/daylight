@@ -47,9 +47,17 @@ void Servo::begin() {
 }
 
 void Servo::set_angle(uint8_t angle) {
+    // detach()中にforceしたLow固定を解除し、通常のPWM出力に戻す
+    ESP_ERROR_CHECK(mcpwm_generator_set_force_level(_gen, -1, true));
+
     if (angle > 180) angle = 180;
     // 0°→500µs, 180°→2500µs の線形補間
     uint32_t pulse_us = PULSE_MIN_US
                       + (uint32_t)angle * (PULSE_MAX_US - PULSE_MIN_US) / 180;
     ESP_ERROR_CHECK(mcpwm_comparator_set_compare_value(_cmpr, pulse_us));
+}
+
+void Servo::detach() {
+    // 出力をLowに強制固定し、パルスを止めてトルクを抜く
+    ESP_ERROR_CHECK(mcpwm_generator_set_force_level(_gen, 0, true));
 }

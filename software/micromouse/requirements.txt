@@ -1,0 +1,9 @@
+# micromouse を単体でデプロイする場合の参考リスト(方針は software/README.md 参照)。
+# 開発・テストは共有の software/venv を使う。
+#
+# 迷路コア(maze/explorer/path_planner)とシミュレーションテストは
+# 依存なしの純Pythonで動く。以下は実機走行・UI 統合時に必要。
+pyserial   # mob (ESP32) とのシリアル通信。実機走行に必須
+PyYAML     # config/micromouse.yaml の読み込み(無ければ既定値で動く)
+Pillow     # OLED 表示(ui_server 利用時)
+msgpack    # ui_client の通信(ui_server 利用時)

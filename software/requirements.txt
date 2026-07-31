@@ -1,5 +1,6 @@
-# ui/・default_app/・camera/ で共有する開発用venv(software/venv)向け。
-# セットアップ手順・方針の詳細は software/README.md を参照。
+# ui/・default_app/・camera/・manual_controller/ で共有する開発用venv
+# (software/venv)向け。セットアップ手順・方針の詳細は software/README.md
+# を参照。
 #
 # picamera2 はpipでは信頼できないため、意図的にここへ含めていない
 # (apt側の --system-site-packages から解決する)。
@@ -8,5 +9,8 @@ Pillow
 luma.core
 luma.oled
 msgpack
+pyserial
 PyYAML
+pyserial
 requests
+zeroconf   # manual_controller/remote_server.py(機体側の遠隔操作サーバー)

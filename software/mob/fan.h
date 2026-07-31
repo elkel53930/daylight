@@ -5,7 +5,7 @@
 
 // 吸引ファン PWM ドライバ
 //   IO2 → NchFET ゲート → ファンモーター
-//   PWM周波数: 10kHz, 8bit分解能 (0–255)
+//   PWM周波数: 40kHz, 8bit分解能 (0–255)
 //   set_speed(0) = 停止, set_speed(255) = フル
 
 class Fan {
@@ -18,7 +18,7 @@ public:
 
 private:
     static constexpr int     PWM_PIN       = 2;
-    static constexpr int     PWM_FREQUENCY = 10000;  // 10kHz
+    static constexpr int     PWM_FREQUENCY = 40000;  // 40kHz
     static constexpr uint8_t PWM_RESOLUTION = 8;     // 8bit (0–255)
 };
 
