@@ -2948,16 +2948,6 @@
 	)
 	(wire
 		(pts
-			(xy 189.23 113.03) (xy 215.9 113.03)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "0b16f3fe-d5b9-4349-be36-2a195f87d757")
-	)
-	(wire
-		(pts
 			(xy 209.55 127) (xy 209.55 128.27)
 		)
 		(stroke
@@ -3705,6 +3695,16 @@
 			(type default)
 		)
 		(uuid "e3ee5e19-2c91-4320-92ab-e672a3a245e0")
+	)
+	(wire
+		(pts
+			(xy 186.69 113.03) (xy 215.9 113.03)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "ebbce241-af76-419e-b3d3-2f6ce1277c3b")
 	)
 	(wire
 		(pts
@@ -5601,8 +5601,7 @@
 	)
 	(symbol
 		(lib_id "Device:C_Small")
-		(at 209.55 124.46 0)
-		(mirror x)
+		(at 209.55 124.46 180)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom yes)
@@ -5610,7 +5609,7 @@
 		(dnp no)
 		(uuid "e1249c13-32b3-4798-8de1-933af78ae519")
 		(property "Reference" "C16"
-			(at 211.074 132.842 0)
+			(at 208.026 132.842 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -5618,8 +5617,8 @@
 				(justify right)
 			)
 		)
-		(property "Value" "CL05B104KO5NNNC"
-			(at 205.74 132.08 90)
+		(property "Value" "~"
+			(at 213.36 132.08 90)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -5628,7 +5627,7 @@
 				(hide yes)
 			)
 		)
-		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
+		(property "Footprint" "Capacitor_SMD:C_0805_2012Metric_Pad1.18x1.45mm_HandSolder"
 			(at 209.55 124.46 0)
 			(effects
 				(font
@@ -5646,7 +5645,7 @@
 				(hide yes)
 			)
 		)
-		(property "Description" "0.1uF 50V X7R 1005"
+		(property "Description" "0.1uF 50V X7R 2012"
 			(at 209.55 131.064 0)
 			(effects
 				(font
@@ -5762,85 +5761,6 @@
 			(project "sub_boards"
 				(path "/d5abadbb-7de1-45ef-bf83-ffcbea26f0f6"
 					(reference "J5")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "Device:C_Small")
-		(at 231.14 82.55 0)
-		(mirror x)
-		(unit 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(dnp no)
-		(uuid "e423d954-6df3-450d-b8b1-3159dc5fa8b6")
-		(property "Reference" "C15"
-			(at 232.664 90.932 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify right)
-			)
-		)
-		(property "Value" "CC0603KRX7R9BB104"
-			(at 227.33 90.17 90)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify right)
-				(hide yes)
-			)
-		)
-		(property "Footprint" "Capacitor_SMD:C_0402_1005Metric"
-			(at 231.14 82.55 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Datasheet" "~"
-			(at 231.14 82.55 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Description" "0.1uF 50V X7R 1005"
-			(at 231.14 89.154 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "フィールド4" ""
-			(at 231.14 82.55 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(pin "1"
-			(uuid "6b75a592-d58b-4eef-8450-46102be94637")
-		)
-		(pin "2"
-			(uuid "3f0a1292-bd20-42b8-8284-3cb0c7127b80")
-		)
-		(instances
-			(project "sub_boards"
-				(path "/d5abadbb-7de1-45ef-bf83-ffcbea26f0f6"
-					(reference "C15")
 					(unit 1)
 				)
 			)
@@ -5999,6 +5919,85 @@
 			(project "sub_boards"
 				(path "/d5abadbb-7de1-45ef-bf83-ffcbea26f0f6"
 					(reference "J1")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Device:C_Small")
+		(at 231.14 82.55 0)
+		(mirror x)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(uuid "f82fc263-54aa-4197-b3f0-834fd8159136")
+		(property "Reference" "C15"
+			(at 232.664 90.932 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify right)
+			)
+		)
+		(property "Value" "~"
+			(at 227.33 90.17 90)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify right)
+				(hide yes)
+			)
+		)
+		(property "Footprint" "Capacitor_SMD:C_0805_2012Metric_Pad1.18x1.45mm_HandSolder"
+			(at 231.14 82.55 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" "~"
+			(at 231.14 82.55 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" "0.1uF 50V X7R 2012"
+			(at 231.14 89.154 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "フィールド4" ""
+			(at 231.14 82.55 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(pin "1"
+			(uuid "90c02129-0c16-43fa-ac96-55e125f26d42")
+		)
+		(pin "2"
+			(uuid "a79cd2d7-5048-42ee-8beb-3e607b4142b5")
+		)
+		(instances
+			(project "sub_boards"
+				(path "/d5abadbb-7de1-45ef-bf83-ffcbea26f0f6"
+					(reference "C15")
 					(unit 1)
 				)
 			)
