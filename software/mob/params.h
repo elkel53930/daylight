@@ -35,6 +35,19 @@ struct Params {
     float place_out_max;
     float place_lpf_alpha;
 
+    // その場静止制御の位置ホールド(外側ループ)。sensors.get_distance()を
+    // 開始時の値に保つP制御で目標並進速度を作り、上記の速度PIDへ渡す
+    // (2026-08-02新規追加)。
+    float place_pos_kp;       // 位置誤差[m] → 目標速度[m/s]
+    float place_pos_max_mps;  // 目標速度のクランプ
+
+    // その場静止制御のIMU加速度フィードフォワード。エンコーダ差分ベースの
+    // 速度PID(10ms窓)より速く外乱に反応させる狙いで、IMU Y軸(ロボット
+    // 前後方向、+=前進側、実機確認済み)の加速度に比例した制動を毎ms
+    // 直接加える(2026-08-02新規追加)。
+    float place_accel_kd;         // 加速度[m/s^2] → duty(符号は反転して加える)
+    float place_accel_lpf_alpha;  // 加速度生値のLPF係数(EMA)
+
     // その場旋回(place_controller.cpp、TURNコマンド)。目標角度プロファイル
     // (台形速度、pivot_max_radps/pivot_accel)とその追従PID+FF。
     // (2026-08-02新規追加。角度追従は実機チューニング済み、旋回中の並進側

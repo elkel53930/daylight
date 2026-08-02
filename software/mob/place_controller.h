@@ -7,19 +7,28 @@
 
 // 「その場」(=並進せずに同じ位置にとどまる)制御をまとめるクラス。
 // start() はその場に静止するだけ、start_turn() はその場旋回(超信地旋回)
-// する。両方とも、左右輪速度の和(並進速度成分)をエンコーダFBでゼロへ
-// 追い込む制御(2026-08-02実機チューニング済み、HOLDコマンド)は共通で
-// 常に動き続ける。start_turn() ではこれに加えて、目標角度(角加速度一定の
+// する。並進側は位置制御(外側ループ)+速度制御(内側ループ)のカスケード
+// 構成: sensors.get_distance()(1ms毎に常時更新されるオドメトリ、
+// place_controller自身の10ms窓推定とは別の独立した積分値)を開始時の値に
+// 保つP制御が目標並進速度を作り、それを2026-08-02実機チューニング済みの
+// 速度PID(place_kp/ki/kd)が追従する。当初は速度(左右輪速度の和)だけを
+// ゼロへ追い込む制御だったが、瞬間速度の平均がゼロでも位置がゆっくり
+// ドリフトしうる(復元力が無い)ため、位置フィードバックを追加した
+// (2026-08-02)。start_turn() ではこれに加えて、目標角度(角加速度一定の
 // 台形速度プロファイルで滑らかに変化させる)への追従制御を重ね合わせる。
 // 並進側の制御が旋回中も動き続けることで、旋回によって機体の位置が
 // ずれるのを防ぐ狙い。
 //
-// 出力(duty)は「並進側の補正(duty_common、左右同じ値)」と「旋回側の
-// 補正(duty_diff、左右逆符号)」を独立に計算してから単純加算する:
-//   duty_r = duty_common + duty_diff
-//   duty_l = duty_common - duty_diff
+// 出力(duty)は「並進側の補正(duty_common、左右同じ値)」「旋回側の補正
+// (duty_diff、左右逆符号)」「IMU加速度FF(duty_accel_ff、左右同じ値)」を
+// 独立に計算してから単純加算する:
+//   duty_r = duty_common + duty_diff + duty_accel_ff
+//   duty_l = duty_common - duty_diff + duty_accel_ff
 // (duty_diff > 0 で左/CCW方向に回転する。turn_in_place() 等、旧実装と
-// 同じ符号規約)
+// 同じ符号規約)。duty_common/duty_diffはエンコーダ差分ベースで10ms窓
+// でしか更新されないのに対し、duty_accel_ffはIMU加速度(ロボット前後方向、
+// +=前進側)を使い毎ms計算するため、外乱への反応が速い
+// (2026-08-02追加)。
 //
 // motion_controller.cpp とは独立の、根本から作り直す新しい制御系列。
 class PlaceController {
@@ -50,6 +59,7 @@ public:
     float get_target_angle_rad() const { return turn_target_angle_rad_; }
     float get_omega_target_radps() const { return turn_omega_signed_radps_; }
     int16_t get_duty_diff() const { return last_duty_diff_; }
+    float get_pos_error_mm() const { return pos_ref_mm_ - sensors_.get_distance(); }
 
 private:
     // 速度推定を1msごとの生エンコーダ差分から行うと、AS5047の分解能
@@ -75,12 +85,20 @@ private:
     float vr_filt_mps_ = 0.0f;
     float vl_filt_mps_ = 0.0f;
 
-    // 並進速度(vr+vl)をゼロへ追い込むPID
+    // 位置ホールドの基準(start()/start_turn()実行時のsensors.get_distance()、mm)
+    float pos_ref_mm_ = 0.0f;
+
+    // 並進速度(vr+vl)を目標値(位置P制御の出力)へ追い込むPID
     float integ_ = 0.0f;
     float prev_err_ = 0.0f;
 
     int16_t last_duty_ = 0;       // 並進側の最終duty(テレメトリ用)
     int16_t last_duty_diff_ = 0;  // 旋回側の最終duty差分(テレメトリ用)
+    float last_duty_common_f_ = 0.0f;  // 並進側duty(10ms窓、次tickまで保持してduty_diff/加速度FFと合成)
+    float last_duty_diff_f_ = 0.0f;    // 旋回側duty(10ms窓、同上)
+
+    // IMU Y軸(前後方向)加速度のLPF後の値 [m/s^2](2026-08-02追加)
+    float accel_filt_mps2_ = 0.0f;
 
     // その場旋回の状態(start_turn()で初期化)
     bool turning_ = false;

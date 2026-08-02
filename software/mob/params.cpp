@@ -22,6 +22,21 @@ const Params kDefaultParams = {
     .place_out_max = 400.0f,
     .place_lpf_alpha = 0.12f,
 
+    // 位置ホールド(外側ループ、2026-08-02追加)。速度(左右輪速度の和)の
+    // 平均をゼロにするだけでは位置の復元力が無くドリフトしうるため追加。
+    // ゲイン自体は初期値のまま(10mmのずれで20mm/sの目標速度)、実機で
+    // 発散しないことのみ確認済み。
+    .place_pos_kp = 2.0f,
+    .place_pos_max_mps = 0.05f,
+
+    // IMU Y軸(ロボット前後方向、+=前進)加速度フィードフォワード
+    // (2026-08-02追加)。静止時(HOLD)のみ有効、旋回中は無効
+    // (place_controller.cpp参照: IMUが回転中心からオフセットしており、
+    // 旋回中は向心・接線加速度が混入して大暴走した実機事象があるため)。
+    // ゲイン自体は初期値のまま静止時に発散しないことのみ確認済み。
+    .place_accel_kd = 20.0f,
+    .place_accel_lpf_alpha = 0.3f,
+
     // その場旋回(2026-08-02実機チューニング: 角度追従は誤差0.22°まで収束、
     // 振動なし。pivot_kpを当初見積もり(旧turn_kp*kf_duty_per_mps=90)から
     // 40倍の3600まで上げることで大幅改善した。旋回中の並進側drift(vsum)は
@@ -51,6 +66,12 @@ const ParamDef PARAM_TABLE[] = {
     {"place_kd", offsetof(Params, place_kd)},
     {"place_out_max", offsetof(Params, place_out_max)},
     {"place_lpf_alpha", offsetof(Params, place_lpf_alpha)},
+
+    {"place_pos_kp", offsetof(Params, place_pos_kp)},
+    {"place_pos_max_mps", offsetof(Params, place_pos_max_mps)},
+
+    {"place_accel_kd", offsetof(Params, place_accel_kd)},
+    {"place_accel_lpf_alpha", offsetof(Params, place_accel_lpf_alpha)},
 
     {"pivot_max_radps", offsetof(Params, pivot_max_radps)},
     {"pivot_accel", offsetof(Params, pivot_accel)},

@@ -54,6 +54,20 @@ float IMU::convert_gyro_z_to_radps(int16_t raw) {
     return (float)raw * GYRO_SENSITIVITY_RADPS;
 }
 
+int16_t IMU::read_accel_y() {
+    // OUTY_L_XL (0x2A) + OUTY_H_XL (0x2B) を連続読み取り
+    const uint8_t w_buf[3] = {static_cast<uint8_t>(0x80 | OUTY_L_XL), 0xFF, 0xFF};
+    uint8_t r_buf[3] = {0, 0, 0};
+    imu_transfer(r_buf, w_buf, 3);
+
+    // r_buf[0]=ダミー, r_buf[1]=LSB, r_buf[2]=MSB (リトルエンディアン)
+    return (int16_t)(((uint16_t)r_buf[2] << 8) | r_buf[1]);
+}
+
+float IMU::convert_accel_to_mps2(int16_t raw) {
+    return (float)raw * ACCEL_SENSITIVITY_MPS2;
+}
+
 uint8_t IMU::read_who_am_i() {
     const uint8_t w_buf[2] = {0x8F, 0xFF};  // 0x0F | 0x80
     uint8_t r_buf[2] = {0, 0};

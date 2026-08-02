@@ -2,7 +2,7 @@
 
 Sensors::Sensors(IMU& imu, WallSensor& wall_sensor, Battery& battery, Encoder& encoder)
     : imu_(imu), wall_sensor_(wall_sensor), battery_(battery), encoder_(encoder),
-      gyro_z_(0.0f), f_(0), ls_(0), rs_(0),
+      gyro_z_(0.0f), accel_forward_(0.0f), f_(0), ls_(0), rs_(0),
       battery_voltage_(0.0f), right_wheel_angle_(0), left_wheel_angle_(0),
       distance_(0.0f), angle_(0.0f), prev_right_angle_(0), prev_left_angle_(0),
       gyro_offset_(0.0f), calibrating_(false), calib_count_(0), calib_sum_(0.0f),
@@ -14,7 +14,11 @@ void Sensors::update(uint32_t time_delta_ms) {
     int16_t raw_gyro_z = imu_.read_gyro_z();
     float gyro_z_radps = imu_.convert_gyro_z_to_radps(raw_gyro_z);
     gyro_z_.store(gyro_z_radps, std::memory_order_relaxed);
-    
+
+    int16_t raw_accel_y = imu_.read_accel_y();
+    float accel_forward_mps2 = imu_.convert_accel_to_mps2(raw_accel_y);
+    accel_forward_.store(accel_forward_mps2, std::memory_order_relaxed);
+
     // キャリブレーション処理（非ブロッキング）
     if (calibrating_.load(std::memory_order_relaxed)) {
         calib_timer_ms_ += time_delta_ms;
@@ -89,6 +93,10 @@ float Sensors::get_gyro_z() const {
     float raw_gyro = gyro_z_.load(std::memory_order_relaxed);
     float offset = gyro_offset_.load(std::memory_order_relaxed);
     return raw_gyro - offset;
+}
+
+float Sensors::get_accel_forward() const {
+    return accel_forward_.load(std::memory_order_relaxed);
 }
 
 uint16_t Sensors::get_lf() const {

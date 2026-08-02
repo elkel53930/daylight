@@ -15,10 +15,14 @@ void PlaceController::reset_common() {
     prev_err_ = 0.0f;
     last_duty_ = 0;
     last_duty_diff_ = 0;
+    last_duty_common_f_ = 0.0f;
+    last_duty_diff_f_ = 0.0f;
+    accel_filt_mps2_ = 0.0f;
 }
 
 void PlaceController::start() {
     reset_common();
+    pos_ref_mm_ = sensors_.get_distance();
     turning_ = false;
     turn_omega_mag_ = 0.0f;
     turn_omega_signed_radps_ = 0.0f;
@@ -27,6 +31,7 @@ void PlaceController::start() {
 
 void PlaceController::start_turn(float delta_angle_rad) {
     reset_common();
+    pos_ref_mm_ = sensors_.get_distance();
     turning_ = true;
     turn_dir_ = (delta_angle_rad >= 0.0f) ? 1.0f : -1.0f;
     turn_start_angle_rad_ = sensors_.get_angle();
@@ -46,6 +51,8 @@ void PlaceController::stop() {
     prev_err_ = 0.0f;
     last_duty_ = 0;
     last_duty_diff_ = 0;
+    last_duty_common_f_ = 0.0f;
+    last_duty_diff_f_ = 0.0f;
     turning_ = false;
     turn_omega_mag_ = 0.0f;
     turn_integ_ = 0.0f;
@@ -69,13 +76,20 @@ float PlaceController::counts_to_m(int16_t delta_counts) {
 }
 
 float PlaceController::update_translational(float dt_s) {
-    // 並進速度(左右輪速度の和)をゼロに保つPID。誤差が正(前へ流れている)
-    // なら両輪へ同じ負のduty補正を、誤差が負(後ろへ流れている)なら
-    // 両輪へ同じ正のduty補正を与える(左右差=回転成分には触れず、
-    // 並進成分だけを対称に打ち消す)。start()単体でもstart_turn()と
-    // 組み合わせても常にこの補正が動く。
+    // 外側ループ: 位置(sensors.get_distance())を開始時の基準へ戻すP制御で
+    // 目標並進速度を作る。速度(左右輪速度の和)の平均をゼロにするだけでは
+    // 復元力が無く、位置がゆっくりドリフトしうるため(2026-08-02追加)。
+    const float pos_error_m = (pos_ref_mm_ - sensors_.get_distance()) / 1000.0f;
+    float target_v_sum = params.place_pos_kp * pos_error_m;
+    if (target_v_sum > params.place_pos_max_mps) target_v_sum = params.place_pos_max_mps;
+    if (target_v_sum < -params.place_pos_max_mps) target_v_sum = -params.place_pos_max_mps;
+
+    // 内側ループ: 並進速度(左右輪速度の和)を上記の目標値へ追い込むPID。
+    // 誤差が正(目標より遅れている/後ろへ流れている)なら両輪へ同じ正の
+    // duty補正を与える(左右差=回転成分には触れず、並進成分だけを対称に
+    // 補正する)。start()単体でもstart_turn()と組み合わせても常に動く。
     const float v_sum = vr_filt_mps_ + vl_filt_mps_;
-    const float err = 0.0f - v_sum;
+    const float err = target_v_sum - v_sum;
 
     integ_ += err * dt_s;
     if (params.place_ki > 0.0f) {
@@ -150,53 +164,66 @@ float PlaceController::update_turn_profile_and_track(float dt_s) {
 }
 
 void PlaceController::update(float dt_s) {
-    // 速度推定・制御更新はVELOCITY_WINDOW_TICKS(10ms)窓でまとめて行う
-    // (ヘッダのコメント参照)。窓の途中は前回のduty(モーターは既に設定
-    // 済み)を保持するだけで何もしない。
+    // 毎ms: IMU Y軸(ロボット前後方向、+=前進側)加速度によるフィード
+    // フォワード減衰。エンコーダ差分ベースの速度PID(10ms窓)より速く
+    // 外乱に反応できる(2026-08-02追加)。u_accel_ffの符号は、前へ加速
+    // (accel>0)している間は両輪へ負のduty補正を与えて打ち消す向き。
+    //
+    // 旋回中(turning_)は無効化する: IMUは回転中心からオフセットして
+    // 搭載されているため、旋回時は向心加速度(ω^2×r)・接線加速度(α×r)
+    // がY軸にも混入し、実際には並進していないのに大きな値を示す。これを
+    // そのまま並進外乱として補正しようとした結果、実機で大暴走した
+    // (2026-08-02、vsumが±50〜70mm/sまで発振・duty上限近くまで振れた)。
+    const float accel_mps2 = sensors_.get_accel_forward();
+    accel_filt_mps2_ += params.place_accel_lpf_alpha * (accel_mps2 - accel_filt_mps2_);
+    const float duty_accel_ff = turning_ ? 0.0f : (-params.place_accel_kd * accel_filt_mps2_);
+
+    // 速度推定・並進/旋回PIDの更新はVELOCITY_WINDOW_TICKS(10ms)窓でまとめて
+    // 行う(ヘッダのコメント参照)。窓の途中は前回計算したduty_common/
+    // duty_diffを保持したまま、加速度FFだけ毎tick更新して出力する。
     accum_dt_s_ += dt_s;
     window_tick_count_++;
-    if (window_tick_count_ < VELOCITY_WINDOW_TICKS) {
-        return;
+    if (window_tick_count_ >= VELOCITY_WINDOW_TICKS) {
+        const float window_dt_s = accum_dt_s_;
+        window_tick_count_ = 0;
+        accum_dt_s_ = 0.0f;
+
+        const uint16_t r_angle = sensors_.get_right_wheel_angle();
+        const uint16_t l_angle = sensors_.get_left_wheel_angle();
+
+        if (!have_prev_) {
+            prev_r_angle_ = r_angle;
+            prev_l_angle_ = l_angle;
+            have_prev_ = true;
+            last_duty_common_f_ = 0.0f;
+            last_duty_diff_f_ = 0.0f;
+            last_duty_ = 0;
+            last_duty_diff_ = 0;
+        } else {
+            const int16_t dr = calc_delta_14bit(r_angle, prev_r_angle_);
+            const int16_t dl = calc_delta_14bit(l_angle, prev_l_angle_);
+            prev_r_angle_ = r_angle;
+            prev_l_angle_ = l_angle;
+
+            // 前進方向の符号規約はmotion_controller.cppと同じ(左輪のみ反転)。
+            const float dist_r_m = counts_to_m(dr);
+            const float dist_l_m = -counts_to_m(dl);
+
+            const float vr_mps = (window_dt_s > 0) ? (dist_r_m / window_dt_s) : 0.0f;
+            const float vl_mps = (window_dt_s > 0) ? (dist_l_m / window_dt_s) : 0.0f;
+
+            vr_filt_mps_ += params.place_lpf_alpha * (vr_mps - vr_filt_mps_);
+            vl_filt_mps_ += params.place_lpf_alpha * (vl_mps - vl_filt_mps_);
+
+            last_duty_common_f_ = update_translational(window_dt_s);
+            last_duty_diff_f_ = turning_ ? update_turn_profile_and_track(window_dt_s) : 0.0f;
+            last_duty_ = static_cast<int16_t>(last_duty_common_f_);
+            last_duty_diff_ = static_cast<int16_t>(last_duty_diff_f_);
+        }
     }
-    const float window_dt_s = accum_dt_s_;
-    window_tick_count_ = 0;
-    accum_dt_s_ = 0.0f;
 
-    const uint16_t r_angle = sensors_.get_right_wheel_angle();
-    const uint16_t l_angle = sensors_.get_left_wheel_angle();
-
-    if (!have_prev_) {
-        prev_r_angle_ = r_angle;
-        prev_l_angle_ = l_angle;
-        have_prev_ = true;
-        motor_.set_right(0);
-        motor_.set_left(0);
-        return;
-    }
-
-    const int16_t dr = calc_delta_14bit(r_angle, prev_r_angle_);
-    const int16_t dl = calc_delta_14bit(l_angle, prev_l_angle_);
-    prev_r_angle_ = r_angle;
-    prev_l_angle_ = l_angle;
-
-    // 前進方向の符号規約はmotion_controller.cppと同じ(左輪のみ反転)。
-    const float dist_r_m = counts_to_m(dr);
-    const float dist_l_m = -counts_to_m(dl);
-
-    const float vr_mps = (window_dt_s > 0) ? (dist_r_m / window_dt_s) : 0.0f;
-    const float vl_mps = (window_dt_s > 0) ? (dist_l_m / window_dt_s) : 0.0f;
-
-    vr_filt_mps_ += params.place_lpf_alpha * (vr_mps - vr_filt_mps_);
-    vl_filt_mps_ += params.place_lpf_alpha * (vl_mps - vl_filt_mps_);
-
-    const float duty_common = update_translational(window_dt_s);
-    const float duty_diff = turning_ ? update_turn_profile_and_track(window_dt_s) : 0.0f;
-
-    last_duty_ = static_cast<int16_t>(duty_common);
-    last_duty_diff_ = static_cast<int16_t>(duty_diff);
-
-    float u_r = duty_common + duty_diff;
-    float u_l = duty_common - duty_diff;
+    float u_r = last_duty_common_f_ + last_duty_diff_f_ + duty_accel_ff;
+    float u_l = last_duty_common_f_ - last_duty_diff_f_ + duty_accel_ff;
     if (u_r > 1023.0f) u_r = 1023.0f;
     if (u_r < -1023.0f) u_r = -1023.0f;
     if (u_l > 1023.0f) u_l = 1023.0f;

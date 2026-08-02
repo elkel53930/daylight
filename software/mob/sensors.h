@@ -17,6 +17,7 @@ public:
     
     // Core1のloop()から呼び出される関数: 格納された値を読み出す
     float get_gyro_z() const;           // Z軸ジャイロ角速度（rad/s）
+    float get_accel_forward() const;    // 前後方向加速度（m/s^2、+=前進側、IMU Y軸。2026-08-02実機確認）
     uint16_t get_lf() const;            // 左前壁センサー値（D では前壁F を返す）
     uint16_t get_rf() const;            // 右前壁センサー値（D では前壁F を返す）
     uint16_t get_ls() const;            // 左側壁センサー値
@@ -46,6 +47,7 @@ private:
     
     // Atomic変数でセンサーデータを保持
     std::atomic<float> gyro_z_;         // Z軸ジャイロ角速度（rad/s）
+    std::atomic<float> accel_forward_;  // 前後方向加速度（m/s^2、IMU Y軸）
     std::atomic<uint16_t> f_;           // 前壁センサー値（D: front()）
     std::atomic<uint16_t> ls_;          // 左側壁センサー値
     std::atomic<uint16_t> rs_;          // 右側壁センサー値
