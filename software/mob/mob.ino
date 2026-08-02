@@ -39,6 +39,14 @@ static MotionState motion_state = MotionState::IDLE;
 // ジャイロキャリブレーション状態
 static bool gyro_calib_done_pending = false;  // キャリブレーション完了時にDONEを返す
 
+// 壁切れ検出(2026-08-03)。走行中、側壁センサが「壁あり↔無し」に変わる縦位置
+// (odo_dist)を#WEDGEで出力し、走行中位置補正(壁切れ補正)の較正データを集める。
+// ヒステリシス閾値(壁あり>HIGH、無し<LOW)。PRUNのたびにg_wall_edge_resetで
+// 検出器の内部状態を現在値から初期化し直す。
+static constexpr uint16_t WALL_EDGE_HIGH = 200;
+static constexpr uint16_t WALL_EDGE_LOW  = 100;
+static bool g_wall_edge_reset = false;
+
 // グローバルなクラスは、上から順に初期化される
 Led led;
 WallSensor wall_sensor;
@@ -256,6 +264,7 @@ void processCommandQueue() {
                 // 内部へコピーするので、以後Core1がバッファを触っても走行に影響しない。
                 motion_state = MotionState::PATH_FOLLOW;
                 path_controller.start(g_pattern_segments, g_pattern_segment_count);
+                g_wall_edge_reset = true;  // 壁切れ検出器を走行開始時に初期化
                 enqueue_msg_line("#PATH_FOLLOW: pattern start\n");
                 break;
 
@@ -298,6 +307,42 @@ void updatePlaceHold(float dt_s) {
 void updatePathFollow(float dt_s) {
     if (motion_state != MotionState::PATH_FOLLOW) return;
     path_controller.update(dt_s);
+
+    // 壁切れ検出(WALL有効時のみ、1kHz)。側壁センサのヒステリシス立ち上がり/
+    // 立ち下がりで #WEDGE,<L|R>,<1=rise|0=fall>,<odo_dist> を出力する。
+    // fall(壁あり→無し)が壁切れ補正で使う位置。odo_dist は SEN/RDST と同じ
+    // sensors.get_distance()。
+    if (wall_sensor.is_enabled()) {
+        static bool ls_present = false, rs_present = false, edge_inited = false;
+        const uint16_t ls = sensors.get_ls();
+        const uint16_t rs = sensors.get_rs();
+        if (g_wall_edge_reset || !edge_inited) {
+            g_wall_edge_reset = false;
+            edge_inited = true;
+            ls_present = ls > WALL_EDGE_HIGH;
+            rs_present = rs > WALL_EDGE_HIGH;
+        }
+        const float dist = sensors.get_distance();
+        char wm[48];
+        if (ls_present && ls < WALL_EDGE_LOW) {
+            ls_present = false;
+            snprintf(wm, sizeof(wm), "#WEDGE,L,0,%.1f\n", dist);
+            enqueue_msg_line(wm);
+        } else if (!ls_present && ls > WALL_EDGE_HIGH) {
+            ls_present = true;
+            snprintf(wm, sizeof(wm), "#WEDGE,L,1,%.1f\n", dist);
+            enqueue_msg_line(wm);
+        }
+        if (rs_present && rs < WALL_EDGE_LOW) {
+            rs_present = false;
+            snprintf(wm, sizeof(wm), "#WEDGE,R,0,%.1f\n", dist);
+            enqueue_msg_line(wm);
+        } else if (!rs_present && rs > WALL_EDGE_HIGH) {
+            rs_present = true;
+            snprintf(wm, sizeof(wm), "#WEDGE,R,1,%.1f\n", dist);
+            enqueue_msg_line(wm);
+        }
+    }
 
     static int dbg_count = 0;
     dbg_count++;
