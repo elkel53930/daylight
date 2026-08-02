@@ -102,10 +102,11 @@ PWM 周波数: 50Hz、パルス幅: 500–2500µs（0–180°）。
 | `servo.h/cpp` | RC サーボドライバ（MCPWM group 1、IO1） |
 | `ball_sensor.h/cpp` | ボールセンサドライバ（内蔵ADC、IO14） |
 | `motion_controller.h/cpp` | 車輪速度PID・フィードフォワード（MOT/DUTYコマンド用） |
-| `place_controller.h/cpp` | その場静止制御（左右輪速度の和をゼロへ、`HOLD`コマンド用、2026-08-02〜） |
+| `place_controller.h/cpp` | その場静止制御（左右輪速度の和をゼロへ、`HOLD`/`TURN`コマンド用、2026-08-02〜） |
 | `params.h/cpp` | 機体固有チューニングパラメータ（NVS永続化、PGET/PSET等） |
 | `spi_manager.h/cpp` | IMU 用 HSPI バス管理 |
 | `Makefile` | ビルド / 書き込み / モニタ |
+| `turn_test.py` | `HOLD`/`TURN`をOLED越しに試す実機テストツール（`default_app`のApplicationsメニューから起動可、または手動実行） |
 
 ## ビルド・書き込み
 

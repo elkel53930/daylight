@@ -11,6 +11,8 @@
 #
 # micromouse/manual_controllerは2026-08-02にESP32制御ロジックの再設計に
 # 伴い削除した(software/mob/README.md参照)。作り直し次第ここに戻す。
+# Turn Testはその再設計中のHOLD/TURNコマンドを実機でOLED越しに試す
+# ツール(software/mob/turn_test.py、2026-08-02追加)。
 #
 # 以下は /opt へ正式デプロイした場合の理想形の例。
 applications:
@@ -18,6 +20,12 @@ applications:
     command:
       - python3
       - /opt/robot/apps/camera/camera_test.py
+    priority: 20
+
+  - name: Turn Test
+    command:
+      - python3
+      - /opt/robot/apps/mob/turn_test.py
     priority: 20
 
   - name: Maze
