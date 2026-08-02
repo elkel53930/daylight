@@ -64,14 +64,21 @@ def send_pattern(link, segments: Sequence[Segment], *, done_timeout_s: float = 1
     link.send("PRUN")
 
 
-# 2026-08-02までmob.ino内にハードコードされていた既定テストパス:
-#   150mm前進 → 90mm前進 → 右90度スラローム(半径90mm) →
-#   左90度スラローム(半径90mm) → 120mm前進(停止)
-# これで前に3マス・右に1マス進んだ位置に来る想定(マス=180mm)。
+# 既定テストパス(2026-08-02): 150mm前進 → 90mm前進 → 右90°スラローム×2
+# (=右180°Uターン) → 左90°スラローム×2(=左180°Uターン) → 120mm前進(停止)。
+# 半径90mm・巡航390mm/s(基準300の1.3倍)。機体の向きが進行方向から90°を超えて
+# 回る180°Uターンを含むが、位置復元力(path_controller.cppのベアリングブレンド
+# +追従ゲート)により発散せず完走することを実機確認済み(反転区間の追従誤差
+# distは最大42mmで頭打ち→回復)。速度は600(2倍)だと精度が大きく低下、
+# 390(1.3倍)が実用的なバランスと確認して390で確定。制御パラメータの微調整は継続。
+# 注: 180°を単一のPADD,SLALOM(angle_deg=180)で送ると、90°×2に分けた場合と
+# ターゲット軌道は同じでも追従が破綻しやすいため、90°×2に分割している。
 DEFAULT_TEST_PATTERN: tuple[Segment, ...] = (
-    Straight(distance_mm=150.0, v_start_mmps=0.0, v_cruise_mmps=300.0, v_end_mmps=300.0),
-    Straight(distance_mm=90.0, v_start_mmps=300.0, v_cruise_mmps=300.0, v_end_mmps=300.0),
-    Slalom(v_mmps=300.0, dir="R", radius_mm=90.0, angle_deg=90.0),
-    Slalom(v_mmps=300.0, dir="L", radius_mm=90.0, angle_deg=90.0),
-    Straight(distance_mm=120.0, v_start_mmps=300.0, v_cruise_mmps=300.0, v_end_mmps=0.0),
+    Straight(distance_mm=150.0, v_start_mmps=0.0, v_cruise_mmps=390.0, v_end_mmps=390.0),
+    Straight(distance_mm=90.0, v_start_mmps=390.0, v_cruise_mmps=390.0, v_end_mmps=390.0),
+    Slalom(v_mmps=390.0, dir="R", radius_mm=90.0, angle_deg=90.0),
+    Slalom(v_mmps=390.0, dir="R", radius_mm=90.0, angle_deg=90.0),
+    Slalom(v_mmps=390.0, dir="L", radius_mm=90.0, angle_deg=90.0),
+    Slalom(v_mmps=390.0, dir="L", radius_mm=90.0, angle_deg=90.0),
+    Straight(distance_mm=120.0, v_start_mmps=390.0, v_cruise_mmps=390.0, v_end_mmps=0.0),
 )
