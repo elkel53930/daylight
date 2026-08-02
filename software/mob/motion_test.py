@@ -5,6 +5,10 @@ motion_test.py — mob の HOLD(その場静止)・TURN(その場旋回)・PATTE
 その場旋回だけでなく並進を伴う走行も試せるため turn_test.py から改名した
 (2026-08-02)。
 
+PATTERNの走行パスはmob.ino側にハードコードされておらず、pattern.pyの
+DEFAULT_TEST_PATTERNをPCLEAR/PADD/PRUNコマンドで実行時にmobへ送信する
+(2026-08-02、走行パターンをPC側から指定できるように変更)。
+
 default_app のメニュー(Applications → Motion Test)からも起動できる。
 
 操作:
@@ -33,6 +37,8 @@ from PIL import Image, ImageDraw, ImageFont
 sys.path.insert(0, str(Path(__file__).parent.parent / "ui"))
 from ui_client import UIClient  # noqa: E402
 
+from pattern import DEFAULT_TEST_PATTERN, send_pattern  # noqa: E402
+
 DISPLAY_WIDTH = 96
 DISPLAY_HEIGHT = 64
 
@@ -49,7 +55,10 @@ except Exception:
 
 # (表示ラベル, mobへ送るコマンド)。HOLD/TURNは送りっぱなしコマンド
 # (継続動作、DONE無し)のため実行後は監視画面へ遷移する。GCALはDONEを
-# 待つ単発コマンドとして扱う。
+# 待つ単発コマンドとして扱う。PATTERNはコマンド文字列ではなくPCLEAR/PADD/
+# PRUNの複数コマンド送信が必要なため特殊値 "PATTERN" で表し、main()側で
+# 個別分岐する(2026-08-02、mob.ino側のハードコード撤去に伴いpattern.py
+# 経由の送信に変更)。
 ACTIONS = [
     ("HOLD", "HOLD"),
     ("TURN +90", "TURN,1.5708"),
@@ -233,7 +242,10 @@ def main() -> None:
                             client.play("c")
                             client.display(draw_countdown(label))
                             time.sleep(1.0)
-                            link.send(cmd)
+                            if cmd == "PATTERN":
+                                send_pattern(link, DEFAULT_TEST_PATTERN)
+                            else:
+                                link.send(cmd)
                             running_cmd = cmd
                             running_label = label
                             run_start = time.monotonic()

@@ -71,6 +71,21 @@ struct SetDutyCommand {
     int16_t left_duty;  // 生duty（-1023〜+1023、速度PID非経由）
 };
 
+// PATTERN走行パス(PC側からPADDで1区間ずつ送って組み立てる、2026-08-02〜)
+struct AddStraightCommand {
+    float distance_mm;
+    float v_start_mmps;
+    float v_cruise_mmps;
+    float v_end_mmps;
+};
+
+struct AddSlalomCommand {
+    float v_mmps;
+    float dir;        // +1=左(CCW), -1=右(CW)
+    float radius_mm;
+    float angle_rad;  // ASCIIコマンドは度指定、パース時にradへ変換する
+};
+
 enum CommandID : uint8_t {
     CMD_SET_MOTOR_SPEED = 0x01,
     CMD_RESET_DISTANCE = 0x06,
@@ -80,32 +95,20 @@ enum CommandID : uint8_t {
     CMD_SET_ANGLE = 0x0F,
     CMD_PLACE_HOLD_START = 0x11,
     CMD_TURN = 0x12,
-    CMD_PATH_TEST = 0x13,
+    CMD_PATTERN_CLEAR = 0x14,
+    CMD_PATTERN_ADD_STRAIGHT = 0x15,
+    CMD_PATTERN_ADD_SLALOM = 0x16,
+    CMD_PATTERN_RUN = 0x17,
 };
 
-// PATTERNコマンド用の固定テストパス(2026-08-02、ユーザー仕様):
-//   150mm前進 → 90mm前進 → 右90度スラローム(半径90mm) →
-//   左90度スラローム(半径90mm) → 120mm前進(停止)
-// これで前に3マス・右に1マス進んだ位置に来る想定(マス=180mm)。
-// 巡航速度は初回テスト(150mm/s)から2倍の300mm/sで正確な走行(誤差1mm以下)
-// を確認。1.5倍の450mm/sも試したが、スラローム中の追従誤差(方位誤差
-// 最大30°程度)が実機の壁に干渉するほど大きくなり衝突したため、
-// 300mm/sへ戻した(2026-08-02)。
-// 半径70mm化+旋回間直進40mm追加も試したが、角度制御をベアリング角から
-// ターゲット自身の向きとの差に変更したことで方位誤差が大幅改善した
-// ため、半径70mm化・旋回間直進はユーザー指示により撤回し90mm・直進なし
-// に戻した(2026-08-02)。それでも体感のガタつきが残るとのことで
-// path_kp_ang/path_kf_ang/path_kd_angを0.75倍に調整中。
-static const PathController::Segment PATTERN_TEST_SEGMENTS[] = {
-    // type, distance_mm, v_start, v_cruise, v_end,  v(slalom), dir, radius, angle
-    {PathController::SegmentType::STRAIGHT, 150.0f, 0.0f,   300.0f, 300.0f, 0.0f,   0.0f, 0.0f,  0.0f},
-    {PathController::SegmentType::STRAIGHT, 90.0f,  300.0f, 300.0f, 300.0f, 0.0f,   0.0f, 0.0f,  0.0f},
-    {PathController::SegmentType::SLALOM,   0.0f,   0.0f,   0.0f,   0.0f,   300.0f, -1.0f, 90.0f, 1.57079632679f},
-    {PathController::SegmentType::SLALOM,   0.0f,   0.0f,   0.0f,   0.0f,   300.0f, +1.0f, 90.0f, 1.57079632679f},
-    {PathController::SegmentType::STRAIGHT, 120.0f, 300.0f, 300.0f, 0.0f,   0.0f,   0.0f, 0.0f,  0.0f},
-};
-static const size_t PATTERN_TEST_SEGMENT_COUNT =
-    sizeof(PATTERN_TEST_SEGMENTS) / sizeof(PATTERN_TEST_SEGMENTS[0]);
+// PATTERN走行パスの格納先。PCLEAR/PADDで組み立て、PRUNで
+// path_controller.start()へ渡す(2026-08-02、当初mob.ino内に固定
+// ハードコードしていたが、PC側から任意のパスを送れるように変更)。
+// PathController::start()はポインタを保持するだけでコピーしないため、
+// この配列はプログラム全体の寿命を通じて有効な静的領域である必要がある。
+static constexpr size_t MAX_PATTERN_SEGMENTS = 32;
+static PathController::Segment g_pattern_segments[MAX_PATTERN_SEGMENTS];
+static size_t g_pattern_segment_count = 0;
 
 struct Command {
     CommandID cmd_id;
@@ -113,6 +116,8 @@ struct Command {
         SetMotorSpeedCommand set_motor_speed;
         SetDutyCommand set_duty;
         float set_angle_rad;
+        AddStraightCommand add_straight;
+        AddSlalomCommand add_slalom;
         float turn_angle_rad;
     } parameter;
 };
@@ -169,6 +174,25 @@ void handleSetDutyCommand(const SetDutyCommand& cmd);
 void processCommandQueue();
 void updatePlaceHold(float dt_s);
 void updatePathFollow(float dt_s);
+int split_csv(const String& s, String* out, int max_tokens);
+
+// カンマ区切り文字列をトークン配列に分割する(PADD,STRAIGHT/SLALOMの
+// 可変引数パース用)。戻り値は分割できたトークン数(max_tokensで打ち切り、
+// 末尾トークンは残り全体)。
+int split_csv(const String& s, String* out, int max_tokens) {
+    int count = 0;
+    int start = 0;
+    while (count < max_tokens) {
+        int comma = s.indexOf(',', start);
+        if (comma < 0) {
+            out[count++] = s.substring(start);
+            break;
+        }
+        out[count++] = s.substring(start, comma);
+        start = comma + 1;
+    }
+    return count;
+}
 
 // ========================================
 // コマンド処理関数の実装
@@ -247,10 +271,56 @@ void processCommandQueue() {
                 enqueue_msg_line("#PLACE_HOLD: turn start\n");
                 break;
 
-            case CMD_PATH_TEST:
+            case CMD_PATTERN_CLEAR:
+                g_pattern_segment_count = 0;
+                enqueue_msg_line("#PATTERN: cleared\n");
+                enqueue_msg_line("DONE\n");
+                break;
+
+            case CMD_PATTERN_ADD_STRAIGHT:
+                if (g_pattern_segment_count < MAX_PATTERN_SEGMENTS) {
+                    PathController::Segment& seg = g_pattern_segments[g_pattern_segment_count++];
+                    seg.type = PathController::SegmentType::STRAIGHT;
+                    seg.distance_mm = q.parameter.add_straight.distance_mm;
+                    seg.v_start_mmps = q.parameter.add_straight.v_start_mmps;
+                    seg.v_cruise_mmps = q.parameter.add_straight.v_cruise_mmps;
+                    seg.v_end_mmps = q.parameter.add_straight.v_end_mmps;
+                    seg.v_mmps = 0.0f;
+                    seg.dir = 0.0f;
+                    seg.radius_mm = 0.0f;
+                    seg.angle_rad = 0.0f;
+                    enqueue_msg_line("#PATTERN: add straight\n");
+                    enqueue_msg_line("DONE\n");
+                } else {
+                    enqueue_msg_line("#PATTERN: buffer full\n");
+                    enqueue_msg_line("ERR\n");
+                }
+                break;
+
+            case CMD_PATTERN_ADD_SLALOM:
+                if (g_pattern_segment_count < MAX_PATTERN_SEGMENTS) {
+                    PathController::Segment& seg = g_pattern_segments[g_pattern_segment_count++];
+                    seg.type = PathController::SegmentType::SLALOM;
+                    seg.distance_mm = 0.0f;
+                    seg.v_start_mmps = 0.0f;
+                    seg.v_cruise_mmps = 0.0f;
+                    seg.v_end_mmps = 0.0f;
+                    seg.v_mmps = q.parameter.add_slalom.v_mmps;
+                    seg.dir = q.parameter.add_slalom.dir;
+                    seg.radius_mm = q.parameter.add_slalom.radius_mm;
+                    seg.angle_rad = q.parameter.add_slalom.angle_rad;
+                    enqueue_msg_line("#PATTERN: add slalom\n");
+                    enqueue_msg_line("DONE\n");
+                } else {
+                    enqueue_msg_line("#PATTERN: buffer full\n");
+                    enqueue_msg_line("ERR\n");
+                }
+                break;
+
+            case CMD_PATTERN_RUN:
                 // 競合回避: ほかのモーションを停止
                 motion_state = MotionState::PATH_FOLLOW;
-                path_controller.start(PATTERN_TEST_SEGMENTS, PATTERN_TEST_SEGMENT_COUNT);
+                path_controller.start(g_pattern_segments, g_pattern_segment_count);
                 enqueue_msg_line("#PATH_FOLLOW: pattern start\n");
                 break;
 
@@ -615,14 +685,59 @@ void loop() {
             } else {
                 Serial.printf("#Invalid TURN format\n");
             }
-        } else if (cmd == "PATTERN") {
-            // PATTERN: 仮想ターゲット追従の固定テストパスを開始
-            // (150mm前進→90mm前進→右90度スラローム→左90度スラローム→
-            // 120mm前進、path_controller.cpp参照)
+        } else if (cmd == "PCLEAR") {
+            // PCLEAR: PATTERN走行パスのバッファをクリア(PADDの前に毎回呼ぶ)
             Command q;
-            q.cmd_id = CMD_PATH_TEST;
+            q.cmd_id = CMD_PATTERN_CLEAR;
             if (xQueueSend(cmd_queue, &q, pdMS_TO_TICKS(10)) == pdTRUE) {
-                Serial.printf("#PATTERN\n");
+                Serial.printf("#PCLEAR\n");
+            } else {
+                Serial.printf("#Queue full!\n");
+            }
+        } else if (cmd.startsWith("PADD,STRAIGHT,")) {
+            // PADD,STRAIGHT,<distance_mm>,<v_start_mmps>,<v_cruise_mmps>,<v_end_mmps>
+            String tok[6];
+            int n = split_csv(cmd, tok, 6);
+            if (n == 6) {
+                Command q;
+                q.cmd_id = CMD_PATTERN_ADD_STRAIGHT;
+                q.parameter.add_straight.distance_mm = tok[2].toFloat();
+                q.parameter.add_straight.v_start_mmps = tok[3].toFloat();
+                q.parameter.add_straight.v_cruise_mmps = tok[4].toFloat();
+                q.parameter.add_straight.v_end_mmps = tok[5].toFloat();
+                if (xQueueSend(cmd_queue, &q, pdMS_TO_TICKS(10)) == pdTRUE) {
+                    Serial.printf("#PADD STRAIGHT\n");
+                } else {
+                    Serial.printf("#Queue full!\n");
+                }
+            } else {
+                Serial.printf("#Invalid PADD,STRAIGHT format\n");
+            }
+        } else if (cmd.startsWith("PADD,SLALOM,")) {
+            // PADD,SLALOM,<v_mmps>,<L|R>,<radius_mm>,<angle_deg>(度指定、桁数節約のためradではなくdeg)
+            String tok[6];
+            int n = split_csv(cmd, tok, 6);
+            if (n == 6 && (tok[3] == "L" || tok[3] == "R")) {
+                Command q;
+                q.cmd_id = CMD_PATTERN_ADD_SLALOM;
+                q.parameter.add_slalom.v_mmps = tok[2].toFloat();
+                q.parameter.add_slalom.dir = (tok[3] == "L") ? 1.0f : -1.0f;
+                q.parameter.add_slalom.radius_mm = tok[4].toFloat();
+                q.parameter.add_slalom.angle_rad = tok[5].toFloat() * DEG_TO_RAD;
+                if (xQueueSend(cmd_queue, &q, pdMS_TO_TICKS(10)) == pdTRUE) {
+                    Serial.printf("#PADD SLALOM\n");
+                } else {
+                    Serial.printf("#Queue full!\n");
+                }
+            } else {
+                Serial.printf("#Invalid PADD,SLALOM format\n");
+            }
+        } else if (cmd == "PRUN") {
+            // PRUN: PCLEAR/PADDで組み立てたPATTERN走行パスを開始
+            Command q;
+            q.cmd_id = CMD_PATTERN_RUN;
+            if (xQueueSend(cmd_queue, &q, pdMS_TO_TICKS(10)) == pdTRUE) {
+                Serial.printf("#PRUN\n");
             } else {
                 Serial.printf("#Queue full!\n");
             }

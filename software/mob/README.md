@@ -103,9 +103,11 @@ PWM 周波数: 50Hz、パルス幅: 500–2500µs（0–180°）。
 | `ball_sensor.h/cpp` | ボールセンサドライバ（内蔵ADC、IO14） |
 | `motion_controller.h/cpp` | 車輪速度PID・フィードフォワード（MOT/DUTYコマンド用） |
 | `place_controller.h/cpp` | その場静止制御（左右輪速度の和をゼロへ、`HOLD`/`TURN`コマンド用、2026-08-02〜） |
+| `path_controller.h/cpp` | 仮想ターゲット追従のパス走行制御（直進・スラローム旋回、`PCLEAR`/`PADD`/`PRUN`コマンド用、2026-08-02〜） |
 | `params.h/cpp` | 機体固有チューニングパラメータ（NVS永続化、PGET/PSET等） |
 | `spi_manager.h/cpp` | IMU 用 HSPI バス管理 |
 | `Makefile` | ビルド / 書き込み / モニタ |
+| `pattern.py` | PATTERN走行パス（直進・スラローム区間列）をPCLEAR/PADD/PRUNコマンドで組み立て・送信するヘルパー（2026-08-02〜。走行パスはmob.ino側にハードコードされておらずPC側から指定する） |
 | `motion_test.py` | `HOLD`/`TURN`/`PATTERN`をOLED越しに試す実機テストツール（`default_app`のApplicationsメニューから起動可、または手動実行） |
 
 ## ビルド・書き込み
@@ -179,6 +181,10 @@ esp32:esp32`）が必要。ビルドサーバー側の `arduino-cli` が PATH �
 | `SEN` | センサデータ一括取得 |
 | `HOLD` | その場静止制御を開始(左右輪速度の和をゼロへ、`place_controller.cpp`)。停止は`MOT,0,0` |
 | `TURN,<angle_rad>` | その場旋回(角度制御、台形速度プロファイル、正=左/CCW)。並進ゼロを保つHOLDの制御を同時に動かしたまま追従する。停止は`MOT,0,0` |
+| `PCLEAR` | PATTERN走行パスのバッファをクリア(`PADD`の前に毎回呼ぶ) |
+| `PADD,STRAIGHT,<distance_mm>,<v_start_mmps>,<v_cruise_mmps>,<v_end_mmps>` | PATTERN走行パスへ直進区間を1つ追加(台形速度プロファイル) |
+| `PADD,SLALOM,<v_mmps>,<L\|R>,<radius_mm>,<angle_deg>` | PATTERN走行パスへスラローム旋回区間を1つ追加(定速円弧、L=左/CCW、R=右/CW。角度は度指定、桁数節約のためradではなくdeg) |
+| `PRUN` | `PCLEAR`/`PADD`で組み立てたPATTERN走行パスを仮想ターゲット追従(`path_controller.cpp`)で実行開始。停止は`MOT,0,0` |
 
 ### パラメータ(PGET/PSET/PSAVE/PLOAD/PRESET)
 
