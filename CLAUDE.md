@@ -2,7 +2,17 @@
 
 このリポジトリで作業する際の前提知識。2026-07-17〜18 の開発セッション
 (マイクロマウス実装、ブザーのハードウェア PWM 化)で得た知見をまとめたもの。
-マイクロマウスの詳細な経緯は `micromouse_implementation_report.md` を参照。
+
+⚠️ **2026-08-02、`software/mob/` の移動系制御(FWD/STOP/TURN/JOGFWD/
+JOGBACK/JOGTURN/LFWD/LBACK/LTURNL/LTURNR/LSTOP/QSTP)と、それに依存していた
+`software/micromouse/`・`software/manual_controller/` を丸ごと削除し、
+その場旋回を中心に制御ロジックを根本から作り直し中**(モータードライバ・
+IMU・エンコーダ等の低レベル層はそのまま)。以下のドキュメント中、削除済み
+コマンド・ディレクトリへの言及は歴史的経緯として残しているが、実際には
+存在しない。現状の唯一の移動系コマンドは `MOT`(速度制御)・`DUTY`(生duty)・
+`HOLD`(その場静止制御、`place_controller.cpp`)のみ。
+`micromouse_implementation_report.md`(リポジトリ直下)は削除前の実装の
+歴史的記録として残っているが、コード自体はもう無い。
 
 ## リポジトリ概要
 
@@ -15,11 +25,12 @@ elec/       KiCad 基板データ
 software/
   default_app/  ホーム画面アプリ(systemd: default-ui.service、稼働中)
   ui/           OLED/ボタン/ブザーの UI サーバー(systemd: ui_server.service、稼働中)
-  micromouse/   マイクロマウス自律走行アプリ(2026-07 実装)
   camera/       CSI カメラスクリプト(手動実行)
   beacon/       起動時 Discord IP 通知
   mob/          ESP32-S3 ファームウェア(Arduino/C++、モータ・センサ制御)
 ```
+
+(`micromouse/`・`manual_controller/` は2026-08-02に削除。上記の注記参照)
 
 参考実装(前身機): https://github.com/elkel53930/robosweep_twilight
 — mob のシリアルプロトコルはほぼ共通。迷路アルゴリズム・走行ループの
@@ -49,52 +60,34 @@ software/
 - 現行 `mob.ino` の SEN 応答は **12 フィールド**(2026-07-24〜、ボールセンサ拡張):
   `SEN,gyro[rad/s],vbatt[V],lf,ls,rs,rf,enc_r,enc_l,odo_dist[mm],odo_ang[rad],ball_raw,ball_det`
   (`software/mob/README.md` の SEN 記述と一致)。
-- **引数なし `STOP` コマンドは存在しない**(`STOP,<v>,<a>,<d>` のみ)。
-  無条件のモータ停止は `MOT,0,0`、減速停止は `QSTP`(`QSTPDONE,<残距離>` が返る)。
-- `FWD` は距離到達で DONE を返すが**停止しない**(連続走行用)。停止するのは `STOP`。
-- `STOP`/`TURN` の DONE は「動作完了かつ整定済み」(2026-07-24〜)。完了後
-  0.5 秒の角度維持ホールド(v=0+角度FB)を済ませてから DONE が返るため、
-  DONE 待ちに従来より最大+0.5秒かかる。DONE のタイミングを早める変更は
-  慣性回転中の角度を次コマンドが基準角として取り込む問題を再発させるので不可
-  (ファームウェア自体の変更としては、の意味。`params.stop_hold_sec` は
-  ランタイムPSET可能なので、`software/manual_controller/remote_server.py`
-  は手動操作中だけ一時的に短縮し終了時に復元している。SIGKILL・電源断で
-  復元が走らないと mob の電源が入ったままの間短いホールドが残る点に注意)。
-- `WALL,<0|1>`(壁センサ LED)には DONE 応答が**ない**。
-- `LFWD`/`LBACK`/`LTURNL`/`LTURNR`(LATCH系)・`LSTOP` も DONE 応答が**ない**
-  送りっぱなしコマンド。`LSTOP` が来るまで低速固定速度(`params.latch_mps`/
-  `latch_turn_mps`)で動き続ける「ボタン押下中だけ動かす」手動操作向け
-  (ゲームパッド遠隔操作、`software/manual_controller/` 参照)。距離/角度
-  指定で自動停止・DONE を返す `JOGFWD`/`JOGBACK`/`JOGTURN` とは用途が違う。
-- `JOGFWD`/`JOGBACK`(2026-07-25〜)は開始時角度を基準にした角度+角速度FB
-  (`angle_fb_gain`/`rate_fb_gain`、壁センサ補正は無し)で直進を保持する
-  (それまでは左右輪に同じ速度を与えるだけの完全オープンループで、走行中の
-  進行方向ドリフトを補正していなかった)。`JOGTURN`(同日〜)は目標角度到達後
-  即座に停止・DONEではなく、STOP/TURNと同じ`STOP_HOLD`(角度FBでの整定待ち、
-  0.5秒)を経てからDONEを返すようになった(DONE待ちに最大+0.5秒)。
-  LATCH系は対象外(このリポジトリでの用途上、意図的にオープンループのまま)。
-- `GCAL`/`RDST`/`RANG` は DONE を返す。TURN は正=左回り(CCW)、単位 rad。
-- `SANG,<angle_rad>`(2026-07-24〜)は `RANG` の0固定版ではなく任意値版:
-  ジャイロ積分角度を外部の絶対基準(カメラによる壁上面検出など、
-  `software/micromouse/vision.py` 参照)で上書きする。DONE を返す。
-  RANG/RDST 同様、**セグメント間の停止中にのみ**呼ぶこと(走行中の
-  制御ループが参照する目標角には触れないので安全だが、動作中に呼ぶと
-  次セグメントの基準角が汚染される)。
+- 2026-08-02、距離・角度プロファイルを持つ移動コマンド(FWD/STOP/TURN/
+  JOGFWD/JOGBACK/JOGTURN/LFWD/LBACK/LTURNL/LTURNR/LSTOP/QSTP)を全て削除し、
+  制御を作り直し中。現状残っている移動系コマンドは以下のみ:
+  - `MOT,<r>,<l>`: 左右輪に目標速度[mm/s]を即座に設定(車輪速度PID経由、
+    `motion_controller.cpp`)。距離・完了通知の概念はない。
+  - `DUTY,<r>,<l>`: 速度PIDを経由しない生duty直接指令(−1023〜+1023)。
+  - `HOLD`: その場静止制御を開始(`place_controller.cpp`)。左右輪速度の
+    和(並進成分)をエンコーダFBでゼロへ追い込む。180°その場旋回を
+    作り込むための第一歩として2026-08-02に新規追加。停止は`MOT,0,0`。
+  - いずれも DONE 応答は返さない(送りっぱなし、または`HOLD`のように
+    完了概念が無い継続動作)。
+- `WALL,<0|1>`(壁センサ LED)にも DONE 応答が**ない**。
+- `GCAL`(ジャイロキャリブレーション)・`RDST`(距離リセット)・`RANG`
+  (角度リセット)は DONE を返す。
+- `SANG,<angle_rad>` は `RANG` の0固定版ではなく任意値版: ジャイロ積分角度を
+  外部の絶対基準で上書きする。DONE を返す。RANG/RDST 同様、走行中の制御
+  ループが参照する目標角には触れないため安全だが、意味を持たせたい場合は
+  機体が静止しているときに呼ぶこと。
 - `make upload` 直後の初回シリアル接続は SEN 応答を取りこぼしやすい
   (ポートオープン時の ESP32 自動リセットとの競合)。`sensor read failed` で
   落ちたら再実行すればよい。
-- ⚠️ 2026-07-17 時点、**実機の ESP32 には旧ファーム**(SEN 7フィールド、
-  FWD/STOP/TURN 非対応)が入っていた。走行系の作業前に
-  `cd software/mob && make upload PORT=/dev/ttyUSB0` で要更新。
-  arduino-cli は `~/bin/arduino-cli`。コンパイルのみなら `make build`(安全)。
 - pyserial 無しの疎通確認(モータを回さない):
   `stty -F /dev/ttyUSB0 3000000 raw -echo` → `printf 'SEN\n' > /dev/ttyUSB0`
   → `timeout 1 stdbuf -o0 cat /dev/ttyUSB0`
   (読み取りを先に開始してから送信しないと応答を取りこぼす)
-- エンコーダ:ホイールのギア比 `GEAR_RATIO = 1.0`(直結、2026-07-18 に
-  41/20 から変更)は `sensors.h` と `motion_controller.cpp` に**重複定義**
-  されている。変更時は両方を直すこと
-  (片方だけだと走行距離とオドメトリがずれる)。
+- エンコーダ:ホイールのギア比 `GEAR_RATIO = 1.0`(直結)は `sensors.h`・
+  `motion_controller.cpp`・`place_controller.cpp` に**重複定義**されている。
+  変更時は3箇所とも直すこと(片方だけだと走行距離とオドメトリがずれる)。
 
 ## venv・テストの規約
 
@@ -107,10 +100,8 @@ software/
   ```bash
   software/venv/bin/python3 -m unittest discover -s software/<dir>/tests -q
   ```
-  micromouse のテストは pyserial 無しでも全て走る(例外定義を `errors.py` に
-  分離してあるため)。この構造は維持すること。
 - 既知の既存テスト失敗: `software/ui/tests` の `test_sigterm_calls_cleanup`
-  (`SystemExit` 未捕捉)。micromouse 実装とは無関係。
+  (`SystemExit` 未捕捉)。
 
 ## 実機の systemd サービスの実態
 
@@ -125,30 +116,25 @@ software/
 - リポジトリ側 `ui/README.md` の `/opt/ui` デプロイ手順・`ui_server.service`
   は理想形/参考であり、実機の現状とは別物(2026-07-18 時点)。
 
-## micromouse の設計要点(software/micromouse/)
+## micromouse・manual_controller(削除済み、2026-08-02)
 
-- 実装一式は **2026-07-24 に master へマージ済み**(7416797、fast-forward)。
-  走行チューニングも同日完了: 閉路パターン(8マス+旋回5回)で物理ずれ
-  2mm・1°、壁センサFB有効(比例方式、左25mmずれを1.8マスで回収)。
-  経緯は c816154/b94f658/cd86ad1/dc23386/7416797 のコミットメッセージ参照。
-- 依存方向は「ハードウェア → センサ抽象 → 迷路アルゴリズム」。
-  `maze.py`/`explorer.py`/`path_planner.py` は純 Python でハード非依存。
-  `simulator.py` は `mobile_base.py` と同一インターフェース(ダックタイピング)。
-- 座標系: (0,0) が左下、x=東、y=北。探索の判断点は**セル境界**
-  (センサはそこで進入先セルの壁を読む)。セル走行は半セル 90mm×2(Twilight 実績)。
-- 未知壁の扱い: 探索=通行可(楽観)、最短経路計画=壁(安全)。
-- **スタートセルの壁は決め打ちしない**(Twilight は東壁ありと仮定していたが、
-  実大会迷路には東が開いた面があり探索不能になる。スタートでもセンサ観測する)。
-- 迷路ファイル(`maze_files/*.txt`)は mm_maze_solver 互換 ASCII。
-  シミュレーションでの回帰確認:
-  ```bash
-  software/venv/bin/python3 software/micromouse/micromouse_app.py \
-      --sim software/micromouse/maze_files/AllJapan_002_1981_classic___16x16.txt \
-      --no-ui --autostart
-  ```
-- 実機の段階検証は `hw_test.py`(sen → walls → gcal → fwd → turn → cycle の順)。
-- 壁しきい値(config/micromouse.yaml)はセンサ個体依存。実機で `hw_test.py walls`
-  を見ながら校正する(未校正のまま実走行しない)。
+`software/micromouse/`(マイクロマウス自律走行)と `software/manual_controller/`
+(ゲームパッド遠隔操作)は、依存していた mob の移動系コマンド(FWD/STOP/TURN/
+JOG系/LATCH系/QSTP)ごと2026-08-02に削除した。ESP32側の制御ロジックを
+「その場に静止する」→「180°その場旋回」から根本的に作り直すため
+(`software/mob/README.md`のコマンド一覧・`place_controller.cpp`参照)。
+
+- 設計・チューニングの詳細な経緯は `micromouse_implementation_report.md`
+  (リポジトリ直下)と git 履歴(`git log -- software/micromouse
+  software/manual_controller`)に残っている。作り直す際の参考にすること。
+- 未追跡(gitでは管理されていない)の実機データが `software/micromouse/`
+  配下にまだ残っている: `config/micromouse.yaml`(壁センサしきい値の実機
+  校正値)、`logs/`(走行・パターンテストのログ、カメラ較正データ含む、
+  約12MB)。コードは削除したがこれらは削除していない
+  (再校正の手間を省くため)。
+- `default_app` のメニュー(`/etc/robot-ui/applications.yaml`、実機・root
+  所有)から Micromouse / Pattern Test / Manual Control のエントリは削除済み。
+  Camera Test のみ残っている。
 
 ## その他の運用メモ
 
@@ -157,12 +143,13 @@ software/
   (`/etc/robot-ui/applications.yaml` に追記。default_ui.py がメニューの
   「Applications」選択のたびに読み直すのでサービス再起動も不要)。実機の
   同ファイルは root 所有で、リポジトリ作業ツリーを直接参照する形式
-  (`software/venv/bin/python3` で `software/micromouse/micromouse_app.py` 等を
-  起動)。2026-07-24 に Micromouse / Pattern Test を登録済み。YAML の
-  `priority` フィールドは子プロセスへ渡らず装飾的(所有権は default_ui が
-  子起動時に自ら disconnect して解放し、子アプリが自前の priority で
-  ui_server に接続する)。リポジトリ側 `config/applications.yaml.example` は
-  /opt デプロイ時の理想形の例。
+  (`software/venv/bin/python3` でリポジトリ内スクリプトを起動)。現状は
+  Camera Test のみ登録(2026-08-02、Micromouse/Pattern Test/Manual Control
+  は依存スクリプトの削除に伴い削除)。YAML の `priority` フィールドは
+  子プロセスへ渡らず装飾的(所有権は default_ui が子起動時に自ら
+  disconnect して解放し、子アプリが自前の priority で ui_server に
+  接続する)。リポジトリ側 `config/applications.yaml.example` は /opt
+  デプロイ時の理想形の例。
 - Discord Webhook 設定は 環境変数 `DISCORD_WEBHOOK_URL` → `beacon/.env` →
   `beacon/config.json` の優先順(camera/default_app/beacon で共通)。
   投稿処理を書くときは `beacon/discord_ip.py` の `load_webhook_url()` を

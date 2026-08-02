@@ -11,6 +11,7 @@
 #include "encoder.h"
 #include "sensors.h"
 #include "motion_controller.h"
+#include "place_controller.h"
 #include "params.h"
 #include "fan.h"
 #include "servo.h"
@@ -21,232 +22,20 @@
 static float target_vr_mps = 0.0f;
 static float target_vl_mps = 0.0f;
 
-// Core0が今どのモーションを実行中か。以前は fwd_active/stop_active/...
-// という個別boolを8個以上持っていたが、これらは常に排他(同時に2つ以上
-// trueにならない)であるにもかかわらず、新しいモーションを開始する
-// ハンドラごとに「他の全フラグをfalseにする」処理を手で書く必要があり、
-// 書き漏れ(例: CMD_LATCH_START が jog_active をリセットしていなかった)
-// が起きやすかった(2026-07-24、JOG_TURN追加時に発見)。単一のenumに
-// することで、新しい状態に遷移する代入1回だけで「他の状態ではない」が
-// 構造的に保証される。
+// Core0が今どのモーションを実行中か。個別boolの組み合わせだと
+// 「他の全フラグをfalseにする」処理を新しいモーション追加のたびに
+// 手で書く必要があり書き漏れが起きやすいため、単一のenumにして
+// 新しい状態への代入1回だけで「他の状態ではない」が構造的に保証される
+// ようにしている(2026-07-24導入、2026-08-02にFWD/STOP/TURN等の旧移動系
+// 状態を削除しPLACE_HOLDのみに整理)。
 enum class MotionState : uint8_t {
     IDLE,
-    FWD,
-    STOP,
-    STOP_BACKOFF,
-    STOP_HOLD,
-    TURN,
-    LATCH,
-    JOG,
-    JOG_TURN,
-    QSTP,
+    PLACE_HOLD,  // その場静止制御(place_controller.cpp、2026-08-02〜)
 };
 static MotionState motion_state = MotionState::IDLE;
 
-// 前進コマンド（プロファイル走行）状態
-static float fwd_v_cmd_mmps = 0.0f;     // 現在指令速度 [mm/s]
-static float fwd_v_target_mmps = 0.0f;  // 目標巡航速度 [mm/s]
-static float fwd_a_mmps2 = 0.0f;        // 加速度 [mm/s^2]（符号付き）
-static float fwd_goal_dist_mm = 0.0f;   // 絶対目標距離 [mm]（Sensors::get_distance()基準）
-static float fwd_target_angle_rad = 0.0f; // 目標角度 [rad] （角度フィードバック用）
-static float cumulative_goal_dist_mm = 0.0f; // 累積目標距離 [mm]（RDSTでリセット）
-
-// 停止コマンド（減速して停止する）状態
-static float stop_v_cmd_mmps = 0.0f;      // 現在指令速度 [mm/s]
-static float stop_a_mmps2 = 0.0f;         // 減速度 [mm/s^2]（負ではなく絶対値として扱う）
-static float stop_goal_dist_mm = 0.0f;    // 絶対目標距離 [mm]
-static float stop_target_angle_rad = 0.0f; // 目標角度 [rad] （角度フィードバック用）
-static float stop_cruise_mmps = 0.0f;     // STOP引数speed_mmps（巡航速度想定）[mm/s]
-static float stop_elapsed_s = 0.0f;       // STOP経過時間 [s]
-static float stop_backoff_target_dist_mm = 0.0f; // 後退完了目標距離 [mm]
-
-// STOPプロファイルのパラメータは params.final_appr_mmps/stop_min_mmps/
-// stop_timeout_s/backoff_dist_mm/backoff_mps に移動(params.h)。
-// stop_min_mmps: 20だと静止摩擦に負けて目標手前でスタックする(2026-07-18実機)。
-
-// 停止完了後の角度維持(2026-07-24追加)。duty=0で制御を切ると慣性で
-// 機体が回る(実機: 停止の17ms後にgz=1.1rad/s、角度+0.7°→+1.7°)ため、
-// STOP/TURNの完了時は即DONEを返さず、この時間だけ v=0 + 角度・角速度FB
-// で目標角度(STOP=直進の基準角、TURN=旋回目標角)を維持・修正してから
-// DONEを返す。DONEをホールド後に送るのは、DONE直後に届く次コマンドが
-// 慣性で回転中の角度を基準角として取り込んでしまうのを防ぐため
-// (実機の閉路走行で、旋回直後の直進だけ基準角が2〜5°汚染されていた)。
-// ホールド中に新しいモーションコマンドが来たら即解除する
-// (この場合DONEは送られない: QSTP等の中断経路のみが該当。motion_stateが
-// 別の状態に変わるので、updateStopHoldは自然に呼ばれなくなる)。
-static float stop_hold_elapsed_s = 0.0f;
-static float stop_hold_target_angle_rad = 0.0f;
-// ホールド時間は params.stop_hold_sec(params.h)
-
-// 旋回コマンド（その場旋回）状態
-static float turn_goal_angle_rad = 0.0f;
-static float turn_speed_cmd_mps = 0.0f; // 指令速度（加減速制限後）
-static bool turn_settling = false;      // 整定確認フェーズ中
-static float turn_settle_elapsed_s = 0.0f;
-static uint8_t turn_retry_count = 0;    // 再サーボ回数
-static float turn_integ = 0.0f;         // PID積分項 [rad*s]（リトライ含め1回のTURNコマンド内で保持）
-
-// 低速動作コマンド（L*）状態
-enum class LatchMode : uint8_t {
-    NONE = 0,
-    FWD,
-    BACK,
-    TURN_L,
-    TURN_R,
-};
-
-static LatchMode latch_mode = LatchMode::NONE;
-static float latch_turn_target_rad = 0.0f;
-
-// 低速動作の速度は params.latch_mps/latch_turn_mps(params.h)
-static constexpr float LATCH_TURN_TARGET_RAD = 1000000.0f; // 低速連続旋回の仮想目標角(実装用の定数、機体差で調整するものではないためparams化しない)
-
-// JOGコマンド（距離指定低速動作）状態
-static bool jog_is_forward = true;  // true: 前進, false: 後退
-static float jog_target_dist_mm = 0.0f;
-static float jog_start_dist_mm = 0.0f;
-static float jog_target_angle_rad = 0.0f;  // 開始時角度（直進保持の角度FB用、2026-07-25追加）
-// 速度は params.jog_mps(params.h)
-
-// JOGTURNコマンド（角度指定低速旋回）状態
-static float jog_turn_target_rad = 0.0f;   // 相対目標角度(正=左)
-static float jog_turn_start_angle_rad = 0.0f;
-// 速度は params.jog_turn_mps(params.h)
-
 // ジャイロキャリブレーション状態
 static bool gyro_calib_done_pending = false;  // キャリブレーション完了時にDONEを返す
-
-// QSTPコマンド（クイック停止）状態
-static float qstp_v_cmd_mmps = 0.0f;      // 現在指令速度 [mm/s]
-static float qstp_target_angle_rad = 0.0f; // 目標角度 [rad] （角度フィードバック用）
-static float qstp_original_goal_dist_mm = 0.0f; // 元の目標距離 [mm]（FWD/STOPの目標）
-// 最大減速度は params.qstp_decel(params.h)
-
-// 角度制御パラメータ（PID + 速度制限）
-// P単独では減速が間に合わず、目標付近で毎回7〜15°程度オーバーシュートして
-// 整定待ち(params.turn_settle_s)→再サーボのリトライを消費していた(2026-07-22
-// 実機 Pattern Test ログで確認)。
-//
-// 第1版(I・D常時有効)では90°旋回は改善した(7〜15°→1.5〜3.7°)が、
-// 180°旋回(TURN_BACK)は悪化した(-17.6°)。残角が大きい間(gz最大
-// 8.7rad/s)積分項がアンチワインドアップ上限に張り付き続けて減速開始を
-// 遅らせていたと考え、Iを条件付き積分(残角小のみ)にしたところ、
-// 今度は複数の旋回でオーバーシュート・振動がさらに悪化した
-// (例: 180°で-20.7°、7°旋回で3回リトライ)。原因はDにあった:
-// params.turn_kd×gz は巡航中の高い gz(6〜8rad/s)だけで
-// 単独で約0.4m/sにも達し、Pがまだ十分な速度を要求している最中でも
-// cmdを最低速度まで落としてしまい、減速タイミングを乱していた
-// (残角0.7rad=40°でもcmdが60まで低下、実機ログで確認)。
-//
-// このため I・D いずれも残角が params.turn_fine_rad 以下(=Pだけで
-// 既に最低速度域に入っている、目標間際の最終アプローチ)のときのみ
-// 有効化する「条件付きPID」にした。巡航中はPのみの素直な減速
-// プロファイルを保ち、最終アプローチでだけI(残留誤差解消)と
-// D(オーバーシュート抑制)を効かせる狙い。KI/KDは初期値であり、
-// 実機の Pattern Test ログ(#V の ang/gz 推移)で要再チューニング。
-// params.turn_kp: [m/s]/rad
-// params.turn_ki: [m/s]/(rad*s)
-// params.turn_kd: [m/s]/(rad/s)（実測角速度=gyro_zに掛ける）
-// params.turn_fine_rad: 条件付き積分: |err|がこれ以下の間だけ積分を加算
-// オーバーシュートの根本原因(整定判定の瞬間にduty=0にして
-// params.turn_settle_s=80ms無制動で待つため、その時点のgzがそのまま飛び出し
-// 量になる)を踏まえ、減速レート(params.turn_accel)側のチューニングでは
-// 方向によって効きムラが大きく限界だったため、そもそもの最高角速度
-// 自体を下げて飛び出す物理量を減らす方針に変更(2026-07-22)。
-// 0.25→0.15でオーバーシュート3.6〜6.6°・最終誤差0.9〜1.3°まで改善
-// (リトライも2〜3回→1回に減少、2026-07-22実機ログで確認)。
-// 0.12まで下げると右90°/180°はさらに改善したが、左90°は逆に悪化
-// (4.6°→7.7°、リトライ1→2回)。左右差は速度を下げるだけでは解消しない
-// (方向依存の非対称性がある)ため、0.15に戻して左右速度同期の検証に
-// 切り替える。
-// params.turn_max_mps/turn_min_mps/turn_tol_rad(≈0.57deg)/
-// turn_settle_s/turn_max_retry(params.h)
-// 整定判定(|err|<=turn_tol_rad)の瞬間にmotion.stop()でduty=0にして
-// turn_settle_s待つが、その時点でgzがまだ8〜10rad/s残っていると
-// 無制動の80ms慣性だけで10〜24°も飛び出すことが実機ログで確認された
-// (2026-07-22)。1.2m/s²では巡航速度(250mm/s)から最低速度(60mm/s)まで
-// 絞り切る前に整定判定に突入してしまうため、大幅に引き上げる。
-// 1.2→4.0でオーバーシュートが大幅減少(90°で最大24°→14°、180°で
-// 13°→4.5°、旋回によっては0°)。試しに8.0まで上げたところ、左90°旋回は
-// 引き続き0°だったが右90°(14°→17°)と180°(4.5°→14.4°)はむしろ悪化した
-// ため、4.0に戻す(単純に強いほど良いわけではなく、方向によって最適値が
-// 違う可能性がある。左右差は wheel sync 無効化と合わせて要調査)。
-// 加速度制限は params.turn_accel [m/s^2](params.h)
-
-// 直進時の角度フィードバックゲイン
-//
-// 補正corr[m/s]は左右輪目標に±corrで振り分けられるため、ヨー系の
-// ループゲインは 2*GAIN/WHEEL_BASE(0.076m) で決まる。旧値(ANGLE=1.0、
-// RATE=0.3)はレートループゲイン≈7.9で、車輪速度PID(KI=3000で高速化、
-// 2026-07-19)+速度LPF(8ms)の位相遅れと合わさり数Hzで発振していた
-// (2026-07-24 実機: duty±400超、実測車輪速度が-118〜995mm/sで暴れ、
-// 機体がガタガタ振動しながら前進)。RATE=0.3自体が「ヨー振動対策」で
-// 0.02から増強された値だったが、振動の原因はゲイン不足ではなく過大な
-// ループゲインだった。レートループゲイン≈1.3、角度保持帯域≈1.7rad/s
-// に下げる。
-// 0.15では角度保持が緩く±1.5°程度ふらついたため段階的に増強
-// (0.15→0.3→0.5、2026-07-24)
-// params.angle_fb_gain/rate_fb_gain [m/s]/rad, [m/s]/(rad/s)(params.h)
-
-// 壁センサフィードバックパラメータは params.wall_threshold/
-// wall_target_ls/wall_target_rs(params.h)。
-// wall_target_ls/rs は機体固有(2026-07-24 セル中央実測 ls=339-351 /
-// rs=233-247 の平均、n=20。2026-07-19の実測値 ls=311/rs=229 から再校正)。
-
-// 壁センサ誤差→目標角オフセット(比例)のゲインとクランプ
-// (params.wall_tilt_gain/wall_tilt_max/wall_cutoff_mm、params.h)。
-//
-// 旧実装は誤差を毎msで目標角に積算していた(WALL_SENSOR_GAIN)が、
-// 「横位置→誤差→積分→傾き→横速度→横位置」は減衰項のない二重積分
-// ループになり、ゲインをいくら下げても必ず行き過ぎる(実機 2026-07-24:
-// 0.000002で左25mmずれ→中央を15mm右に通過、半減しても行き過ぎ)。
-// 誤差に比例した傾きを目標角に直接与える方式なら
-// 横速度∝-横位置の一次系になり、指数収束・オーバーシュートなし。
-// 0.0005では左25mmずれ→3マスで数mm左まで収束(オーバーシュートなし)。
-// 収束を速めるため増強(2026-07-24)
-
-// 壁センサを使用した横方向誤差を計算
-// 戻り値: センサ値単位の誤差。正の値は右に寄せたい(左に寄っている)状態
-static float calculate_wall_error_units(const Sensors& sensors_ref) {
-    const uint16_t rs_val = sensors_ref.get_rs();  // 右側センサ
-    const uint16_t ls_val = sensors_ref.get_ls();  // 左側センサ
-
-    const bool rs_valid = (rs_val >= params.wall_threshold);
-    const bool ls_valid = (ls_val >= params.wall_threshold);
-
-    float error_units = 0.0f;
-
-    if (rs_valid && ls_valid) {
-        // 両方のセンサが有効な場合：両方を使用
-        const float rs_error = params.wall_target_rs - static_cast<float>(rs_val);
-        const float ls_error = static_cast<float>(ls_val) - params.wall_target_ls;
-        error_units = (rs_error + ls_error) * 0.5f;
-    } else if (ls_valid) {
-        // 左センサのみ有効：左センサを使用して右に寄せる
-        error_units = static_cast<float>(ls_val) - params.wall_target_ls;
-    } else if (rs_valid) {
-        // 右センサのみ有効：右センサを使用して左に寄せる
-        error_units = params.wall_target_rs - static_cast<float>(rs_val);
-    }
-    // 両方無効な場合は error_units = 0.0f のまま
-
-    return error_units;
-}
-
-// 壁センサ誤差に比例した目標角オフセット [rad] (クランプ付き)。
-// 正の値 = 右に傾けて右へ寄せる。目標角からこの値を引いて使う。
-static float calculate_wall_tilt_rad(const Sensors& sensors_ref) {
-    float tilt = params.wall_tilt_gain * calculate_wall_error_units(sensors_ref);
-    if (tilt > params.wall_tilt_max) tilt = params.wall_tilt_max;
-    if (tilt < -params.wall_tilt_max) tilt = -params.wall_tilt_max;
-    return tilt;
-}
-
-static inline float slew_rate_limit(float current, float target, float max_delta) {
-    if (target > current + max_delta) return current + max_delta;
-    if (target < current - max_delta) return current - max_delta;
-    return target;
-}
 
 // グローバルなクラスは、上から順に初期化される
 Led led;
@@ -257,6 +46,7 @@ Encoder encoder;
 Battery battery;
 Sensors sensors(imu, wall_sensor, battery, encoder);
 MotionController motion(motor, sensors);
+PlaceController place_controller(motor, sensors);
 Fan fan;
 Servo servo;
 BallSensor ball_sensor;
@@ -278,56 +68,22 @@ struct SetDutyCommand {
     int16_t left_duty;  // 生duty（-1023〜+1023、速度PID非経由）
 };
 
-struct ForwardCommand {
-    float speed_mmps;
-    float accel_mmps2;
-    float distance_mm;
-};
-
-struct StopCommand {
-    float speed_mmps;
-    float accel_mmps2;
-    float distance_mm;
-};
-
-struct LatchCommand {
-    uint8_t mode; // LatchMode
-};
-
-struct JogCommand {
-    bool is_forward;  // true: 前進, false: 後退
-    float distance_mm;
-};
-
 enum CommandID : uint8_t {
     CMD_SET_MOTOR_SPEED = 0x01,
-    CMD_FORWARD = 0x04,
-    CMD_STOP = 0x05,
     CMD_RESET_DISTANCE = 0x06,
     CMD_RESET_ANGLE = 0x07,
-    CMD_TURN = 0x08,
     CMD_GYRO_CALIBRATE = 0x09,
-    CMD_LATCH_START = 0x0A,
-    CMD_LATCH_STOP = 0x0B,
-    CMD_JOG_START = 0x0C,
-    CMD_QSTP = 0x0D,
     CMD_SET_DUTY_DIRECT = 0x0E,
     CMD_SET_ANGLE = 0x0F,
-    CMD_JOG_TURN_START = 0x10,
+    CMD_PLACE_HOLD_START = 0x11,
 };
 
 struct Command {
     CommandID cmd_id;
     union {
         SetMotorSpeedCommand set_motor_speed;
-        ForwardCommand forward;
-        StopCommand stop;
-        float turn_target_rad;
-        LatchCommand latch;
-        JogCommand jog;
         SetDutyCommand set_duty;
         float set_angle_rad;
-        float jog_turn_rad;
     } parameter;
 };
 
@@ -380,19 +136,8 @@ uint32_t waitTick(uint32_t &last_tick) {
 // コマンド処理・モーション更新関数の前方宣言
 void handleSetMotorSpeedCommand(const SetMotorSpeedCommand& cmd);
 void handleSetDutyCommand(const SetDutyCommand& cmd);
-void handleForwardCommand(const ForwardCommand& cmd);
-void handleStopCommand(const StopCommand& cmd);
-void handleTurnCommand(float turn_target_rad);
-void handleQstpCommand();
 void processCommandQueue();
-bool updateLatch(float dt_s);
-bool updateJog(float dt_s);
-bool updateJogTurn(float dt_s);
-void updateForward(float dt_s);
-void updateStop(float dt_s);
-void updateStopHold(float dt_s);
-void updateTurn(float dt_s);
-bool updateQstp(float dt_s);
+void updatePlaceHold(float dt_s);
 
 // ========================================
 // コマンド処理関数の実装
@@ -402,144 +147,19 @@ void handleSetMotorSpeedCommand(const SetMotorSpeedCommand& cmd) {
     const float vr = static_cast<float>(cmd.right_speed) / 1000.0f;
     const float vl = static_cast<float>(cmd.left_speed) / 1000.0f;
 
-    // 手動MOTが来たらプロファイルは停止（競合回避）
+    // 手動MOTが来たらほかのモーションは停止（競合回避）
     motion_state = MotionState::IDLE;
-    latch_mode = LatchMode::NONE;
-    stop_elapsed_s = 0.0f;
 
     target_vr_mps = vr;
     target_vl_mps = vl;
-    motion.forward((vr + vl) * 0.5f, 0.0f);
+    motion.forward((vr + vl) * 0.5f);
 }
 
 void handleSetDutyCommand(const SetDutyCommand& cmd) {
-    // 手動DUTYが来たらプロファイルは停止（競合回避、MOTと同様）
+    // 手動DUTYが来たらほかのモーションは停止（競合回避、MOTと同様）
     motion_state = MotionState::IDLE;
-    latch_mode = LatchMode::NONE;
-    stop_elapsed_s = 0.0f;
 
     motion.set_duty_direct(cmd.right_duty, cmd.left_duty);
-}
-
-void handleForwardCommand(const ForwardCommand& cmd) {
-    // FWD: 加速して指定速度へ、距離到達でDONE（停止しない）
-    led.red_on();  // FWD開始時に赤色LED点灯
-    motion_state = MotionState::FWD;
-    latch_mode = LatchMode::NONE;
-    stop_elapsed_s = 0.0f;
-
-    fwd_v_target_mmps = cmd.speed_mmps;
-    fwd_a_mmps2 = cmd.accel_mmps2;
-
-    // 累積目標距離に追加（オーバーシュートの影響を受けない）
-    cumulative_goal_dist_mm += cmd.distance_mm;
-    fwd_goal_dist_mm = cumulative_goal_dist_mm;
-    
-    // 目標角度を現在の角度に設定（まっすぐ進む）
-    fwd_target_angle_rad = sensors.get_angle();
-
-    // FWDコマンドの詳細情報を通知
-    const float now_dist = sensors.get_distance();
-    char msg[64];
-    snprintf(msg, sizeof(msg), "#FWD: %.2f+%.2f->%.2f\n", now_dist, cmd.distance_mm, fwd_goal_dist_mm);
-    enqueue_msg_line(msg);
-
-    // 現在の指令速度（左右平均）を初期値に
-    fwd_v_cmd_mmps = ((target_vr_mps + target_vl_mps) * 0.5f) * 1000.0f;
-
-    // 目標が今より遅いなら減速方向に
-    if (fwd_v_target_mmps < fwd_v_cmd_mmps && fwd_a_mmps2 > 0) {
-        fwd_a_mmps2 = -fwd_a_mmps2;
-    }
-
-    if (fwd_a_mmps2 == 0.0f) {
-        fwd_v_cmd_mmps = fwd_v_target_mmps;
-    }
-}
-
-void handleStopCommand(const StopCommand& cmd) {
-    // STOP: 指定距離で停止（必要に応じて50mm/sまで減速して進入）
-    motion_state = MotionState::STOP;
-    latch_mode = LatchMode::NONE;
-    stop_elapsed_s = 0.0f;
-    stop_backoff_target_dist_mm = 0.0f;
-
-    // 引数の速度は「現在速度の想定」だが、ここでは現在の指令速度も併用
-    stop_a_mmps2 = fabsf(cmd.accel_mmps2);
-    stop_cruise_mmps = fabsf(cmd.speed_mmps);
-
-    // 累積目標距離に追加（オーバーシュートの影響を受けない）
-    cumulative_goal_dist_mm += cmd.distance_mm;
-    stop_goal_dist_mm = cumulative_goal_dist_mm;
-    
-    // 目標角度を現在の角度に設定（まっすぐ進む）
-    stop_target_angle_rad = sensors.get_angle();
-    
-    // STOPコマンドの詳細情報を通知
-    const float now_dist = sensors.get_distance();
-    char msg[64];
-    snprintf(msg, sizeof(msg), "#STOP: %.2f+%.2f->%.2f\n", now_dist, cmd.distance_mm, stop_goal_dist_mm);
-    enqueue_msg_line(msg);
-
-    // 初期速度: 現在指令速度を優先
-    stop_v_cmd_mmps = ((target_vr_mps + target_vl_mps) * 0.5f) * 1000.0f;
-    if (stop_v_cmd_mmps <= 0.0f) {
-        stop_v_cmd_mmps = stop_cruise_mmps;
-    }
-}
-
-void handleQstpCommand() {
-    // QSTP: クイック停止（現在の速度から最大減速度で停止）
-    
-    // 元の目標距離を記録（FWDまたはSTOPが実行中の場合）
-    qstp_original_goal_dist_mm = 0.0f;  // デフォルト値
-    if (motion_state == MotionState::FWD) {
-        qstp_original_goal_dist_mm = fwd_goal_dist_mm;
-    } else if (motion_state == MotionState::STOP) {
-        qstp_original_goal_dist_mm = stop_goal_dist_mm;
-    }
-
-    motion_state = MotionState::QSTP;
-    latch_mode = LatchMode::NONE;
-    stop_elapsed_s = 0.0f;
-
-    // 現在の指令速度を取得
-    qstp_v_cmd_mmps = ((target_vr_mps + target_vl_mps) * 0.5f) * 1000.0f;
-    if (qstp_v_cmd_mmps < 0.0f) {
-        qstp_v_cmd_mmps = -qstp_v_cmd_mmps;  // 絶対値にする
-    }
-    
-    // 目標角度を現在の角度に設定（まっすぐ停止する）
-    qstp_target_angle_rad = sensors.get_angle();
-    
-    char msg[64];
-    snprintf(msg, sizeof(msg), "#QSTP: from %.1fmm/s\n", qstp_v_cmd_mmps);
-    enqueue_msg_line(msg);
-}
-
-void handleTurnCommand(float target_rad) {
-    // TURN: その場旋回（角度のみ）
-    // 競合回避: ほかのプロファイルを停止
-    motion_state = MotionState::TURN;
-    latch_mode = LatchMode::NONE;
-    stop_elapsed_s = 0.0f;
-
-    // 角度制御の基準を確定
-    const float turn_start_angle_rad = sensors.get_angle();
-    turn_goal_angle_rad = turn_start_angle_rad + target_rad;
-    turn_speed_cmd_mps = 0.0f;
-    turn_settling = false;
-    turn_settle_elapsed_s = 0.0f;
-    turn_retry_count = 0;
-    turn_integ = 0.0f;
-
-    // TURNコマンドの詳細情報を通知
-    char msg[64];
-    snprintf(msg, sizeof(msg), "#TURN_GOAL: %.6f\n", turn_goal_angle_rad);
-    enqueue_msg_line(msg);
-
-    // 回り始めは MotionController の内部turn状態を新規にするため stop() しておく
-    motion.stop();
 }
 
 void processCommandQueue() {
@@ -550,17 +170,8 @@ void processCommandQueue() {
                 handleSetMotorSpeedCommand(q.parameter.set_motor_speed);
                 break;
 
-            case CMD_FORWARD:
-                handleForwardCommand(q.parameter.forward);
-                break;
-
-            case CMD_STOP:
-                handleStopCommand(q.parameter.stop);
-                break;
-
             case CMD_RESET_DISTANCE:
                 sensors.reset_distance();
-                cumulative_goal_dist_mm = 0.0f;  // 累積目標距離もリセット
                 enqueue_msg_line("#distance reset\n");
                 enqueue_msg_line("DONE\n");
                 break;
@@ -572,16 +183,12 @@ void processCommandQueue() {
                 break;
 
             case CMD_SET_ANGLE:
-                // カメラ補正等、外部の絶対基準で角度を上書きする。
-                // RANG/RDST同様、セグメント間の停止中にのみ呼ぶこと
-                // (走行中の制御ループが参照する目標角には触れない)。
+                // 外部の絶対基準(カメラ等)で角度を上書きする。
+                // 走行中の制御ループが参照する目標角には触れないため、
+                // 呼ぶのは停止中に限ること。
                 sensors.set_angle(q.parameter.set_angle_rad);
                 enqueue_msg_line("#angle set\n");
                 enqueue_msg_line("DONE\n");
-                break;
-
-            case CMD_TURN:
-                handleTurnCommand(q.parameter.turn_target_rad);
                 break;
 
             case CMD_GYRO_CALIBRATE:
@@ -591,57 +198,15 @@ void processCommandQueue() {
                 gyro_calib_done_pending = true;
                 break;
 
-            case CMD_QSTP:
-                handleQstpCommand();
-                break;
-
             case CMD_SET_DUTY_DIRECT:
                 handleSetDutyCommand(q.parameter.set_duty);
                 break;
 
-            case CMD_LATCH_START: {
-                // 競合回避: ほかのプロファイルを停止
-                motion_state = MotionState::LATCH;
-                latch_mode = static_cast<LatchMode>(q.parameter.latch.mode);
-                latch_turn_target_rad = 0.0f;
-                stop_elapsed_s = 0.0f;
-
-                if (latch_mode == LatchMode::TURN_L || latch_mode == LatchMode::TURN_R) {
-                    latch_turn_target_rad = (latch_mode == LatchMode::TURN_L)
-                        ? +LATCH_TURN_TARGET_RAD
-                        : -LATCH_TURN_TARGET_RAD;
-                    motion.stop();
-                }
-                break;
-            }
-
-            case CMD_LATCH_STOP:
-                motion_state = MotionState::IDLE;
-                latch_mode = LatchMode::NONE;
-                latch_turn_target_rad = 0.0f;
-                target_vr_mps = 0.0f;
-                target_vl_mps = 0.0f;
-                motion.stop();
-                break;
-
-            case CMD_JOG_START:
-                // 競合回避: ほかのプロファイルを停止
-                motion_state = MotionState::JOG;
-                latch_mode = LatchMode::NONE;
-                jog_is_forward = q.parameter.jog.is_forward;
-                jog_target_dist_mm = q.parameter.jog.distance_mm;
-                jog_start_dist_mm = sensors.get_distance();
-                jog_target_angle_rad = sensors.get_angle();
-                stop_elapsed_s = 0.0f;
-                break;
-
-            case CMD_JOG_TURN_START:
-                // 競合回避: ほかのプロファイルを停止
-                motion_state = MotionState::JOG_TURN;
-                latch_mode = LatchMode::NONE;
-                jog_turn_target_rad = q.parameter.jog_turn_rad;
-                jog_turn_start_angle_rad = sensors.get_angle();
-                stop_elapsed_s = 0.0f;
+            case CMD_PLACE_HOLD_START:
+                // 競合回避: ほかのモーションを停止
+                motion_state = MotionState::PLACE_HOLD;
+                place_controller.start();
+                enqueue_msg_line("#PLACE_HOLD: start\n");
                 break;
 
             default:
@@ -650,541 +215,23 @@ void processCommandQueue() {
     }
 }
 
-// ========================================
-// モーション状態更新関数の実装
-// ========================================
+void updatePlaceHold(float dt_s) {
+    if (motion_state != MotionState::PLACE_HOLD) return;
+    place_controller.update(dt_s);
 
-bool updateLatch(float dt_s) {
-    (void)dt_s;
-    if (motion_state != MotionState::LATCH) return false;
-
-    switch (latch_mode) {
-        case LatchMode::FWD:
-            target_vr_mps = params.latch_mps;
-            target_vl_mps = params.latch_mps;
-            motion.forward(params.latch_mps, 0.0f);
-            return true;
-
-        case LatchMode::BACK:
-            target_vr_mps = -params.latch_mps;
-            target_vl_mps = -params.latch_mps;
-            motion.backward(params.latch_mps);
-            return true;
-
-        case LatchMode::TURN_L:
-        case LatchMode::TURN_R: {
-            const float s = params.latch_turn_mps;
-            motion.turn_in_place(s, latch_turn_target_rad);
-            target_vr_mps = (latch_mode == LatchMode::TURN_L) ? +s : -s;
-            target_vl_mps = (latch_mode == LatchMode::TURN_L) ? -s : +s;
-            return true;
-        }
-
-        default:
-            motion_state = MotionState::IDLE;
-            latch_mode = LatchMode::NONE;
-            return false;
-    }
-}
-
-bool updateJog(float dt_s) {
-    (void)dt_s;
-    if (motion_state != MotionState::JOG) return false;
-
-    const float current_dist_mm = sensors.get_distance();
-    const float traveled_mm = fabsf(current_dist_mm - jog_start_dist_mm);  // 絶対値を取る
-    const float remaining_mm = jog_target_dist_mm - traveled_mm;
-
-    // 目標距離到達判定（±2mm許容）
-    if (remaining_mm <= 2.0f) {
-        motion_state = MotionState::IDLE;
-        target_vr_mps = 0.0f;
-        target_vl_mps = 0.0f;
-        motion.stop();
-        enqueue_msg_line("DONE\n");
-        return true;
-    }
-
-    // 直進保持の角度FB(FWD/STOPと同じ角度+角速度FB。壁センサ補正は無し)。
-    // 従来は左右輪に同じ目標速度を与えるだけの完全オープンループで、
-    // 走行中の進行方向ドリフトを一切補正していなかった(2026-07-25修正)。
-    const float angle_error = sensors.get_angle() - jog_target_angle_rad;
-    const float angle_correction = params.angle_fb_gain * angle_error;
-    const float rate_correction = params.rate_fb_gain * sensors.get_gyro_z();
-    const float lateral_correction = angle_correction + rate_correction;
-
-    // 低速で前進または後退
-    if (jog_is_forward) {
-        target_vr_mps = params.jog_mps;
-        target_vl_mps = params.jog_mps;
-        motion.forward(params.jog_mps, lateral_correction);
-    } else {
-        target_vr_mps = -params.jog_mps;
-        target_vl_mps = -params.jog_mps;
-        motion.backward(params.jog_mps, lateral_correction);
-    }
-
-    return true;
-}
-
-bool updateJogTurn(float dt_s) {
-    (void)dt_s;
-    if (motion_state != MotionState::JOG_TURN) return false;
-
-    const float current_angle_rad = sensors.get_angle();
-    const float traveled_rad = fabsf(current_angle_rad - jog_turn_start_angle_rad);
-    const float target_abs_rad = fabsf(jog_turn_target_rad);
-    const float remaining_rad = target_abs_rad - traveled_rad;
-
-    // 目標角度到達判定（±0.02rad≈1.1度許容、JOGFWD/JOGBACKの±2mmと同じ考え方）。
-    // 従来はここで即座に停止・DONEを返しており、STOP/TURNと違って慣性の
-    // 減衰待ち(角度FBによるホールド)が無かったため、低速とはいえ停止直後の
-    // 残留回頭がそのまま基準角の誤差として残っていた。STOP/TURN と同じ
-    // STOP_HOLD 状態に遷移させ、角度+角速度FBで整定させてからDONEを返す
-    // (2026-07-25修正)。
-    if (remaining_rad <= 0.02f) {
-        target_vr_mps = 0.0f;
-        target_vl_mps = 0.0f;
-        motion.stop();
-        motion_state = MotionState::STOP_HOLD;
-        stop_hold_elapsed_s = 0.0f;
-        stop_hold_target_angle_rad = jog_turn_start_angle_rad + jog_turn_target_rad;
-        return true;
-    }
-
-    // 低速で旋回(turn_in_place経由でturn_sync同期フィードバックを効かせる)
-    const float s = params.jog_turn_mps;
-    motion.turn_in_place(s, jog_turn_target_rad);
-    target_vr_mps = (jog_turn_target_rad >= 0.0f) ? +s : -s;
-    target_vl_mps = (jog_turn_target_rad >= 0.0f) ? -s : +s;
-
-    return true;
-}
-
-void updateForward(float dt_s) {
-    if (motion_state != MotionState::FWD) return;
-
-    const float now_dist = sensors.get_distance();
-    const float remain_mm = fwd_goal_dist_mm - now_dist;
-
-    if (remain_mm <= 0.0f) {
-        motion_state = MotionState::IDLE;
-        led.red_off();  // FWD完了時に赤色LED消灯
-        enqueue_msg_line("DONE\n");
-    } else {
-        float v_next = fwd_v_cmd_mmps;
-        const float a_mag = fabsf(fwd_a_mmps2);
-
-        if (a_mag > 1e-3f) {
-            if (fwd_v_target_mmps > fwd_v_cmd_mmps) {
-                v_next = fwd_v_cmd_mmps + a_mag * dt_s;
-                if (v_next > fwd_v_target_mmps) v_next = fwd_v_target_mmps;
-            } else if (fwd_v_target_mmps < fwd_v_cmd_mmps) {
-                v_next = fwd_v_cmd_mmps - a_mag * dt_s;
-                if (v_next < fwd_v_target_mmps) v_next = fwd_v_target_mmps;
-            }
-        } else {
-            v_next = fwd_v_target_mmps;
-        }
-
-        fwd_v_cmd_mmps = v_next;
-        const float v_cmd_mps = fwd_v_cmd_mmps / 1000.0f;
-
-        // 壁センサフィードバック: 誤差に比例した傾きを目標角に直接与える
-        // (残距離が短いときはオフ)
-        float wall_tilt_rad = 0.0f;
-        if (remain_mm >= params.wall_cutoff_mm) {
-            wall_tilt_rad = calculate_wall_tilt_rad(sensors);
-        }
-
-        // 角度フィードバック: 現在角度と目標角度(壁補正の傾き込み)の差分
-        const float angle_error = sensors.get_angle() - (fwd_target_angle_rad - wall_tilt_rad);
-        const float angle_correction = params.angle_fb_gain * angle_error;
-
-        // 角速度フィードバック: 角速度をゼロに保つ
-        const float gyro_z = sensors.get_gyro_z();
-        const float rate_correction = params.rate_fb_gain * gyro_z;
-        
-
-        {
-            static int dbg_count = 0;
-            dbg_count++;
-            if (dbg_count >= 50) {  // 20Hz
-                dbg_count = 0;
-                // MsgLine は64バイト上限のためCSV形式で短縮
-                // #V,cmd,vr,vl,ur,ul,gz,ang,rem
-                char msg[64];
-                snprintf(msg, sizeof(msg),
-                         "#V,%.0f,%.0f,%.0f,%d,%d,%.2f,%.3f,%.1f\n",
-                         fwd_v_cmd_mmps,
-                         motion.get_vr_filt_mps() * 1000.0f,
-                         motion.get_vl_filt_mps() * 1000.0f,
-                         motion.get_duty_r(), motion.get_duty_l(),
-                         gyro_z, sensors.get_angle(), remain_mm);
-                enqueue_msg_line(msg);
-            }
-        }
-        
-        // 合計補正値
-        const float lateral_correction = angle_correction + rate_correction;
-        
-        target_vr_mps = v_cmd_mps;
-        target_vl_mps = v_cmd_mps;
-        motion.forward(v_cmd_mps, lateral_correction);
-    }
-}
-
-void updateStop(float dt_s) {
-    if (motion_state == MotionState::STOP_BACKOFF) {
-        const float now_dist = sensors.get_distance();
-        if (now_dist <= stop_backoff_target_dist_mm) {
-            target_vr_mps = 0.0f;
-            target_vl_mps = 0.0f;
-            motion.stop();
-            motion_state = MotionState::STOP_HOLD;
-            stop_hold_elapsed_s = 0.0f;
-            stop_hold_target_angle_rad = stop_target_angle_rad;
-            // DONEはホールド完了後(updateStopHold)に送る
-        } else {
-            target_vr_mps = -params.backoff_mps;
-            target_vl_mps = -params.backoff_mps;
-            motion.backward(params.backoff_mps);
-        }
-        return;
-    }
-
-    if (motion_state != MotionState::STOP) return;
-
-    stop_elapsed_s += dt_s;
-    if (stop_elapsed_s >= params.stop_timeout_s) {
-        stop_v_cmd_mmps = 0.0f;
-        target_vr_mps = 0.0f;
-        target_vl_mps = 0.0f;
-        motion.stop();
-        motion_state = MotionState::STOP_BACKOFF;
-        stop_backoff_target_dist_mm = sensors.get_distance() - params.backoff_dist_mm;
-        return;
-    }
-
-    const float now_dist = sensors.get_distance();
-    const float remain_mm = stop_goal_dist_mm - now_dist;
-
-    // 目標距離に到達したら、まず停止指令を出し、次のループでDONEを返す
-    if (remain_mm <= 0.0f) {
-        stop_v_cmd_mmps = 0.0f;
-        target_vr_mps = 0.0f;
-        target_vl_mps = 0.0f;
-        motion.stop();
-        stop_elapsed_s = 0.0f;
-        motion_state = MotionState::STOP_HOLD;
-        stop_hold_elapsed_s = 0.0f;
-        stop_hold_target_angle_rad = stop_target_angle_rad;
-        // DONEはホールド完了後(updateStopHold)に送る
-    } else {
-        const float a_mag = stop_a_mmps2;
-        const float v = stop_v_cmd_mmps;
-
-        // まず 50mm/s まで減速する必要があるかを判断
-        float dist_to_50 = 0.0f;
-        if (a_mag > 1e-3f) {
-            const float dv2 = (v * v) - (params.final_appr_mmps * params.final_appr_mmps);
-            dist_to_50 = dv2 > 0.0f ? (dv2 / (2.0f * a_mag)) : 0.0f;
-        }
-
-        // 次に 50mm/s から 0 まで止めるのに必要な距離
-        float dist_50_to_0 = 0.0f;
-        if (a_mag > 1e-3f) {
-            dist_50_to_0 = (params.final_appr_mmps * params.final_appr_mmps) / (2.0f * a_mag);
-        }
-
-        float v_next = v;
-
-        // 残距離が「50->0の距離」以下なら、優先して停止に向けて減速（ただし20mm/s未満にはしない）
-        if (remain_mm <= dist_50_to_0) {
-            if (a_mag > 1e-3f) v_next = v - a_mag * dt_s;
-            if (v_next < params.stop_min_mmps) v_next = params.stop_min_mmps;
-        } else if (remain_mm <= (dist_to_50 + dist_50_to_0)) {
-            // そろそろ 50mm/s まで落とすフェーズ
-            if (a_mag > 1e-3f) v_next = v - a_mag * dt_s;
-            if (v_next < params.final_appr_mmps) v_next = params.final_appr_mmps;
-        } else {
-            // まだ余裕がある: 今の速度維持（必要なら指定速度へ合わせる）
-            // STOPの引数 speed_mmps は「巡航速度想定」なので、現在がそれ以下なら軽く合わせる
-            const float cruise = stop_cruise_mmps;
-            if (cruise > 0.0f && v < cruise && a_mag > 1e-3f) {
-                v_next = v + a_mag * dt_s;
-                if (v_next > cruise) v_next = cruise;
-            }
-        }
-
-        stop_v_cmd_mmps = v_next;
-        const float v_cmd_mps = stop_v_cmd_mmps / 1000.0f;
-
-        // 壁センサフィードバック: 誤差に比例した傾きを目標角に直接与える
-        // (残距離が短いときはオフ)。
-        // CellRunnerの直進はSTOP単発で実行されるため、FWDと同様に
-        // ここでも壁補正を行わないと直進中の横位置補正が一切効かない。
-        // ただし前壁がある場合は、前壁の反射が横センサに干渉して正しい
-        // 値が取れないケースがあるため壁FBを使わない(STOPは前壁に
-        // 向かって止まる用途が多い)
-        const bool front_wall =
-            (sensors.get_lf() >= params.wall_threshold) ||
-            (sensors.get_rf() >= params.wall_threshold);
-        float wall_tilt_rad = 0.0f;
-        if (!front_wall && remain_mm >= params.wall_cutoff_mm) {
-            wall_tilt_rad = calculate_wall_tilt_rad(sensors);
-        }
-
-        // 角度フィードバック: 現在角度と目標角度(壁補正の傾き込み)の差分
-        const float angle_error = sensors.get_angle() - (stop_target_angle_rad - wall_tilt_rad);
-        const float angle_correction = params.angle_fb_gain * angle_error;
-
-        // 角速度フィードバック: 角速度をゼロに保つ
-        const float gyro_z = sensors.get_gyro_z();
-        const float rate_correction = params.rate_fb_gain * gyro_z;
-
-        // 合計補正値
-        const float lateral_correction = angle_correction + rate_correction;
-
-        {
-            static int dbg_count = 0;
-            dbg_count++;
-            if (dbg_count >= 50) {  // 20Hz
-                dbg_count = 0;
-                // #V,cmd,vr,vl,ur,ul,gz,ang,rem
-                char msg[64];
-                snprintf(msg, sizeof(msg),
-                         "#V,%.0f,%.0f,%.0f,%d,%d,%.2f,%.3f,%.1f\n",
-                         stop_v_cmd_mmps,
-                         motion.get_vr_filt_mps() * 1000.0f,
-                         motion.get_vl_filt_mps() * 1000.0f,
-                         motion.get_duty_r(), motion.get_duty_l(),
-                         gyro_z, sensors.get_angle(), remain_mm);
-                enqueue_msg_line(msg);
-            }
-        }
-
-        target_vr_mps = v_cmd_mps;
-        target_vl_mps = v_cmd_mps;
-        if (v_cmd_mps == 0.0f) {
-            motion.stop();
-        } else {
-            motion.forward(v_cmd_mps, lateral_correction);
-        }
-    }
-}
-
-void updateStopHold(float dt_s) {
-    if (motion_state != MotionState::STOP_HOLD) return;
-    // 他のモーションコマンドが来ればハンドラ側でmotion_stateが別の値に
-    // 変わるため、ここに来た時点で常にホールド中で確定している
-    // (旧実装ではフラグ書き忘れに備えて他フラグの防御チェックが
-    // 必要だったが、単一状態変数化により構造的に不要になった)。
-
-    stop_hold_elapsed_s += dt_s;
-    if (stop_hold_elapsed_s >= params.stop_hold_sec) {
-        motion_state = MotionState::IDLE;
-        target_vr_mps = 0.0f;
-        target_vl_mps = 0.0f;
-        motion.stop();
-        enqueue_msg_line("DONE\n");
-        return;
-    }
-
-    // v=0のまま角度・角速度FBだけを継続し、慣性による回頭を打ち消して
-    // 目標角度(STOP=直進の基準角、TURN=旋回目標角)へ戻す
-    const float angle_error = sensors.get_angle() - stop_hold_target_angle_rad;
-    const float angle_correction = params.angle_fb_gain * angle_error;
-    const float rate_correction = params.rate_fb_gain * sensors.get_gyro_z();
-    const float lateral_correction = angle_correction + rate_correction;
-
-    target_vr_mps = 0.0f;
-    target_vl_mps = 0.0f;
-    motion.forward(0.0f, lateral_correction);
-}
-
-void updateTurn(float dt_s) {
-    if (motion_state != MotionState::TURN) return;
-
-    const float now_ang = sensors.get_angle();
-    const float err = turn_goal_angle_rad - now_ang;   // +: 左回り目標が残っている
-
-    // 整定確認フェーズ: 一旦停止して待ち、慣性で流れた分を再確認する
-    if (turn_settling) {
-        turn_settle_elapsed_s += dt_s;
-        if (turn_settle_elapsed_s < params.turn_settle_s) return;
-        if (fabsf(err) <= params.turn_tol_rad || turn_retry_count >= params.turn_max_retry) {
-            turn_settling = false;
-            // 旋回目標角を維持しつつ慣性を減衰させてからDONEを返す
-            // (リトライ上限で残った誤差もホールド中のFBで引き戻される)
-            motion_state = MotionState::STOP_HOLD;
-            stop_hold_elapsed_s = 0.0f;
-            stop_hold_target_angle_rad = turn_goal_angle_rad;
-        } else {
-            // 許容外に流れた: 再サーボ
-            turn_settling = false;
-            turn_retry_count++;
-            turn_speed_cmd_mps = 0.0f;
-        }
-        return;
-    }
-
-    if (fabsf(err) <= params.turn_tol_rad) {
-        turn_settling = true;
-        turn_settle_elapsed_s = 0.0f;
-        turn_speed_cmd_mps = 0.0f;
-        target_vr_mps = 0.0f;
-        target_vl_mps = 0.0f;
-        motion.stop();
-    } else {
-        // PID制御で「理想速度」を作る。
-        // P: 残角に比例(大きいほど速く)。
-        // I: 整定待ち後もリトライ上限で許容差を超えたまま終わる残留誤差を解消。
-        // D: 実測角速度(gyro_z)へのフィードバックで、目標接近時の
-        //    ブレーキ不足によるオーバーシュートを抑える
-        //    (err = goal - now_ang なので d(err)/dt = -gyro_z)。
-        //
-        // I・Dとも params.turn_fine_rad 以下(最終アプローチ)でのみ有効化
-        // する条件付き制御にしている。理由: 巡航中(残角が大きい間)は
-        // gzが6〜8rad/s程度まで達するため、D単独で
-        // params.turn_kd×gz ≈ 0.4m/s もの制動項になり、Pがまだ
-        // 十分な速度を要求している最中でもcmdが最低速度まで落ちてしまう
-        // (2026-07-22 実機ログで確認: 残角0.7rad=40°でもcmdが60まで低下)。
-        // これが減速タイミングを乱し、無条件Dにしたところ180°旋回で
-        // オーバーシュートが悪化(-17.6°→-20.7°)した原因と考えられる。
-        // 残角が小さい最終アプローチでのみDを効かせることで、巡航中は
-        // Pだけの素直な減速プロファイルを保ちつつ、目標間際の
-        // オーバーシュート抑制効果だけを残す狙い。
-        const bool turn_fine_phase = (fabsf(err) <= params.turn_fine_rad);
-        if (turn_fine_phase) {
-            turn_integ += err * dt_s;
-        }
-        // アンチワインドアップ: 積分項単独で最大速度を超えないようクランプ
-        if (params.turn_ki > 0.0f) {
-            const float integ_max = params.turn_max_mps / params.turn_ki;
-            if (turn_integ > integ_max) turn_integ = integ_max;
-            if (turn_integ < -integ_max) turn_integ = -integ_max;
-        }
-
-        const float gyro_z = sensors.get_gyro_z();
-        const float d_term = turn_fine_phase ? (-params.turn_kd * gyro_z) : 0.0f;
-        const float pid_out = params.turn_kp * err
-                             + params.turn_ki * turn_integ
-                             + d_term;
-
-        float v_target = fabsf(pid_out);
-        if (v_target > params.turn_max_mps) v_target = params.turn_max_mps;
-        if (v_target < params.turn_min_mps) v_target = params.turn_min_mps;
-
-        // 加減速をなめらかにする（slew rate limit）
-        const float dv_max = params.turn_accel * dt_s;
-        turn_speed_cmd_mps = slew_rate_limit(turn_speed_cmd_mps, v_target, dv_max);
-
-        const float target_rel = err; // 現在から見た残り角度
-        motion.turn_in_place(turn_speed_cmd_mps, target_rel);
-
-        // デバッグ用
-        target_vr_mps = (err >= 0.0f) ? +turn_speed_cmd_mps : -turn_speed_cmd_mps;
-        target_vl_mps = (err >= 0.0f) ? -turn_speed_cmd_mps : +turn_speed_cmd_mps;
-
-        {
-            static int dbg_count = 0;
-            dbg_count++;
-            if (dbg_count >= 50) {  // 20Hz
-                dbg_count = 0;
-                // #V,cmd,vr,vl,ur,ul,gz,ang,rem (remはTURNのみ残り角[rad])
-                char msg[64];
-                snprintf(msg, sizeof(msg),
-                         "#V,%.0f,%.0f,%.0f,%d,%d,%.2f,%.3f,%.3f\n",
-                         turn_speed_cmd_mps * 1000.0f,
-                         motion.get_vr_filt_mps() * 1000.0f,
-                         motion.get_vl_filt_mps() * 1000.0f,
-                         motion.get_duty_r(), motion.get_duty_l(),
-                         gyro_z, now_ang, err);
-                enqueue_msg_line(msg);
-            }
-        }
-    }
-}
-
-bool updateQstp(float dt_s) {
-    if (motion_state != MotionState::QSTP) return false;
-
-    // 現在速度が十分低ければ停止完了
-    if (qstp_v_cmd_mmps <= 5.0f) {
-        motion_state = MotionState::IDLE;
-        target_vr_mps = 0.0f;
-        target_vl_mps = 0.0f;
-        motion.stop();
-        
-        // 目標距離との差分を計算してQSTPDONEコマンドで送り返す
-        float remaining_dist = 0.0f;
-        if (qstp_original_goal_dist_mm > 0.0f) {
-            const float current_dist = sensors.get_distance();
-            remaining_dist = qstp_original_goal_dist_mm - current_dist;
-        }
-        
+    static int dbg_count = 0;
+    dbg_count++;
+    if (dbg_count >= 50) {  // 20Hz
+        dbg_count = 0;
+        // #P,vr,vl,vsum,duty
         char msg[64];
-        snprintf(msg, sizeof(msg), "QSTPDONE,%.1f\n", remaining_dist);
+        snprintf(msg, sizeof(msg), "#P,%.1f,%.1f,%.1f,%d\n",
+                 place_controller.get_vr_mps() * 1000.0f,
+                 place_controller.get_vl_mps() * 1000.0f,
+                 place_controller.get_v_sum_mps() * 1000.0f,
+                 place_controller.get_duty());
         enqueue_msg_line(msg);
-        
-        return false;
     }
-
-    // 最大減速度で減速
-    const float decel_delta = params.qstp_decel * dt_s;
-    qstp_v_cmd_mmps -= decel_delta;
-    if (qstp_v_cmd_mmps < 0.0f) {
-        qstp_v_cmd_mmps = 0.0f;
-    }
-
-    const float v_cmd_mps = qstp_v_cmd_mmps / 1000.0f;
-
-    // 壁センサフィードバック: 誤差に比例した傾きを目標角に直接与える
-    const float wall_tilt_rad = calculate_wall_tilt_rad(sensors);
-
-    // 角度フィードバック: 現在角度と目標角度(壁補正の傾き込み)の差分
-    const float angle_error = sensors.get_angle() - (qstp_target_angle_rad - wall_tilt_rad);
-    const float angle_correction = params.angle_fb_gain * angle_error;
-
-    // 角速度フィードバック: 角速度をゼロに保つ
-    const float gyro_z = sensors.get_gyro_z();
-    const float rate_correction = params.rate_fb_gain * gyro_z;
-
-    // 最終速度計算: 車輪の速度差で補正
-    const float vr = v_cmd_mps - angle_correction - rate_correction;
-    const float vl = v_cmd_mps + angle_correction + rate_correction;
-
-    target_vr_mps = vr;
-    target_vl_mps = vl;
-    // 上で計算したvr/vlの差分をそのままlateral_correctionとして渡す
-    // （motion.forward()内部で speed±corr に展開されるため、平均速度＋補正量で渡す）
-    const float lateral_correction = angle_correction + rate_correction;
-
-    {
-        static int dbg_count = 0;
-        dbg_count++;
-        if (dbg_count >= 50) {  // 20Hz
-            dbg_count = 0;
-            const float remain_mm = (qstp_original_goal_dist_mm > 0.0f)
-                ? (qstp_original_goal_dist_mm - sensors.get_distance())
-                : 0.0f;
-            // #V,cmd,vr,vl,ur,ul,gz,ang,rem
-            char msg[64];
-            snprintf(msg, sizeof(msg),
-                     "#V,%.0f,%.0f,%.0f,%d,%d,%.2f,%.3f,%.1f\n",
-                     qstp_v_cmd_mmps,
-                     motion.get_vr_filt_mps() * 1000.0f,
-                     motion.get_vl_filt_mps() * 1000.0f,
-                     motion.get_duty_r(), motion.get_duty_l(),
-                     gyro_z, sensors.get_angle(), remain_mm);
-            enqueue_msg_line(msg);
-        }
-    }
-
-    motion.forward(v_cmd_mps, lateral_correction);
-
-    return true;
 }
 
 // ========================================
@@ -1212,18 +259,9 @@ void Core0RealtimeTask(void* parameter) {
 
         const float dt_s = static_cast<float>(time_delta) / 1000.0f;
 
-        // 各モーション状態の更新。motion_stateが単一の排他状態のため、
-        // 各update*は自分の状態でなければ何もせず即returnする
-        // (以前はLatch/Jog/JogTurn/Qstpとその他が競合しないようネストした
-        // if文で手動排他していたが、単一状態変数化で不要になった)。
-        updateLatch(dt_s);
-        updateJog(dt_s);
-        updateJogTurn(dt_s);
-        updateQstp(dt_s);
-        updateForward(dt_s);
-        updateStop(dt_s);
-        updateTurn(dt_s);
-        updateStopHold(dt_s);
+        // motion_stateが単一の排他状態のため、update*は自分の状態で
+        // なければ何もせず即returnする。
+        updatePlaceHold(dt_s);
 
         // ジャイロキャリブレーション完了チェック
         if (gyro_calib_done_pending && !sensors.is_calibrating()) {
@@ -1235,8 +273,14 @@ void Core0RealtimeTask(void* parameter) {
             enqueue_msg_line("DONE\n");
         }
 
-        // Motion controller update (speed PID)
-        motion.update(time_delta);
+        // Motion controller update (speed PID)。PLACE_HOLD中はplace_controller
+        // が直接モーターを駆動するため、motion(旧MotionController)側の
+        // 速度PIDが競合して上書きしないようここで止める(motion側の目標
+        // vr_ref/vl_refはPLACE_HOLD中一切更新されないため、素通しすると
+        // 古い目標値に基づいてduty=0等を毎tick書き込んでしまう)。
+        if (motion_state != MotionState::PLACE_HOLD) {
+            motion.update(time_delta);
+        }
     }
 }
 
@@ -1465,166 +509,14 @@ void loop() {
             // RAM上のパラメータをビルド時デフォルトへ戻す(NVSは変更しない)
             params_reset_to_defaults();
             Serial.printf("DONE\n");
-        } else if (cmd.startsWith("FWD,")) {
-            // FWD: FWD,<speed_mmps>,<accel_mmps2>,<distance_mm>
-            int comma1 = cmd.indexOf(',');
-            int comma2 = (comma1 >= 0) ? cmd.indexOf(',', comma1 + 1) : -1;
-            int comma3 = (comma2 >= 0) ? cmd.indexOf(',', comma2 + 1) : -1;
-            if (comma1 > 0 && comma2 > comma1 && comma3 > comma2) {
-                Command q;
-                q.cmd_id = CMD_FORWARD;
-                q.parameter.forward.speed_mmps = cmd.substring(comma1 + 1, comma2).toFloat();
-                q.parameter.forward.accel_mmps2 = cmd.substring(comma2 + 1, comma3).toFloat();
-                q.parameter.forward.distance_mm = cmd.substring(comma3 + 1).toFloat();
-
-                if (xQueueSend(cmd_queue, &q, pdMS_TO_TICKS(10)) == pdTRUE) {
-                    Serial.printf("#FWD speed=%.1fmm/s accel=%.1fmm/s^2 dist=%.1fmm\n",
-                                  q.parameter.forward.speed_mmps,
-                                  q.parameter.forward.accel_mmps2,
-                                  q.parameter.forward.distance_mm);
-                } else {
-                    Serial.printf("#Queue full!\n");
-                }
-            } else {
-                Serial.printf("#Invalid FWD format\n");
-            }
-        } else if (cmd.startsWith("STOP,")) {
-            // STOP: STOP,<speed_mmps>,<accel_mmps2>,<distance_mm>
-            int comma1 = cmd.indexOf(',');
-            int comma2 = (comma1 >= 0) ? cmd.indexOf(',', comma1 + 1) : -1;
-            int comma3 = (comma2 >= 0) ? cmd.indexOf(',', comma2 + 1) : -1;
-            if (comma1 > 0 && comma2 > comma1 && comma3 > comma2) {
-                Command q;
-                q.cmd_id = CMD_STOP;
-                q.parameter.stop.speed_mmps = cmd.substring(comma1 + 1, comma2).toFloat();
-                q.parameter.stop.accel_mmps2 = cmd.substring(comma2 + 1, comma3).toFloat();
-                q.parameter.stop.distance_mm = cmd.substring(comma3 + 1).toFloat();
-
-                if (xQueueSend(cmd_queue, &q, pdMS_TO_TICKS(10)) == pdTRUE) {
-                    Serial.printf("#STOP speed=%.1fmm/s accel=%.1fmm/s^2 dist=%.1fmm\n",
-                                  q.parameter.stop.speed_mmps,
-                                  q.parameter.stop.accel_mmps2,
-                                  q.parameter.stop.distance_mm);
-                } else {
-                    Serial.printf("#Queue full!\n");
-                }
-            } else {
-                Serial.printf("#Invalid STOP format\n");
-            }
-        } else if (cmd.startsWith("TURN,")) {
-            // TURN: TURN,<angle_rad>
-            int comma1 = cmd.indexOf(',');
-            if (comma1 > 0) {
-                Command q;
-                q.cmd_id = CMD_TURN;
-                q.parameter.turn_target_rad = cmd.substring(comma1 + 1).toFloat();
-
-                if (xQueueSend(cmd_queue, &q, pdMS_TO_TICKS(10)) == pdTRUE) {
-                    Serial.printf("#TURN angle=%.4frad\n", q.parameter.turn_target_rad);
-                } else {
-                    Serial.printf("#Queue full!\n");
-                }
-            } else {
-                Serial.printf("#Invalid TURN format\n");
-            }
-        } else if (cmd == "LFWD") {
-            // LFWD: 10mm/sでLSTOPまで前進
+        } else if (cmd == "HOLD") {
+            // HOLD: その場静止制御を開始(左右輪速度の和をゼロへ、place_controller.cpp)
             Command q;
-            q.cmd_id = CMD_LATCH_START;
-            q.parameter.latch.mode = static_cast<uint8_t>(LatchMode::FWD);
+            q.cmd_id = CMD_PLACE_HOLD_START;
             if (xQueueSend(cmd_queue, &q, pdMS_TO_TICKS(10)) == pdTRUE) {
-                Serial.printf("#LFWD\n");
+                Serial.printf("#HOLD\n");
             } else {
                 Serial.printf("#Queue full!\n");
-            }
-        } else if (cmd == "LBACK") {
-            // LBACK: 10mm/sでLSTOPまで後退
-            Command q;
-            q.cmd_id = CMD_LATCH_START;
-            q.parameter.latch.mode = static_cast<uint8_t>(LatchMode::BACK);
-            if (xQueueSend(cmd_queue, &q, pdMS_TO_TICKS(10)) == pdTRUE) {
-                Serial.printf("#LBACK\n");
-            } else {
-                Serial.printf("#Queue full!\n");
-            }
-        } else if (cmd == "LTURNL") {
-            // LTURNL: 90deg/sでLSTOPまで左旋回
-            Command q;
-            q.cmd_id = CMD_LATCH_START;
-            q.parameter.latch.mode = static_cast<uint8_t>(LatchMode::TURN_L);
-            if (xQueueSend(cmd_queue, &q, pdMS_TO_TICKS(10)) == pdTRUE) {
-                Serial.printf("#LTURNL\n");
-            } else {
-                Serial.printf("#Queue full!\n");
-            }
-        } else if (cmd == "LTURNR") {
-            // LTURNR: 90deg/sでLSTOPまで右旋回
-            Command q;
-            q.cmd_id = CMD_LATCH_START;
-            q.parameter.latch.mode = static_cast<uint8_t>(LatchMode::TURN_R);
-            if (xQueueSend(cmd_queue, &q, pdMS_TO_TICKS(10)) == pdTRUE) {
-                Serial.printf("#LTURNR\n");
-            } else {
-                Serial.printf("#Queue full!\n");
-            }
-        } else if (cmd == "LSTOP") {
-            // LSTOP: L*動作停止
-            Command q;
-            q.cmd_id = CMD_LATCH_STOP;
-            if (xQueueSend(cmd_queue, &q, pdMS_TO_TICKS(10)) == pdTRUE) {
-                Serial.printf("#LSTOP\n");
-            } else {
-                Serial.printf("#Queue full!\n");
-            }
-        } else if (cmd.startsWith("JOGFWD,")) {
-            // JOGFWD: 低速で指定距離前進 JOGFWD,<distance_mm>
-            int comma1 = cmd.indexOf(',');
-            if (comma1 > 0) {
-                Command q;
-                q.cmd_id = CMD_JOG_START;
-                q.parameter.jog.is_forward = true;
-                q.parameter.jog.distance_mm = cmd.substring(comma1 + 1).toFloat();
-
-                if (xQueueSend(cmd_queue, &q, pdMS_TO_TICKS(10)) == pdTRUE) {
-                    Serial.printf("#JOGFWD dist=%.1fmm\n", q.parameter.jog.distance_mm);
-                } else {
-                    Serial.printf("#Queue full!\n");
-                }
-            } else {
-                Serial.printf("#Invalid JOGFWD format\n");
-            }
-        } else if (cmd.startsWith("JOGBACK,")) {
-            // JOGBACK: 低速で指定距離後退 JOGBACK,<distance_mm>
-            int comma1 = cmd.indexOf(',');
-            if (comma1 > 0) {
-                Command q;
-                q.cmd_id = CMD_JOG_START;
-                q.parameter.jog.is_forward = false;
-                q.parameter.jog.distance_mm = cmd.substring(comma1 + 1).toFloat();
-
-                if (xQueueSend(cmd_queue, &q, pdMS_TO_TICKS(10)) == pdTRUE) {
-                    Serial.printf("#JOGBACK dist=%.1fmm\n", q.parameter.jog.distance_mm);
-                } else {
-                    Serial.printf("#Queue full!\n");
-                }
-            } else {
-                Serial.printf("#Invalid JOGBACK format\n");
-            }
-        } else if (cmd.startsWith("JOGTURN,")) {
-            // JOGTURN: 低速で指定相対角度まで旋回 JOGTURN,<angle_rad>（正=左）
-            int comma1 = cmd.indexOf(',');
-            if (comma1 > 0) {
-                Command q;
-                q.cmd_id = CMD_JOG_TURN_START;
-                q.parameter.jog_turn_rad = cmd.substring(comma1 + 1).toFloat();
-
-                if (xQueueSend(cmd_queue, &q, pdMS_TO_TICKS(10)) == pdTRUE) {
-                    Serial.printf("#JOGTURN angle=%.4frad\n", q.parameter.jog_turn_rad);
-                } else {
-                    Serial.printf("#Queue full!\n");
-                }
-            } else {
-                Serial.printf("#Invalid JOGTURN format\n");
             }
         } else if (cmd == "RDST") {
             // 距離リセット（オドメトリ）
@@ -1666,15 +558,6 @@ void loop() {
             q.cmd_id = CMD_GYRO_CALIBRATE;
             if (xQueueSend(cmd_queue, &q, pdMS_TO_TICKS(10)) == pdTRUE) {
                 Serial.printf("#GCAL\n");
-            } else {
-                Serial.printf("#Queue full!\n");
-            }
-        } else if (cmd == "QSTP") {
-            // クイック停止
-            Command q;
-            q.cmd_id = CMD_QSTP;
-            if (xQueueSend(cmd_queue, &q, pdMS_TO_TICKS(10)) == pdTRUE) {
-                Serial.printf("#QSTP\n");
             } else {
                 Serial.printf("#Queue full!\n");
             }

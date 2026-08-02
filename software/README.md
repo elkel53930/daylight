@@ -10,16 +10,18 @@
 | `ui/` | OLED/ボタン/ブザーを提供するUIサーバー | `ui_server.service` |
 | `camera/` | CSIカメラの動作確認・Discord投稿スクリプト(手動実行) | なし |
 | `beacon/` | 起動時のDiscord IP通知 | (cron等で個別運用、`beacon/README.md`参照) |
-| `micromouse/` | マイクロマウス自律走行アプリ(迷路探索・最短走行) | なし(`default_app` のメニューから起動、または手動実行) |
 | `vision/` | カメラ画像認識ライブラリ(黄ボール検出・赤壁エッジ検出) | なし |
-| `manual_controller/` | Ubuntu PC のゲームコントローラで機体を遠隔操作する(機体側+PC側の2スクリプト) | なし(手動実行) |
 | `mob/` | 外部ESP32上で動くモーター制御ファームウェア(Arduino/C++) | 対象外(ハードウェア無しでテスト不可) |
 
 各ディレクトリの詳細は個別の `README.md` を参照。
 
+`micromouse/`・`manual_controller/` は2026-08-02に削除(ESP32側の移動系
+制御ロジックを根本から作り直すため、依存していたPythonスクリプトごと削除。
+`CLAUDE.md`参照)。
+
 ## 開発用venvの方針
 
-- **`software/venv`**(このディレクトリ直下、共有): `default_app/`・`ui/`・`camera/`・`micromouse/` はいずれも同じRPi固有のハードウェアライブラリ(lgpio, picamera2, luma等)や共通ライブラリに依存しているため、個別にvenvを分けても実質的な独立性は得られない。まとめて1つの `--system-site-packages` venvで管理する。
+- **`software/venv`**(このディレクトリ直下、共有): `default_app/`・`ui/`・`camera/` はいずれも同じRPi固有のハードウェアライブラリ(lgpio, picamera2, luma等)や共通ライブラリに依存しているため、個別にvenvを分けても実質的な独立性は得られない。まとめて1つの `--system-site-packages` venvで管理する。
 
   ```bash
   python3 -m venv --system-site-packages software/venv
@@ -43,15 +45,7 @@
 ```bash
 software/venv/bin/python3 -m unittest discover -s software/default_app/tests -q
 software/venv/bin/python3 -m unittest discover -s software/ui/tests -q
-software/venv/bin/python3 -m unittest discover -s software/micromouse/tests -q
 software/venv/bin/python3 -m unittest discover -s software/vision/tests -q
-software/venv/bin/python3 -m unittest discover -s software/manual_controller/tests -q
 ```
 
 `camera/` はカメラ実機が無いと動作確認できないため自動テストは無い。
-`micromouse/` のテストは迷路アルゴリズムのユニットテストに加え、仮想迷路での
-探索〜最短走行のシミュレーションテストを含む(ハードウェア不要。pyserial
-すら無くても走る)。実機での段階的検証は `micromouse/hw_test.py` を使う。
-`manual_controller/` のテストはネットワーク層(TCP watchdog・切断処理)を
-ローカルループバックソケットで検証しており、pygame/zeroconf/mob実機は
-不要(`manual_controller/README.md` 参照)。

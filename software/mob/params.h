@@ -17,7 +17,7 @@
 // (params.cpp)の両方に追記すること。名前は ESP32 Preferences の
 // キー長制限(15文字)以内の snake_case にする。
 struct Params {
-    // 車輪速度PID(motion_controller.cpp)
+    // 車輪速度PID(motion_controller.cpp、MOT/DUTYコマンド用)
     float speed_kp;
     float speed_ki;
     float speed_kd;
@@ -25,52 +25,15 @@ struct Params {
     float vbatt_nom;
     float speed_lpf_alpha;
 
-    // 旋回中の左右速度同期(motion_controller.cpp)
-    float turn_sync_kp;
-    float turn_sync_ki;
-    float sync_max_corr;
-    float sync_lpf_alpha;
-
-    // 直進停止プロファイル(mob.ino updateStop)
-    float final_appr_mmps;
-    float stop_min_mmps;
-    float stop_timeout_s;
-    float backoff_dist_mm;
-    float backoff_mps;
-    float stop_hold_sec;
-
-    // 低速連続動作(mob.ino latch/jog)
-    float latch_mps;
-    float latch_turn_mps;
-    float jog_mps;
-    float jog_turn_mps;
-
-    // 急停止(mob.ino QSTP)
-    float qstp_decel;
-
-    // その場旋回(mob.ino updateTurn)
-    float turn_kp;
-    float turn_ki;
-    float turn_kd;
-    float turn_fine_rad;
-    float turn_max_mps;
-    float turn_min_mps;
-    float turn_tol_rad;
-    float turn_settle_s;
-    float turn_max_retry;
-    float turn_accel;
-
-    // 直進の角度・角速度フィードバック(mob.ino updateForward等)
-    float angle_fb_gain;
-    float rate_fb_gain;
-
-    // 壁センサフィードバック(mob.ino calculate_wall_*)
-    float wall_threshold;
-    float wall_target_ls;
-    float wall_target_rs;
-    float wall_tilt_gain;
-    float wall_tilt_max;
-    float wall_cutoff_mm;
+    // その場静止制御(place_controller.cpp)。左右輪速度の和(並進成分)を
+    // ゼロへ追い込むPID。速度PID(speed_kp/ki)と誤差の単位・出力スケール
+    // (m/s→duty)は同じだがフィードフォワードが無いため、経路が異なる
+    // (2026-08-02新規追加、実機チューニング済み)。
+    float place_kp;
+    float place_ki;
+    float place_kd;
+    float place_out_max;
+    float place_lpf_alpha;
 };
 
 // ビルド時デフォルト値(現行の実機チューニング値と一致させること)

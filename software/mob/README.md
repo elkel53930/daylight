@@ -101,7 +101,8 @@ PWM 周波数: 50Hz、パルス幅: 500–2500µs（0–180°）。
 | `fan.h/cpp` | 吸引ファン PWM ドライバ（LEDC、IO2） |
 | `servo.h/cpp` | RC サーボドライバ（MCPWM group 1、IO1） |
 | `ball_sensor.h/cpp` | ボールセンサドライバ（内蔵ADC、IO14） |
-| `motion_controller.h/cpp` | 車輪速度PID・旋回同期・フィードフォワード |
+| `motion_controller.h/cpp` | 車輪速度PID・フィードフォワード（MOT/DUTYコマンド用） |
+| `place_controller.h/cpp` | その場静止制御（左右輪速度の和をゼロへ、`HOLD`コマンド用、2026-08-02〜） |
 | `params.h/cpp` | 機体固有チューニングパラメータ（NVS永続化、PGET/PSET等） |
 | `spi_manager.h/cpp` | IMU 用 HSPI バス管理 |
 | `Makefile` | ビルド / 書き込み / モニタ |
@@ -175,7 +176,7 @@ esp32:esp32`）が必要。ビルドサーバー側の `arduino-cli` が PATH �
 | `PLOAD` | NVSから読み込みRAMへ反映(起動時にも自動実行) |
 | `PRESET` | RAM上のパラメータをビルド時デフォルトへ戻す(NVSは変更しない) |
 | `SEN` | センサデータ一括取得 |
-| `STOP` | モーター・ファン停止 |
+| `HOLD` | その場静止制御を開始(左右輪速度の和をゼロへ、`place_controller.cpp`)。停止は`MOT,0,0` |
 
 ### パラメータ(PGET/PSET/PSAVE/PLOAD/PRESET)
 

@@ -14,6 +14,12 @@ E (171881) adc_oneshot: adc_oneshot_get_calibrated_result(330): adc oneshot read
 - 再発頻度が上がるようなら ball_sensor.cpp の ADC 設定
   (ADC2 と battery/壁センサとの共存、キャリブレーション設定)を調査する
 
+## micromouse関連TODO(保留中、2026-08-02にコード削除)
+
+以下2件は `software/micromouse/` のコード自体を2026-08-02に削除した
+(CLAUDE.md参照、ESP32制御ロジックの根本的な作り直しのため)ため、
+直接は着手できない。再実装時の参考として内容は残す。
+
 ## micromouse: カメラ角度補正(vision.py)の較正精度
 
 2026-07-24、software/micromouse/vision.py の赤帯上端エッジ検出で

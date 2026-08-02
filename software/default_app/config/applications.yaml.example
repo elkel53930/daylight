@@ -3,36 +3,21 @@
 # /etc/robot-ui/applications.yaml の実エントリは以下のように
 # software/venv の python でリポジトリ内スクリプトを起動している:
 #
-#   - name: Micromouse
+#   - name: Camera Test
 #     command:
 #       - /home/k-iida/dev/daylight/software/venv/bin/python3
-#       - /home/k-iida/dev/daylight/software/micromouse/micromouse_app.py
+#       - /home/k-iida/dev/daylight/software/camera/camera_test.py
 #     priority: 20
+#
+# micromouse/manual_controllerは2026-08-02にESP32制御ロジックの再設計に
+# 伴い削除した(software/mob/README.md参照)。作り直し次第ここに戻す。
 #
 # 以下は /opt へ正式デプロイした場合の理想形の例。
 applications:
-  - name: Micromouse
-    command:
-      - python3
-      - /opt/robot/apps/micromouse/micromouse_app.py
-    priority: 20
-
-  - name: Pattern Test
-    command:
-      - python3
-      - /opt/robot/apps/micromouse/pattern_test.py
-    priority: 10
-
   - name: Camera Test
     command:
       - python3
       - /opt/robot/apps/camera/camera_test.py
-    priority: 20
-
-  - name: Manual Control
-    command:
-      - python3
-      - /opt/robot/apps/manual_controller/remote_server.py
     priority: 20
 
   - name: Maze

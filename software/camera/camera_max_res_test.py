@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """CSIカメラの性能検証用: 最大解像度・最大画角で1秒ごとにHTTP配信する。
 
-software/manual_controller/camera_stream.py と同じ「ブラウザで自動更新
-される<img>タグ」方式だが、こちらは性能検証が目的:
+software/vision/vision_http_test.py と同じ「ブラウザで自動更新される
+<img>タグ」方式だが、こちらは性能検証が目的:
 
   - 解像度はセンサーのフル解像度(実機で `Picamera2().sensor_modes` を
     確認: Camera Module 3 Wide/imx708_wide は 4608x2592 が最大)。
