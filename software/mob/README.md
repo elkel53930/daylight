@@ -106,7 +106,7 @@ PWM 周波数: 50Hz、パルス幅: 500–2500µs（0–180°）。
 | `params.h/cpp` | 機体固有チューニングパラメータ（NVS永続化、PGET/PSET等） |
 | `spi_manager.h/cpp` | IMU 用 HSPI バス管理 |
 | `Makefile` | ビルド / 書き込み / モニタ |
-| `turn_test.py` | `HOLD`/`TURN`をOLED越しに試す実機テストツール（`default_app`のApplicationsメニューから起動可、または手動実行） |
+| `motion_test.py` | `HOLD`/`TURN`/`PATTERN`をOLED越しに試す実機テストツール（`default_app`のApplicationsメニューから起動可、または手動実行） |
 
 ## ビルド・書き込み
 

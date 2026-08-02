@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-turn_test.py — mob の HOLD(その場静止)・TURN(その場旋回)・PATTERN
-(仮想ターゲット追従の固定テストパス)を実機でOLED越しに試すための
-テストツール。
+motion_test.py — mob の HOLD(その場静止)・TURN(その場旋回)・PATTERN
+(仮想ターゲット追従のパス走行)を実機でOLED越しに試すためのテストツール。
+その場旋回だけでなく並進を伴う走行も試せるため turn_test.py から改名した
+(2026-08-02)。
 
-default_app のメニュー(Applications → Turn Test)からも起動できる。
+default_app のメニュー(Applications → Motion Test)からも起動できる。
 
 操作:
     左ボタン: メニュー選択を送る(HOLD/TURN実行中は無視)
