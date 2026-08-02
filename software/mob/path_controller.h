@@ -56,11 +56,15 @@ public:
         float angle_rad;
     };
 
+    // PATTERN走行パスの最大区間数(呼び出し側のバッファと揃えること)
+    static constexpr size_t MAX_SEGMENTS = 32;
+
     PathController(Motor& motor, Sensors& sensors);
 
     // segments[0..count-1] を順に走行する仮想ターゲットを開始する。
-    // segments は呼び出し側が静的な配列として保持し続けること(コピー
-    // しない、ポインタを保持するだけ)。
+    // start() 時点で内部バッファへコピー(スナップショット)するため、
+    // 呼び出し側は start() 後に元の配列を書き換えてよい(走行中の
+    // 走行コマンド追加が現在の走行に影響しない、2026-08-02)。
     void start(const Segment* segments, size_t count);
 
     // 1kHzループから呼ぶ(motion_state == PATH_FOLLOW の間のみ)。
@@ -85,7 +89,8 @@ private:
     Motor& motor_;
     Sensors& sensors_;
 
-    const Segment* segments_ = nullptr;
+    Segment segments_storage_[MAX_SEGMENTS];  // start()でここへコピー
+    const Segment* segments_ = nullptr;        // segments_storage_ を指す
     size_t seg_count_ = 0;
     size_t seg_index_ = 0;
 

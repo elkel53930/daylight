@@ -16,7 +16,15 @@ PathController::PathController(Motor& motor, Sensors& sensors)
     : motor_(motor), sensors_(sensors) {}
 
 void PathController::start(const Segment* segments, size_t count) {
-    segments_ = segments;
+    // start()時点でセグメントを内部バッファへコピー(スナップショット)する。
+    // 呼び出し側(mob.ino)は走行コマンドをCore1で直接g_pattern_segmentsへ
+    // 積むため、走行中にそのバッファが書き換わっても現在の走行に影響
+    // しないよう、ここで独立した控えを持つ(2026-08-02)。
+    if (count > MAX_SEGMENTS) count = MAX_SEGMENTS;
+    for (size_t i = 0; i < count; i++) {
+        segments_storage_[i] = segments[i];
+    }
+    segments_ = segments_storage_;
     seg_count_ = count;
     seg_index_ = 0;
 
@@ -153,6 +161,18 @@ void PathController::advance_target(float dt_s) {
         omega_ff_radps_ = 0.0f;
         return;
     }
+
+    // 追従ゲート(2026-08-02追加): ロボットがターゲットから離れすぎたら、
+    // 追いつくまでターゲットの前進を凍結する。上のベアリングブレンドで
+    // ロボットがターゲット位置へ向き直る復元力が働くので、待っている間に
+    // distが縮まりゲートが解除される。dist_to_target_mm_は前tickのupdate()で
+    // 計算済みの値(1tick=1msの遅れは無視できる)。
+    if (dist_to_target_mm_ > params.path_gate_mm) {
+        target_speed_mmps_ = 0.0f;
+        omega_ff_radps_ = 0.0f;
+        return;
+    }
+
     const Segment& seg = segments_[seg_index_];
     if (seg.type == SegmentType::STRAIGHT) {
         advance_straight(seg, dt_s);
@@ -181,15 +201,26 @@ void PathController::update(float dt_s) {
     const float dx = target_x_mm_ - robot_x_mm_;
     const float dy = target_y_mm_ - robot_y_mm_;
     dist_to_target_mm_ = sqrtf(dx * dx + dy * dy);
-    // 角度誤差は「ロボットから見たターゲットの方向(ベアリング角)」では
-    // なく、「ロボットの向きとターゲット自身の向き(target_heading_rad_、
-    // 進行方向)の差」を使う(2026-08-02、ユーザー指摘により変更)。
-    // ベアリング角は追従距離(path_follow_mm)がターゲットの旋回半径に
-    // 対して無視できない比率だと、ターゲットの真の進行方向とズレる
-    // (旋回中、ロボットは追従距離の分だけ弧の内側/外側にずれた位置から
-    // ターゲットを見ることになるため)。ターゲット自身の向きを直接
-    // 追わせることで、この幾何学的なズレを無くす。
-    heading_error_rad_ = normalize_angle(target_heading_rad_ - robot_theta_rad_);
+    // 角度誤差: 追従できているとき(distがpath_follow_mm付近)は「ロボットの
+    // 向きとターゲット自身の向き(target_heading、進行方向)の差」を使い高精度に
+    // (ベアリング角は追従距離が旋回半径に対して無視できない比率だと幾何学的に
+    // ズレるため)。ただしこれだけでは位置の横ずれを戻す復元力が無く、機体の
+    // 向きが進行方向から90°を超えて回る(180°/Uターン)と発散する。そこで
+    // distが開くほど、ロボット→ターゲット位置への「ベアリング角」の差
+    // (=位置復元力)へ滑らかにブレンドする(2026-08-02追加)。
+    const float heading_err = normalize_angle(target_heading_rad_ - robot_theta_rad_);
+    if (dist_to_target_mm_ > 1.0f && params.path_blend_mm > 0.1f) {
+        const float bearing_err = normalize_angle(atan2f(dy, dx) - robot_theta_rad_);
+        float blend = (dist_to_target_mm_ - params.path_follow_mm) / params.path_blend_mm;
+        if (blend < 0.0f) blend = 0.0f;
+        if (blend > 1.0f) blend = 1.0f;
+        // heading_err基準にbearing_errへの差分をblendで混ぜる(角度差を
+        // normalizeしてから補間することで±πの巻きに強くする)。
+        const float delta = normalize_angle(bearing_err - heading_err);
+        heading_error_rad_ = normalize_angle(heading_err + blend * delta);
+    } else {
+        heading_error_rad_ = heading_err;
+    }
 
     const float dist_error_mm = dist_to_target_mm_ - params.path_follow_mm;
 

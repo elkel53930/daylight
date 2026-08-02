@@ -75,6 +75,12 @@ struct Params {
     float path_kf_ang;     // FF: スラローム区間の幾何学的角速度[rad/s] → duty
     float path_kd_ang;     // 角速度誤差(ジャイロ実測との差)[rad/s] → duty
     float path_out_max;    // duty_common/duty_diffそれぞれのクランプ
+    // 位置復元力(2026-08-02追加)。角度誤差を、追従できているときは
+    // target_heading(高精度)、distが開くほどベアリング角(ロボット→ターゲット
+    // 位置の方向、位置復元力)へブレンドする。path_blend_mmはdist_errorが
+    // この値に達したとき完全にベアリング主体になる幅。
+    float path_blend_mm;   // ベアリングへのブレンド幅 [mm]
+    float path_gate_mm;    // dist_to_targetがこの値を超えたらターゲットの前進を止めて待つ [mm]
 };
 
 // ビルド時デフォルト値(現行の実機チューニング値と一致させること)

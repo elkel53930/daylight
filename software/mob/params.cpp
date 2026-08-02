@@ -78,6 +78,14 @@ const Params kDefaultParams = {
     .path_kf_ang = 8.015625f,
     .path_kd_ang = 33.75f,
     .path_out_max = 500.0f,
+    // 位置復元力(2026-08-02追加)。90°ターンは追従できるが、機体の向きが
+    // 進行方向から90°を超えて回る(180°/Uターン)とtarget_heading制御だけでは
+    // 位置を回復できず発散する実機事象への対策。dist_errorがpath_blend_mmに
+    // 達するとベアリング角主体に切り替え、path_gate_mmを超えたらターゲットを
+    // 止めて追いつくのを待つ。正常追従(dist~30、直進の加減速で最大~55)では
+    // ブレンドはごく僅か・ゲートは非発動。実機で要チューニング。
+    .path_blend_mm = 40.0f,
+    .path_gate_mm = 90.0f,
 };
 
 Params params = kDefaultParams;
@@ -120,6 +128,8 @@ const ParamDef PARAM_TABLE[] = {
     {"path_kf_ang", offsetof(Params, path_kf_ang)},
     {"path_kd_ang", offsetof(Params, path_kd_ang)},
     {"path_out_max", offsetof(Params, path_out_max)},
+    {"path_blend_mm", offsetof(Params, path_blend_mm)},
+    {"path_gate_mm", offsetof(Params, path_gate_mm)},
 };
 
 const size_t PARAM_COUNT = sizeof(PARAM_TABLE) / sizeof(PARAM_TABLE[0]);
