@@ -90,8 +90,12 @@ enum CommandID : uint8_t {
 // 巡航速度は初回テスト(150mm/s)から2倍の300mm/sで正確な走行(誤差1mm以下)
 // を確認。1.5倍の450mm/sも試したが、スラローム中の追従誤差(方位誤差
 // 最大30°程度)が実機の壁に干渉するほど大きくなり衝突したため、
-// 300mm/sへ戻した(2026-08-02)。角度追従ゲイン(path_kp_ang等)を
-// 詰めれば再挑戦できる見込み。
+// 300mm/sへ戻した(2026-08-02)。
+// 半径70mm化+旋回間直進40mm追加も試したが、角度制御をベアリング角から
+// ターゲット自身の向きとの差に変更したことで方位誤差が大幅改善した
+// ため、半径70mm化・旋回間直進はユーザー指示により撤回し90mm・直進なし
+// に戻した(2026-08-02)。それでも体感のガタつきが残るとのことで
+// path_kp_ang/path_kf_ang/path_kd_angを0.75倍に調整中。
 static const PathController::Segment PATTERN_TEST_SEGMENTS[] = {
     // type, distance_mm, v_start, v_cruise, v_end,  v(slalom), dir, radius, angle
     {PathController::SegmentType::STRAIGHT, 150.0f, 0.0f,   300.0f, 300.0f, 0.0f,   0.0f, 0.0f,  0.0f},

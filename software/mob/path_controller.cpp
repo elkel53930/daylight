@@ -181,8 +181,15 @@ void PathController::update(float dt_s) {
     const float dx = target_x_mm_ - robot_x_mm_;
     const float dy = target_y_mm_ - robot_y_mm_;
     dist_to_target_mm_ = sqrtf(dx * dx + dy * dy);
-    const float bearing = atan2f(dy, dx);
-    heading_error_rad_ = normalize_angle(bearing - robot_theta_rad_);
+    // 角度誤差は「ロボットから見たターゲットの方向(ベアリング角)」では
+    // なく、「ロボットの向きとターゲット自身の向き(target_heading_rad_、
+    // 進行方向)の差」を使う(2026-08-02、ユーザー指摘により変更)。
+    // ベアリング角は追従距離(path_follow_mm)がターゲットの旋回半径に
+    // 対して無視できない比率だと、ターゲットの真の進行方向とズレる
+    // (旋回中、ロボットは追従距離の分だけ弧の内側/外側にずれた位置から
+    // ターゲットを見ることになるため)。ターゲット自身の向きを直接
+    // 追わせることで、この幾何学的なズレを無くす。
+    heading_error_rad_ = normalize_angle(target_heading_rad_ - robot_theta_rad_);
 
     const float dist_error_mm = dist_to_target_mm_ - params.path_follow_mm;
 
