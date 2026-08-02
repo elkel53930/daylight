@@ -60,6 +60,18 @@ const Params kDefaultParams = {
     .pivot_ki = 75.0f,
     .pivot_kd = 80.0f,
     .pivot_out_max = 500.0f,
+
+    // 仮想ターゲット追従パス走行(未チューニング)。path_kf_ang/path_kd_angは
+    // pivot_kf/pivot_kdの実機チューニング値をそのまま流用(同じ物理量:
+    // duty per rad/s の機体回転)、path_kp_ang/path_kp_fwdは保守的な
+    // 初期値から開始する。
+    .path_follow_mm = 30.0f,
+    .path_accel = 1000.0f,  // 2026-08-02: PATTERNの巡航速度300mm/s(実機で高精度を確認)に合わせて2倍のまま
+    .path_kp_fwd = 3.0f,
+    .path_kp_ang = 1000.0f,
+    .path_kf_ang = 19.0f,
+    .path_kd_ang = 80.0f,
+    .path_out_max = 500.0f,
 };
 
 Params params = kDefaultParams;
@@ -94,6 +106,14 @@ const ParamDef PARAM_TABLE[] = {
     {"pivot_ki", offsetof(Params, pivot_ki)},
     {"pivot_kd", offsetof(Params, pivot_kd)},
     {"pivot_out_max", offsetof(Params, pivot_out_max)},
+
+    {"path_follow_mm", offsetof(Params, path_follow_mm)},
+    {"path_accel", offsetof(Params, path_accel)},
+    {"path_kp_fwd", offsetof(Params, path_kp_fwd)},
+    {"path_kp_ang", offsetof(Params, path_kp_ang)},
+    {"path_kf_ang", offsetof(Params, path_kf_ang)},
+    {"path_kd_ang", offsetof(Params, path_kd_ang)},
+    {"path_out_max", offsetof(Params, path_out_max)},
 };
 
 const size_t PARAM_COUNT = sizeof(PARAM_TABLE) / sizeof(PARAM_TABLE[0]);

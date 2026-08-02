@@ -12,6 +12,7 @@
 #include "sensors.h"
 #include "motion_controller.h"
 #include "place_controller.h"
+#include "path_controller.h"
 #include "params.h"
 #include "fan.h"
 #include "servo.h"
@@ -30,7 +31,8 @@ static float target_vl_mps = 0.0f;
 // 状態を削除しPLACE_HOLDのみに整理)。
 enum class MotionState : uint8_t {
     IDLE,
-    PLACE_HOLD,  // その場静止制御(place_controller.cpp、2026-08-02〜)
+    PLACE_HOLD,   // その場静止制御(place_controller.cpp、2026-08-02〜)
+    PATH_FOLLOW,  // 仮想ターゲット追従パス走行(path_controller.cpp、2026-08-02〜)
 };
 static MotionState motion_state = MotionState::IDLE;
 
@@ -47,6 +49,7 @@ Battery battery;
 Sensors sensors(imu, wall_sensor, battery, encoder);
 MotionController motion(motor, sensors);
 PlaceController place_controller(motor, sensors);
+PathController path_controller(motor, sensors);
 Fan fan;
 Servo servo;
 BallSensor ball_sensor;
@@ -77,7 +80,28 @@ enum CommandID : uint8_t {
     CMD_SET_ANGLE = 0x0F,
     CMD_PLACE_HOLD_START = 0x11,
     CMD_TURN = 0x12,
+    CMD_PATH_TEST = 0x13,
 };
+
+// PATTERNコマンド用の固定テストパス(2026-08-02、ユーザー仕様):
+//   150mm前進 → 90mm前進 → 右90度スラローム(半径90mm) →
+//   左90度スラローム(半径90mm) → 120mm前進(停止)
+// これで前に3マス・右に1マス進んだ位置に来る想定(マス=180mm)。
+// 巡航速度は初回テスト(150mm/s)から2倍の300mm/sで正確な走行(誤差1mm以下)
+// を確認。1.5倍の450mm/sも試したが、スラローム中の追従誤差(方位誤差
+// 最大30°程度)が実機の壁に干渉するほど大きくなり衝突したため、
+// 300mm/sへ戻した(2026-08-02)。角度追従ゲイン(path_kp_ang等)を
+// 詰めれば再挑戦できる見込み。
+static const PathController::Segment PATTERN_TEST_SEGMENTS[] = {
+    // type, distance_mm, v_start, v_cruise, v_end,  v(slalom), dir, radius, angle
+    {PathController::SegmentType::STRAIGHT, 150.0f, 0.0f,   300.0f, 300.0f, 0.0f,   0.0f, 0.0f,  0.0f},
+    {PathController::SegmentType::STRAIGHT, 90.0f,  300.0f, 300.0f, 300.0f, 0.0f,   0.0f, 0.0f,  0.0f},
+    {PathController::SegmentType::SLALOM,   0.0f,   0.0f,   0.0f,   0.0f,   300.0f, -1.0f, 90.0f, 1.57079632679f},
+    {PathController::SegmentType::SLALOM,   0.0f,   0.0f,   0.0f,   0.0f,   300.0f, +1.0f, 90.0f, 1.57079632679f},
+    {PathController::SegmentType::STRAIGHT, 120.0f, 300.0f, 300.0f, 0.0f,   0.0f,   0.0f, 0.0f,  0.0f},
+};
+static const size_t PATTERN_TEST_SEGMENT_COUNT =
+    sizeof(PATTERN_TEST_SEGMENTS) / sizeof(PATTERN_TEST_SEGMENTS[0]);
 
 struct Command {
     CommandID cmd_id;
@@ -140,6 +164,7 @@ void handleSetMotorSpeedCommand(const SetMotorSpeedCommand& cmd);
 void handleSetDutyCommand(const SetDutyCommand& cmd);
 void processCommandQueue();
 void updatePlaceHold(float dt_s);
+void updatePathFollow(float dt_s);
 
 // ========================================
 // コマンド処理関数の実装
@@ -218,6 +243,13 @@ void processCommandQueue() {
                 enqueue_msg_line("#PLACE_HOLD: turn start\n");
                 break;
 
+            case CMD_PATH_TEST:
+                // 競合回避: ほかのモーションを停止
+                motion_state = MotionState::PATH_FOLLOW;
+                path_controller.start(PATTERN_TEST_SEGMENTS, PATTERN_TEST_SEGMENT_COUNT);
+                enqueue_msg_line("#PATH_FOLLOW: pattern start\n");
+                break;
+
             default:
                 break;
         }
@@ -254,6 +286,29 @@ void updatePlaceHold(float dt_s) {
     }
 }
 
+void updatePathFollow(float dt_s) {
+    if (motion_state != MotionState::PATH_FOLLOW) return;
+    path_controller.update(dt_s);
+
+    static int dbg_count = 0;
+    dbg_count++;
+    if (dbg_count >= 50) {  // 20Hz
+        dbg_count = 0;
+        // #T,seg,tx,ty,rx,ry,rtheta,dist,hdg_err
+        char msg[64];
+        snprintf(msg, sizeof(msg), "#T,%u,%.0f,%.0f,%.0f,%.0f,%.3f,%.1f,%.3f\n",
+                 static_cast<unsigned>(path_controller.get_seg_index()),
+                 path_controller.get_target_x_mm(),
+                 path_controller.get_target_y_mm(),
+                 path_controller.get_robot_x_mm(),
+                 path_controller.get_robot_y_mm(),
+                 path_controller.get_robot_theta_rad(),
+                 path_controller.get_dist_to_target_mm(),
+                 path_controller.get_heading_error_rad());
+        enqueue_msg_line(msg);
+    }
+}
+
 // ========================================
 // Core0 リアルタイムタスク
 // ========================================
@@ -282,6 +337,7 @@ void Core0RealtimeTask(void* parameter) {
         // motion_stateが単一の排他状態のため、update*は自分の状態で
         // なければ何もせず即returnする。
         updatePlaceHold(dt_s);
+        updatePathFollow(dt_s);
 
         // ジャイロキャリブレーション完了チェック
         if (gyro_calib_done_pending && !sensors.is_calibrating()) {
@@ -293,12 +349,13 @@ void Core0RealtimeTask(void* parameter) {
             enqueue_msg_line("DONE\n");
         }
 
-        // Motion controller update (speed PID)。PLACE_HOLD中はplace_controller
-        // が直接モーターを駆動するため、motion(旧MotionController)側の
-        // 速度PIDが競合して上書きしないようここで止める(motion側の目標
-        // vr_ref/vl_refはPLACE_HOLD中一切更新されないため、素通しすると
-        // 古い目標値に基づいてduty=0等を毎tick書き込んでしまう)。
-        if (motion_state != MotionState::PLACE_HOLD) {
+        // Motion controller update (speed PID)。PLACE_HOLD/PATH_FOLLOW中は
+        // place_controller/path_controllerが直接モーターを駆動するため、
+        // motion(旧MotionController)側の速度PIDが競合して上書きしないよう
+        // ここで止める(motion側の目標vr_ref/vl_refはその間一切更新
+        // されないため、素通しすると古い目標値に基づいてduty=0等を
+        // 毎tick書き込んでしまう)。
+        if (motion_state != MotionState::PLACE_HOLD && motion_state != MotionState::PATH_FOLLOW) {
             motion.update(time_delta);
         }
     }
@@ -553,6 +610,17 @@ void loop() {
                 }
             } else {
                 Serial.printf("#Invalid TURN format\n");
+            }
+        } else if (cmd == "PATTERN") {
+            // PATTERN: 仮想ターゲット追従の固定テストパスを開始
+            // (150mm前進→90mm前進→右90度スラローム→左90度スラローム→
+            // 120mm前進、path_controller.cpp参照)
+            Command q;
+            q.cmd_id = CMD_PATH_TEST;
+            if (xQueueSend(cmd_queue, &q, pdMS_TO_TICKS(10)) == pdTRUE) {
+                Serial.printf("#PATTERN\n");
+            } else {
+                Serial.printf("#Queue full!\n");
             }
         } else if (cmd == "RDST") {
             // 距離リセット（オドメトリ）

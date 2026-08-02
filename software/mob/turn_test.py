@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-turn_test.py — mob の HOLD(その場静止)・TURN(その場旋回)を実機で
-OLED越しに試すためのテストツール。
+turn_test.py — mob の HOLD(その場静止)・TURN(その場旋回)・PATTERN
+(仮想ターゲット追従の固定テストパス)を実機でOLED越しに試すための
+テストツール。
 
 default_app のメニュー(Applications → Turn Test)からも起動できる。
 
@@ -39,7 +40,7 @@ DISPLAY_HEIGHT = 64
 # 重なりやすいため使わない。
 FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 FONT_SIZE = 8
-LINE_HEIGHT = 9
+LINE_HEIGHT = 8
 try:
     FONT = ImageFont.truetype(FONT_PATH, FONT_SIZE)
 except Exception:
@@ -54,6 +55,7 @@ ACTIONS = [
     ("TURN -90", "TURN,-1.5708"),
     ("TURN +180", "TURN,3.1416"),
     ("TURN -180", "TURN,-3.1416"),
+    ("PATTERN", "PATTERN"),
     ("GCAL", "GCAL"),
 ]
 
@@ -130,9 +132,9 @@ def _blank() -> Image.Image:
 
 
 def draw_menu(selected: int) -> Image.Image:
-    # 6項目(0,9,...,45) + フッター(54) の7行ちょうどで64pxに収める
-    # (2026-08-02: 以前はタイトル行+項目+フッターの8行になっており、
-    # 96x64のOLEDに収まらず文字が重なっていた)。
+    # 項目(len(ACTIONS)行) + フッター(1行) をLINE_HEIGHT=8pxで詰めて
+    # 96x64のOLEDにちょうど収める(2026-08-02: 以前は行が多すぎて
+    # 文字が重なっていた)。
     img = _blank()
     draw = ImageDraw.Draw(img)
     y = 0

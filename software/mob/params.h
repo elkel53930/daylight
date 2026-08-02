@@ -64,6 +64,17 @@ struct Params {
     float pivot_ki;         // 角度誤差積分[rad*s] → duty
     float pivot_kd;         // 角速度誤差(ジャイロ実測との差)[rad/s] → duty
     float pivot_out_max;    // 旋回側補正duty(duty_diff)のクランプ
+
+    // 仮想ターゲット追従によるパス走行(path_controller.cpp、PATTERNコマンド)。
+    // ロボットは常に仮想ターゲットの方向を向き(角度)、path_follow_mmの
+    // 距離を保つ(速度)よう追従する(2026-08-02新規追加、実機未チューニング)。
+    float path_follow_mm;  // ターゲットとの目標追従距離 [mm]
+    float path_accel;      // 直進セグメントの加減速度(一定) [mm/s^2]
+    float path_kp_fwd;     // 距離誤差[mm] → duty(前進側)
+    float path_kp_ang;     // 方位誤差[rad] → duty(旋回側)
+    float path_kf_ang;     // FF: スラローム区間の幾何学的角速度[rad/s] → duty
+    float path_kd_ang;     // 角速度誤差(ジャイロ実測との差)[rad/s] → duty
+    float path_out_max;    // duty_common/duty_diffそれぞれのクランプ
 };
 
 // ビルド時デフォルト値(現行の実機チューニング値と一致させること)
