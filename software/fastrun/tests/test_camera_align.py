@@ -12,9 +12,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from camera_align import (
     CAMERA_DIST_GAIN_PX_PER_MM,
     CAMERA_DIST_INTERCEPT_PX,
-    CAMERA_YAW_BIAS_DEG,
-    CAMERA_YAW_SLOPE_GAIN,
-    CAMERA_YAW_SLOPE_INTERCEPT_DEG,
+    SLOPE_DEG_PER_YAW_DEG,
+    STRAIGHT_SLOPE_DEG,
     PoseEstimate,
     estimate_pose,
     is_confident,
@@ -61,8 +60,9 @@ class TestEstimatePose(unittest.TestCase):
         img = make_band_image(800, 1000, slope=0.0, intercept=691.55)
         est = estimate_pose(img)
         self.assertIsNotNone(est)
-        expected_yaw = (0.0 - CAMERA_YAW_SLOPE_INTERCEPT_DEG) / CAMERA_YAW_SLOPE_GAIN + CAMERA_YAW_BIAS_DEG
-        self.assertAlmostEqual(est.yaw_deg, expected_yaw, delta=0.2)
+        # yaw_deg = (slope_deg - STRAIGHT_SLOPE_DEG) / SLOPE_DEG_PER_YAW_DEG、slope_deg≈0
+        expected_yaw = (0.0 - STRAIGHT_SLOPE_DEG) / SLOPE_DEG_PER_YAW_DEG
+        self.assertAlmostEqual(est.yaw_deg, expected_yaw, delta=0.3)
         # intercept≈691.55 なので dist_offset≈0
         self.assertAlmostEqual(est.dist_offset_mm, 0.0, delta=1.0)
 

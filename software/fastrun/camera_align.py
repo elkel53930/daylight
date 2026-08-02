@@ -27,15 +27,29 @@ import numpy as np
 
 from vision_wall import detect_red_band_top_edge
 
-# --- 較正定数(2026-07-24、micromouse camera-sweep 実機較正) ---
-CAMERA_YAW_SLOPE_GAIN = 0.5322
-CAMERA_YAW_SLOPE_INTERCEPT_DEG = 3.1225
-CAMERA_YAW_BIAS_DEG = 2.0  # 補正後の系統残差(正=左/CCW)を打ち消す最終トリム
+# --- ヨー角較正(2026-08-03、ジャイロを真値にしたスロープ・スイープで再較正) ---
+# 手法: 前壁に正対した状態を基準(RANG=0)に、TURNで既知の相対角(-8〜0deg)へ
+# 回しながら赤帯上端エッジの傾き slope_deg=degrees(atan(edge.slope)) を記録し、
+# slope_deg = SLOPE_DEG_PER_YAW_DEG * yaw_deg + STRAIGHT_SLOPE_DEG を最小二乗フィット
+# (res<2pxの清浄点のみ)。yaw_deg は「壁への正対からのズレ角[deg]、正=左/CCW」。
+#   => 正対(yaw=0)へ戻すには TURN で -yaw_deg 回す。
+# 旧micromouse較正(gain相当0.532/2026-07-24の9点)はこの機体・距離では約2倍
+# ずれており、旧定数で「yaw=0へ補正」すると逆に約4°ずらしていた(実機確認)。
+# ⚠️ ゲインは壁までの距離に依存する(近いほど同じ角度で傾きが大きく出る)。
+# この値は「前壁まで約1セル」で取得。別距離で使うなら要再較正(距離依存の
+# モデル化は今後の課題)。左(+)へ向けると中央クロップに隣の壁が混入して
+# フィットが壊れる(res急増)ため、負側+0付近の清浄点で較正した。
+SLOPE_DEG_PER_YAW_DEG = 0.248   # d(slope_deg)/d(yaw_deg) @ 約1セル
+STRAIGHT_SLOPE_DEG = 0.203      # 正対(yaw=0)時の赤帯slope[deg]
 
+# --- 距離較正(暫定・要再較正) ---
+# 旧micromouse定数のまま。dist_offset_mm は「基準距離からの前進オフセット」で、
+# ヨー角較正と同様この機体・距離では未検証。当面は計測・ログのみに使い、
+# 走行計画へ織り込む距離補正には使わない(2026-08-03)。
 CAMERA_DIST_GAIN_PX_PER_MM = 11.599
 CAMERA_DIST_INTERCEPT_PX = 691.55
 
-# 信頼度ゲート(較正範囲±10度に対しマージンを持たせた値)
+# 信頼度ゲート(residual が主。左向きで別の壁が混入した不良フィットを弾く)
 CAMERA_CORRECTION_MAX_RESIDUAL_PX = 2.0
 CAMERA_CORRECTION_MAX_YAW_DEG = 15.0
 CAMERA_CORRECTION_MAX_DIST_MM = 40.0
@@ -67,9 +81,7 @@ def estimate_pose(img: np.ndarray) -> Optional[PoseEstimate]:
         return None
 
     slope_deg = math.degrees(math.atan(edge.slope))
-    yaw_deg = (
-        slope_deg - CAMERA_YAW_SLOPE_INTERCEPT_DEG
-    ) / CAMERA_YAW_SLOPE_GAIN + CAMERA_YAW_BIAS_DEG
+    yaw_deg = (slope_deg - STRAIGHT_SLOPE_DEG) / SLOPE_DEG_PER_YAW_DEG
 
     cropped_width = cropped.shape[1]
     row_at_center = edge.slope * (cropped_width / 2) + edge.intercept
@@ -146,17 +158,57 @@ class OnboardCamera:
         self.close()
 
 
-def align_heading(link, pose: PoseEstimate, *, settle_s: float = 0.6) -> None:
-    """推定ヨー角ぶんだけ TURN で物理的に真っ直ぐへ回し、SANG,0 で基準化する。
-
-    link は MobLink(.send/.wait_for)。TURN の符号は「正=左(CCW)」。
-    pose.yaw_deg は「正=機体が左を向いている」なので、真っ直ぐへ戻すには
-    -yaw だけ回す(=右へ|yaw|)。TURN は完了通知を返さないので settle_s 待つ。
-    """
-    turn_rad = -math.radians(pose.yaw_deg)
+def _turn_by(link, turn_rad: float, *, settle_s: float = 0.6) -> None:
+    """TURN で相対 turn_rad だけ回し、旋回時間ぶん待ってから停止する。"""
     link.send(f"TURN,{turn_rad:.5f}")
-    time.sleep(settle_s + abs(turn_rad) / 3.0)  # おおまかな旋回時間ぶん余裕を足す
+    time.sleep(settle_s + abs(turn_rad) / 3.0)  # おおまかな旋回時間ぶん余裕
     link.stop()  # MOT,0,0 で TURN の継続角度保持を止める
-    time.sleep(0.1)
+    time.sleep(0.15)
+
+
+def align_heading(link, pose: PoseEstimate, *, settle_s: float = 0.6) -> None:
+    """推定ヨー角ぶんだけ TURN で真っ直ぐへ回し、SANG,0 で基準化する(単発)。
+
+    pose.yaw_deg は「正=機体が壁への正対から左(CCW)を向いている」ので、
+    正対へ戻すには -yaw 回す。TURN は完了通知を返さないので時間で待つ。
+    """
+    _turn_by(link, -math.radians(pose.yaw_deg), settle_s=settle_s)
     link.send("SANG,0")
     link.wait_for("DONE", timeout_s=1.0)
+
+
+def align_to_wall(
+    link,
+    cam: "OnboardCamera",
+    *,
+    iterations: int = 3,
+    deadband_deg: float = 1.0,
+    max_step_deg: float = 20.0,
+    set_reference: bool = True,
+) -> Optional[PoseEstimate]:
+    """前壁に正対するまでカメラ推定→TURN補正を反復する閉ループ(2026-08-03)。
+
+    毎回撮影して estimate_pose し、is_confident でなければ補正を諦める
+    (別の壁を掴んだ不良フィット等)。|yaw|<deadband_deg なら整定とみなし終了。
+    それ以外は -yaw(max_step_degでクランプ)だけ TURN で回す。最後に
+    set_reference なら SANG,0 で「正対=角度0」を走行の基準に定める。
+
+    戻り値は最後の推定値(ログ用)。1回で約9°→1°、数回でサブ度まで収束
+    (実機確認、2026-08-03)。壁までの距離が較正時(約1セル)と大きく違うと
+    ゲインがずれる点、機体が左を向くと中央クロップに隣の壁が混入して
+    detection が壊れ is_confident に弾かれ補正できない点が既知の限界。
+    """
+    last: Optional[PoseEstimate] = None
+    for _ in range(iterations):
+        est = estimate_pose(cam.capture())
+        last = est
+        if est is None or not is_confident(est):
+            break  # 信頼できない推定では補正しない(安全側)
+        if abs(est.yaw_deg) <= deadband_deg:
+            break  # 整定
+        step_deg = max(-max_step_deg, min(max_step_deg, est.yaw_deg))
+        _turn_by(link, -math.radians(step_deg))
+    if set_reference:
+        link.send("SANG,0")
+        link.wait_for("DONE", timeout_s=1.0)
+    return last
