@@ -76,6 +76,7 @@ enum CommandID : uint8_t {
     CMD_SET_DUTY_DIRECT = 0x0E,
     CMD_SET_ANGLE = 0x0F,
     CMD_PLACE_HOLD_START = 0x11,
+    CMD_TURN = 0x12,
 };
 
 struct Command {
@@ -84,6 +85,7 @@ struct Command {
         SetMotorSpeedCommand set_motor_speed;
         SetDutyCommand set_duty;
         float set_angle_rad;
+        float turn_angle_rad;
     } parameter;
 };
 
@@ -209,6 +211,13 @@ void processCommandQueue() {
                 enqueue_msg_line("#PLACE_HOLD: start\n");
                 break;
 
+            case CMD_TURN:
+                // 競合回避: ほかのモーションを停止
+                motion_state = MotionState::PLACE_HOLD;
+                place_controller.start_turn(q.parameter.turn_angle_rad);
+                enqueue_msg_line("#PLACE_HOLD: turn start\n");
+                break;
+
             default:
                 break;
         }
@@ -231,6 +240,17 @@ void updatePlaceHold(float dt_s) {
                  place_controller.get_v_sum_mps() * 1000.0f,
                  place_controller.get_duty());
         enqueue_msg_line(msg);
+
+        if (place_controller.is_turning()) {
+            // #A,target_angle,actual_angle,omega_target,duty_diff
+            char msg2[64];
+            snprintf(msg2, sizeof(msg2), "#A,%.4f,%.4f,%.2f,%d\n",
+                     place_controller.get_target_angle_rad(),
+                     sensors.get_angle(),
+                     place_controller.get_omega_target_radps(),
+                     place_controller.get_duty_diff());
+            enqueue_msg_line(msg2);
+        }
     }
 }
 
@@ -517,6 +537,22 @@ void loop() {
                 Serial.printf("#HOLD\n");
             } else {
                 Serial.printf("#Queue full!\n");
+            }
+        } else if (cmd.startsWith("TURN,")) {
+            // TURN: その場旋回(角度制御、台形速度プロファイル): TURN,<angle_rad>(正=左/CCW)
+            int comma1 = cmd.indexOf(',');
+            if (comma1 > 0) {
+                Command q;
+                q.cmd_id = CMD_TURN;
+                q.parameter.turn_angle_rad = cmd.substring(comma1 + 1).toFloat();
+
+                if (xQueueSend(cmd_queue, &q, pdMS_TO_TICKS(10)) == pdTRUE) {
+                    Serial.printf("#TURN angle=%.4frad\n", q.parameter.turn_angle_rad);
+                } else {
+                    Serial.printf("#Queue full!\n");
+                }
+            } else {
+                Serial.printf("#Invalid TURN format\n");
             }
         } else if (cmd == "RDST") {
             // 距離リセット（オドメトリ）

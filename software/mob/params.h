@@ -34,6 +34,18 @@ struct Params {
     float place_kd;
     float place_out_max;
     float place_lpf_alpha;
+
+    // その場旋回(place_controller.cpp、TURNコマンド)。目標角度プロファイル
+    // (台形速度、pivot_max_radps/pivot_accel)とその追従PID+FF。
+    // (2026-08-02新規追加。角度追従は実機チューニング済み、旋回中の並進側
+    // driftは調整継続中)。
+    float pivot_max_radps;  // プロファイル巡航角速度 [rad/s]
+    float pivot_accel;      // プロファイル角加速度(加速・減速とも一定) [rad/s^2]
+    float pivot_kf;         // FF: 目標角速度[rad/s] → duty
+    float pivot_kp;         // 角度誤差[rad] → duty
+    float pivot_ki;         // 角度誤差積分[rad*s] → duty
+    float pivot_kd;         // 角速度誤差(ジャイロ実測との差)[rad/s] → duty
+    float pivot_out_max;    // 旋回側補正duty(duty_diff)のクランプ
 };
 
 // ビルド時デフォルト値(現行の実機チューニング値と一致させること)

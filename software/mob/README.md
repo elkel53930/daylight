@@ -177,6 +177,7 @@ esp32:esp32`）が必要。ビルドサーバー側の `arduino-cli` が PATH �
 | `PRESET` | RAM上のパラメータをビルド時デフォルトへ戻す(NVSは変更しない) |
 | `SEN` | センサデータ一括取得 |
 | `HOLD` | その場静止制御を開始(左右輪速度の和をゼロへ、`place_controller.cpp`)。停止は`MOT,0,0` |
+| `TURN,<angle_rad>` | その場旋回(角度制御、台形速度プロファイル、正=左/CCW)。並進ゼロを保つHOLDの制御を同時に動かしたまま追従する。停止は`MOT,0,0` |
 
 ### パラメータ(PGET/PSET/PSAVE/PLOAD/PRESET)
 
