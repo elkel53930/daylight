@@ -37,6 +37,12 @@ const Params kDefaultParams = {
     .place_accel_kd = 20.0f,
     .place_accel_lpf_alpha = 0.3f,
 
+    // 左右輪速度同期(P制御のみ、2026-08-02実機チューニング)。300では
+    // 旋回中の急激な速度変化に対して逆に外乱を増やした(vsum -24〜+19mm/s)
+    // ため、100まで下げて改善を確認(-10〜+11mm/s、sync無し同等以上)。
+    .place_sync_kp = 100.0f,
+    .place_sync_out_max = 200.0f,
+
     // その場旋回(2026-08-02実機チューニング: 角度追従は誤差0.22°まで収束、
     // 振動なし。pivot_kpを当初見積もり(旧turn_kp*kf_duty_per_mps=90)から
     // 40倍の3600まで上げることで大幅改善した。旋回中の並進側drift(vsum)は
@@ -72,6 +78,9 @@ const ParamDef PARAM_TABLE[] = {
 
     {"place_accel_kd", offsetof(Params, place_accel_kd)},
     {"place_accel_lpf_alpha", offsetof(Params, place_accel_lpf_alpha)},
+
+    {"place_sync_kp", offsetof(Params, place_sync_kp)},
+    {"place_sync_out_max", offsetof(Params, place_sync_out_max)},
 
     {"pivot_max_radps", offsetof(Params, pivot_max_radps)},
     {"pivot_accel", offsetof(Params, pivot_accel)},

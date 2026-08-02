@@ -48,6 +48,11 @@ struct Params {
     float place_accel_kd;         // 加速度[m/s^2] → duty(符号は反転して加える)
     float place_accel_lpf_alpha;  // 加速度生値のLPF係数(EMA)
 
+    // 左右輪速度同期(P制御のみ)。|vr|と|vl|の差 → duty補正。速い方を
+    // 弱め遅い方を強める(2026-08-02新規追加、ユーザー指摘)。
+    float place_sync_kp;       // 速度差[m/s] → duty
+    float place_sync_out_max;  // 補正duty(片輪あたり)のクランプ
+
     // その場旋回(place_controller.cpp、TURNコマンド)。目標角度プロファイル
     // (台形速度、pivot_max_radps/pivot_accel)とその追従PID+FF。
     // (2026-08-02新規追加。角度追従は実機チューニング済み、旋回中の並進側

@@ -11,6 +11,9 @@ default_app のメニュー(Applications → Turn Test)からも起動できる�
                        停止してメニューに戻る
     右ボタン(長押し): MOT,0,0で停止して終了
 
+HOLD/TURNを選んで右ボタンを押すと、ビープ音を鳴らして1秒待ってから
+実行する(押した指が機体に当たらないよう離れる時間を作るため)。
+
 起動時に自動でジャイロキャリブレーション(GCAL)を行う。機体は静止させて
 おくこと。
 """
@@ -23,13 +26,24 @@ from pathlib import Path
 from typing import Optional
 
 import serial
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "ui"))
 from ui_client import UIClient  # noqa: E402
 
 DISPLAY_WIDTH = 96
 DISPLAY_HEIGHT = 64
+
+# default_app/renderer.py と同じフォント・行送り規約(96x64 OLED向けに
+# 実機で確認済みの値)。PILの無指定デフォルトフォントは行高が読みにくく
+# 重なりやすいため使わない。
+FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+FONT_SIZE = 8
+LINE_HEIGHT = 9
+try:
+    FONT = ImageFont.truetype(FONT_PATH, FONT_SIZE)
+except Exception:
+    FONT = ImageFont.load_default()
 
 # (表示ラベル, mobへ送るコマンド)。HOLD/TURNは送りっぱなしコマンド
 # (継続動作、DONE無し)のため実行後は監視画面へ遷移する。GCALはDONEを
@@ -98,39 +112,79 @@ def _rising(prev: dict, cur: dict, key: str, state: str) -> bool:
     return prev.get(key) != state and cur.get(key) == state
 
 
-def draw_menu(selected: int, status: str) -> Image.Image:
-    img = Image.new("RGB", (DISPLAY_WIDTH, DISPLAY_HEIGHT), (0, 0, 0))
+def _short_press_released(prev: dict, cur: dict, key: str) -> bool:
+    """短押し確定の検出: 長押し閾値に達する前にreleasedへ戻った瞬間。
+
+    ui_server の状態機械は長押し中も必ず一旦 "pressed" を経由するため
+    (released → pressed → 一定時間後にlong_pressedへ昇格)、押した瞬間の
+    "pressed" への立ち上がりだけを見ると長押しの最中にも短押しイベントが
+    誤発火する(2026-08-02、実機でユーザーが確認)。"pressed" のまま
+    releasedに戻ったときだけ短押しとして扱う(long_pressedを経由していれば
+    prevは"long_pressed"になっているのでここでは発火しない)。
+    """
+    return prev.get(key) == "pressed" and cur.get(key) == "released"
+
+
+def _blank() -> Image.Image:
+    return Image.new("RGB", (DISPLAY_WIDTH, DISPLAY_HEIGHT), (0, 0, 0))
+
+
+def draw_menu(selected: int) -> Image.Image:
+    # 6項目(0,9,...,45) + フッター(54) の7行ちょうどで64pxに収める
+    # (2026-08-02: 以前はタイトル行+項目+フッターの8行になっており、
+    # 96x64のOLEDに収まらず文字が重なっていた)。
+    img = _blank()
     draw = ImageDraw.Draw(img)
-    draw.text((2, 0), "Turn Test", fill=(255, 255, 255))
-    y = 10
+    y = 0
     for i, (label, _) in enumerate(ACTIONS):
         prefix = ">" if i == selected else " "
         color = (0, 255, 0) if i == selected else (200, 200, 200)
-        draw.text((2, y), f"{prefix}{label}", fill=color)
-        y += 8
-    draw.text((2, DISPLAY_HEIGHT - 8), status[:20], fill=(255, 255, 0))
+        draw.text((0, y), f"{prefix}{label}", fill=color, font=FONT)
+        y += LINE_HEIGHT
+    draw.text((0, y), "R-long: Quit", fill=(255, 255, 0), font=FONT)
     return img
 
 
 def draw_running(label: str, sen: Optional[dict], elapsed_s: float) -> Image.Image:
-    img = Image.new("RGB", (DISPLAY_WIDTH, DISPLAY_HEIGHT), (0, 0, 0))
+    img = _blank()
     draw = ImageDraw.Draw(img)
-    draw.text((2, 0), f"RUN: {label}", fill=(0, 255, 0))
     if sen is not None:
         deg = math.degrees(sen["odo_ang"])
-        draw.text((2, 14), f"ang: {deg:+.1f}deg", fill=(255, 255, 255))
-        draw.text((2, 24), f"dist: {sen['odo_dist']:+.1f}mm", fill=(255, 255, 255))
-        draw.text((2, 34), f"vbatt: {sen['vbatt']:.2f}V", fill=(255, 255, 255))
+        ang_text = f"{deg:+.1f}deg"
+        dist_text = f"{sen['odo_dist']:+.1f}mm"
+        vbatt_text = f"{sen['vbatt']:.2f}V"
     else:
-        draw.text((2, 14), "SEN: (no resp)", fill=(255, 0, 0))
-    draw.text((2, 44), f"t={elapsed_s:.1f}s", fill=(200, 200, 200))
-    draw.text((2, DISPLAY_HEIGHT - 16), "R short: stop", fill=(150, 150, 150))
-    draw.text((2, DISPLAY_HEIGHT - 8), "R long: quit", fill=(150, 150, 150))
+        ang_text = dist_text = vbatt_text = "(no SEN resp)"
+
+    lines = [
+        (f"RUN: {label}", (0, 255, 0)),
+        (f"ang:  {ang_text}", (255, 255, 255)),
+        (f"dist: {dist_text}", (255, 255, 255)),
+        (f"batt: {vbatt_text}", (255, 255, 255)),
+        (f"t={elapsed_s:.1f}s", (200, 200, 200)),
+        ("R-short: Stop", (255, 255, 0)),
+        ("R-long: Quit", (255, 255, 0)),
+    ]
+    y = 0
+    for text, color in lines:
+        draw.text((0, y), text, fill=color, font=FONT)
+        y += LINE_HEIGHT
+    return img
+
+
+def draw_countdown(label: str) -> Image.Image:
+    img = _blank()
+    draw = ImageDraw.Draw(img)
+    draw.text((0, 0), "Starting:", fill=(255, 255, 0), font=FONT)
+    draw.text((0, LINE_HEIGHT), label, fill=(0, 255, 0), font=FONT)
+    draw.text((0, LINE_HEIGHT * 3), "Hands off!", fill=(255, 0, 0), font=FONT)
     return img
 
 
 def calibrate(link: MobLink, client: UIClient) -> None:
-    client.display(draw_menu(0, "Calibrating..."))
+    img = _blank()
+    ImageDraw.Draw(img).text((0, 0), "Calibrating...", fill=(255, 255, 0), font=FONT)
+    client.display(img)
     link.send("GCAL")
     link.wait_for("DONE", timeout_s=3.0)
 
@@ -164,29 +218,36 @@ def main() -> None:
                         if _rising(prev_buttons, buttons, "right", "long_pressed"):
                             prev_buttons = buttons
                             break
-                        if _rising(prev_buttons, buttons, "right", "pressed"):
+                        if _short_press_released(prev_buttons, buttons, "right"):
                             label, cmd = ACTIONS[selected]
+                            prev_buttons = buttons
                             if cmd == "GCAL":
-                                prev_buttons = buttons
                                 calibrate(link, client)
                                 continue
+                            # 押した瞬間に動き出すとボタンを押している指が
+                            # 機体に当たるため、ビープ音+1秒待ってから実行する
+                            # (2026-08-02追加、ユーザー指摘)。
+                            client.play("c")
+                            client.display(draw_countdown(label))
+                            time.sleep(1.0)
                             link.send(cmd)
                             running_cmd = cmd
                             running_label = label
                             run_start = time.monotonic()
                             last_sen = None
                             last_sen_t = 0.0
+                            continue
                         elif _rising(prev_buttons, buttons, "left", "pressed"):
                             selected = (selected + 1) % len(ACTIONS)
                         prev_buttons = buttons
 
-                        client.display(draw_menu(selected, "L:select R:run R-long:quit"))
+                        client.display(draw_menu(selected))
                     else:
                         if _rising(prev_buttons, buttons, "right", "long_pressed"):
                             link.send("MOT,0,0")
                             prev_buttons = buttons
                             break
-                        if _rising(prev_buttons, buttons, "right", "pressed"):
+                        if _short_press_released(prev_buttons, buttons, "right"):
                             link.send("MOT,0,0")
                             running_cmd = None
                         prev_buttons = buttons

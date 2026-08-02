@@ -20,15 +20,24 @@
 // ずれるのを防ぐ狙い。
 //
 // 出力(duty)は「並進側の補正(duty_common、左右同じ値)」「旋回側の補正
-// (duty_diff、左右逆符号)」「IMU加速度FF(duty_accel_ff、左右同じ値)」を
+// (duty_diff、左右逆符号)」「IMU加速度FF(duty_accel_ff、左右同じ値)」
+// 「左右輪速度の大きさを揃えるP補正(sync_r/sync_l、左右で別々の値)」を
 // 独立に計算してから単純加算する:
-//   duty_r = duty_common + duty_diff + duty_accel_ff
-//   duty_l = duty_common - duty_diff + duty_accel_ff
+//   duty_r = duty_common + duty_diff + duty_accel_ff + sync_r
+//   duty_l = duty_common - duty_diff + duty_accel_ff + sync_l
 // (duty_diff > 0 で左/CCW方向に回転する。turn_in_place() 等、旧実装と
-// 同じ符号規約)。duty_common/duty_diffはエンコーダ差分ベースで10ms窓
-// でしか更新されないのに対し、duty_accel_ffはIMU加速度(ロボット前後方向、
-// +=前進側)を使い毎ms計算するため、外乱への反応が速い
+// 同じ符号規約)。duty_common/duty_diff/syncはエンコーダ差分ベースで
+// 10ms窓でしか更新されないのに対し、duty_accel_ffはIMU加速度(ロボット
+// 前後方向、+=前進側)を使い毎ms計算するため、外乱への反応が速い
 // (2026-08-02追加)。
+//
+// sync_r/sync_lは、duty_common・duty_diffが左右へ「同じ値」または
+// 「符号だけ逆の値」を与える前提(モーターが左右対称に応答する前提)を
+// 補うもの。実際はモーター個体差で同じdutyでも実速度が揃わないことが
+// あり、たとえvsum(和)がゼロでも機体がゆっくり回頭してしまう
+// (並進側の制御からは検出できない位置ズレの原因になる、2026-08-02
+// ユーザー指摘)。左右輪速度の大きさ|vr|・|vl|をP制御で揃え、速い方を
+// 弱め遅い方を強める形で常時(HOLD中もTURN中も)補正する。
 //
 // motion_controller.cpp とは独立の、根本から作り直す新しい制御系列。
 class PlaceController {
@@ -96,6 +105,8 @@ private:
     int16_t last_duty_diff_ = 0;  // 旋回側の最終duty差分(テレメトリ用)
     float last_duty_common_f_ = 0.0f;  // 並進側duty(10ms窓、次tickまで保持してduty_diff/加速度FFと合成)
     float last_duty_diff_f_ = 0.0f;    // 旋回側duty(10ms窓、同上)
+    float last_sync_r_f_ = 0.0f;       // 左右輪速度同期の右輪側補正(10ms窓、同上)
+    float last_sync_l_f_ = 0.0f;       // 左右輪速度同期の左輪側補正(10ms窓、同上)
 
     // IMU Y軸(前後方向)加速度のLPF後の値 [m/s^2](2026-08-02追加)
     float accel_filt_mps2_ = 0.0f;
@@ -116,6 +127,7 @@ private:
     void reset_common();
     float update_translational(float dt_s);
     float update_turn_profile_and_track(float dt_s);
+    void update_wheel_sync(float dt_s);
 };
 
 #endif

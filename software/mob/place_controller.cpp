@@ -17,6 +17,8 @@ void PlaceController::reset_common() {
     last_duty_diff_ = 0;
     last_duty_common_f_ = 0.0f;
     last_duty_diff_f_ = 0.0f;
+    last_sync_r_f_ = 0.0f;
+    last_sync_l_f_ = 0.0f;
     accel_filt_mps2_ = 0.0f;
 }
 
@@ -53,6 +55,8 @@ void PlaceController::stop() {
     last_duty_diff_ = 0;
     last_duty_common_f_ = 0.0f;
     last_duty_diff_f_ = 0.0f;
+    last_sync_r_f_ = 0.0f;
+    last_sync_l_f_ = 0.0f;
     turning_ = false;
     turn_omega_mag_ = 0.0f;
     turn_integ_ = 0.0f;
@@ -163,6 +167,30 @@ float PlaceController::update_turn_profile_and_track(float dt_s) {
     return u;
 }
 
+void PlaceController::update_wheel_sync(float dt_s) {
+    (void)dt_s;
+    // 左右輪速度の"大きさ"(向きは問わない)をP制御で揃える。duty_common
+    // (並進、左右へ同じ値)・duty_diff(旋回、左右へ逆符号)はどちらも
+    // 「左右のモーターが指令に対して同じように応答する」前提だが、
+    // 実際はモーター個体差で同じdutyでも実速度が揃わないことがある。
+    // その場合、たとえvsum(和)がゼロでも機体はゆっくり回頭してしまい
+    // (並進側の制御からは検出できない位置ズレの原因になる)、旋回中は
+    // 旋回中心が機械的中心からずれる。速い方を弱め遅い方を強めることで
+    // 打ち消す(2026-08-02追加、ユーザー指摘によりP制御のみで追加)。
+    const float mag_r = fabsf(vr_filt_mps_);
+    const float mag_l = fabsf(vl_filt_mps_);
+    const float sync_err = mag_r - mag_l;  // +: 右が速い
+
+    float adj = params.place_sync_kp * sync_err;
+    if (adj > params.place_sync_out_max) adj = params.place_sync_out_max;
+    if (adj < -params.place_sync_out_max) adj = -params.place_sync_out_max;
+
+    const float sign_r = (vr_filt_mps_ >= 0.0f) ? 1.0f : -1.0f;
+    const float sign_l = (vl_filt_mps_ >= 0.0f) ? 1.0f : -1.0f;
+    last_sync_r_f_ = -sign_r * adj;  // 右が速ければ右自身の向きと逆に効かせ弱める
+    last_sync_l_f_ = sign_l * adj;   // 右が速ければ左自身の向きへ強めて追いつかせる
+}
+
 void PlaceController::update(float dt_s) {
     // 毎ms: IMU Y軸(ロボット前後方向、+=前進側)加速度によるフィード
     // フォワード減衰。エンコーダ差分ベースの速度PID(10ms窓)より速く
@@ -197,6 +225,8 @@ void PlaceController::update(float dt_s) {
             have_prev_ = true;
             last_duty_common_f_ = 0.0f;
             last_duty_diff_f_ = 0.0f;
+            last_sync_r_f_ = 0.0f;
+            last_sync_l_f_ = 0.0f;
             last_duty_ = 0;
             last_duty_diff_ = 0;
         } else {
@@ -217,13 +247,14 @@ void PlaceController::update(float dt_s) {
 
             last_duty_common_f_ = update_translational(window_dt_s);
             last_duty_diff_f_ = turning_ ? update_turn_profile_and_track(window_dt_s) : 0.0f;
+            update_wheel_sync(window_dt_s);
             last_duty_ = static_cast<int16_t>(last_duty_common_f_);
             last_duty_diff_ = static_cast<int16_t>(last_duty_diff_f_);
         }
     }
 
-    float u_r = last_duty_common_f_ + last_duty_diff_f_ + duty_accel_ff;
-    float u_l = last_duty_common_f_ - last_duty_diff_f_ + duty_accel_ff;
+    float u_r = last_duty_common_f_ + last_duty_diff_f_ + duty_accel_ff + last_sync_r_f_;
+    float u_l = last_duty_common_f_ - last_duty_diff_f_ + duty_accel_ff + last_sync_l_f_;
     if (u_r > 1023.0f) u_r = 1023.0f;
     if (u_r < -1023.0f) u_r = -1023.0f;
     if (u_l > 1023.0f) u_l = 1023.0f;
