@@ -382,7 +382,14 @@ void Core0RealtimeTask(void* parameter) {
 
         // 停止判定を渡す(前cycleのモーター出力=1ms遅れ、問題なし)。停止中は
         // sensors側で角度積分を凍結し、静止中の残留バイアス積分ドリフトを防ぐ。
-        sensors.set_stationary(motor.is_stopped());
+        // ただし能動制御中(PLACE_HOLD/PATH_FOLLOW)は凍結してはいけない:
+        // 超信地旋回の減速〜角度保持フェーズでは duty が正当に0を通過し、その
+        // ときだけ角度積分が凍る→実回転を取りこぼす→角度FBにデッドゾーンが
+        // 入り旋回が発振する(2026-08-04判明。d75b108では凍結が無く発振しない
+        // ことを実機確認済み)。凍結は全制御器アイドルの真の停車時のみに限る。
+        const bool actively_controlled =
+            (motion_state == MotionState::PLACE_HOLD || motion_state == MotionState::PATH_FOLLOW);
+        sensors.set_stationary(motor.is_stopped() && !actively_controlled);
 
         // センサーデータの更新
         sensors.update(time_delta);
