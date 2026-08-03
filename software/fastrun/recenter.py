@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import math
 import time
+from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
@@ -45,6 +46,90 @@ CAMERA_ROW_PX_PER_MM = 5.38
 # 絶対基準: 現在のrowとの差 (row-CAMERA_ROW_AT_90MM)/CAMERA_ROW_PX_PER_MM [mm] で
 # 壁までの距離のマス中心(90mm)からのずれが出る。
 CAMERA_ROW_AT_90MM = 689.9
+
+# 位置成分(壁上面位置補正)の信頼度ゲート。
+FORWARD_OFFSET_MAX_RES = 2.0   # 赤帯フィット残差[px]の上限(角度成分と同じ清浄判定)
+FORWARD_OFFSET_MAX_MM = 45.0   # 単発で許す最大前後オフセット[mm](較正範囲±30mmに
+                               # マージン。これを超える推定は較正外/誤検出の疑いが
+                               # 強く、confident=False にして移動に使わせない)
+
+
+@dataclass(frozen=True)
+class ForwardOffset:
+    """前後位置の推定(壁上面位置補正の位置成分)。
+
+    offset_mm > 0: 機体がマス中心(壁90mm)より前=壁に近い側にいる。中心へ戻すには
+    offset_mm だけ後退する。< 0 は前進で中心へ。
+    """
+    offset_mm: float
+    row_at_center: float
+    residual_px: float
+    confident: bool
+
+
+def forward_offset_from_row(row_at_center: float) -> float:
+    """赤帯 row_at_center[px] から前後オフセット[mm]を返す(治具検証済み定数)。
+
+    row は画面下ほど大=壁が近い。90mm(マス中心)基準の row=CAMERA_ROW_AT_90MM から
+    1mm近づくごと CAMERA_ROW_PX_PER_MM 増える。正=中心より前(壁に近い)。純関数。
+    """
+    return (row_at_center - CAMERA_ROW_AT_90MM) / CAMERA_ROW_PX_PER_MM
+
+
+def forward_offset_from_image(img: np.ndarray, *, crop_frac: float = 0.3) -> Optional[ForwardOffset]:
+    """1枚のRGB画像から前後オフセットを推定する純関数(ハード非依存、テスト可能)。
+
+    中央 crop_frac 幅クロップ→赤帯上端エッジ→水平中心での row_at_center→mm換算。
+    赤帯を検出できなければ None。confident は残差とオフセット範囲のゲート。
+    crop_frac は治具較正(CAMERA_ROW_AT_90MM)と同じ 0.3 を既定にすること
+    (row_at_center は水平中心の行なのでクロップ幅にほぼ不変だが、較正と揃える)。
+    """
+    h, w, _ = img.shape
+    half = max(0.05, min(0.5, crop_frac / 2.0))
+    lo = int(round(w * (0.5 - half)))
+    hi = int(round(w * (0.5 + half)))
+    crop = np.ascontiguousarray(img[:, lo:hi, :])
+    e = detect_red_band_top_edge(crop)
+    if e is None:
+        return None
+    cw = crop.shape[1]
+    row_c = e.slope * (cw / 2) + e.intercept
+    offset = forward_offset_from_row(row_c)
+    confident = (e.residual_std < FORWARD_OFFSET_MAX_RES
+                 and abs(offset) <= FORWARD_OFFSET_MAX_MM)
+    return ForwardOffset(offset_mm=offset, row_at_center=row_c,
+                         residual_px=e.residual_std, confident=confident)
+
+
+def estimate_forward_offset(cam: OnboardCamera, *, crop_frac: float = 0.3,
+                            n: int = 5) -> Optional[ForwardOffset]:
+    """搭載カメラで前後オフセットを推定(撮影のみ=移動しない=安全)。
+
+    n フレーム撮り、検出できた row_at_center の中央値で頑健化する。清浄フィット
+    (res<FORWARD_OFFSET_MAX_RES)が過半数に満たない、または offset が範囲外なら
+    confident=False(=中心化の移動に使ってはいけない)。実際の前後移動は呼び出し側
+    (監督下)が行う。ここは絶対基準の測定のみを担う。
+    """
+    rows: list[float] = []
+    ress: list[float] = []
+    for _ in range(n):
+        est = forward_offset_from_image(cam.capture(), crop_frac=crop_frac)
+        if est is not None:
+            rows.append(est.row_at_center)
+            ress.append(est.residual_px)
+        time.sleep(0.05)
+    if not rows:
+        return None
+    row_med = float(np.median(rows))
+    res_med = float(np.median(ress))
+    offset = forward_offset_from_row(row_med)
+    clean = sum(1 for r in ress if r < FORWARD_OFFSET_MAX_RES)
+    confident = (res_med < FORWARD_OFFSET_MAX_RES
+                 and abs(offset) <= FORWARD_OFFSET_MAX_MM
+                 and clean >= (n + 1) // 2)
+    return ForwardOffset(offset_mm=offset, row_at_center=row_med,
+                         residual_px=res_med, confident=confident)
+
 
 # 方位規約(超信地旋回・SANG用、deg): 北=0, 西=+90(+CCW=TURN正), 東=-90, 南=±180。
 HEADING_NORTH = 0.0

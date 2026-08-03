@@ -52,10 +52,18 @@ STRAIGHT_SLOPE_DEG = 0.203      # 正対(yaw=0)時の赤帯slope[deg]
 SLOPE_DEG_PER_YAW_DEG_HALFCELL = 0.840
 STRAIGHT_SLOPE_DEG_HALFCELL = 0.973
 
-# --- 距離較正(暫定・要再較正) ---
+# --- 距離較正(⚠️stale・位置補正には使わないこと) ---
 # 旧micromouse定数のまま。dist_offset_mm は「基準距離からの前進オフセット」で、
 # ヨー角較正と同様この機体・距離では未検証。当面は計測・ログのみに使い、
 # 走行計画へ織り込む距離補正には使わない(2026-08-03)。
+# ⚠️ この gain(11.599 px/mm)は現行カメラ・crop0.5 では約2倍ずれている。
+# 2026-08-03 に専用治具で取り直した正しい距離較正は recenter.py の
+# CAMERA_ROW_PX_PER_MM=5.38 / CAMERA_ROW_AT_90MM=689.9(crop0.3)。壁上面位置補正
+# の位置成分は recenter.forward_offset_from_row / estimate_forward_offset を使う。
+# この estimate_pose の dist_offset_mm は角度成分の is_confident(check_dist=False)
+# 用途でしか呼ばれておらず(実運用は全て check_dist=False)、位置移動には未使用。
+# (2026-08-04 追記: scratchpad試験のX軸23mm行き過ぎはタイヤ滑りではなくこの
+#  stale gain が主因と推定。滑りは実測≈1mm/360°と小さいことを確認済み。)
 CAMERA_DIST_GAIN_PX_PER_MM = 11.599
 CAMERA_DIST_INTERCEPT_PX = 691.55
 
