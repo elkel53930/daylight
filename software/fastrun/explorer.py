@@ -29,9 +29,15 @@ START = 4         # 開始セル座標(中央)
 
 
 class Explorer:
-    # 前壁は側壁より遠い(半セル vs 全セル相当)ぶん低く出るので専用しきい値。
-    # 「これ以上に見えたら壁扱いで前進しない」保守側(SEN実測: 前壁~188、開放~10)。
-    FRONT_GATE = 130
+    # 前壁センサ(lf)は壁がセル境界にしか無いため実質3値になる(2026-08-03実測):
+    #   壁@90mm(現セル前縁=前進不可) → lf≈800
+    #   壁@270mm(1.5セル先=1セル進めば90mmで到達可) → lf≈188
+    #   近くに壁なし → lf≈2
+    # よって「今このセルの前が塞がっているか(=90mmに壁)」は lf>FRONT_GATE で判定
+    # できる。中間値が無いので 400 で 90mm壁(~800)だけを拾い、1.5セル先(~188)は
+    # 拾わない(=1セル進めるので前進を止めない)。旧値130は188も拾い、遠い壁で
+    # 前進を止める誤判定をしていた。
+    FRONT_GATE = 400
 
     def __init__(self, link, *, cruise_mmps: float = 200.0, cell_mm: float = CELL_MM,
                  on_moved=None):
@@ -74,9 +80,15 @@ class Explorer:
         self.link.stop()
         time.sleep(0.2)
 
-    # 走行中の前壁動的監視: lfがこの値を超えたら壁が近すぎるので即停止
-    # (前壁は1セル先で~188、接近するほど上がる。450は半セルより近い目安)。
-    FRONT_ABORT = 450
+    # 走行中の前壁・緊急停止しきい値。**距離ゲート必須**:
+    # 前壁のあるセルへ正常移動すると、その壁は到達時に90mm(lf≈800)まで近づく
+    # ので、単純な lf 閾値では正常到着の途中で誤abortする(旧FRONT_ABORT=450の
+    # バグ=探索破綻の主因)。壁はセル境界にしか無く、前進前ゲート(FRONT_GATE)で
+    # 「今90mmに壁が無い」ことを確認済みなので、1セル(cell_mm)移動は本来常に安全
+    # (最悪でも到達時に次セル前縁の壁へ90mm)。よって緊急停止は「まだ大して
+    # 進んでいないのに壁が至近」= 想定外に近い場合だけに限定する。
+    FRONT_ABORT = 800          # これ以上=90mmより近い(ほぼ接触寸前)
+    FRONT_ABORT_DIST_FRAC = 0.6  # 移動距離がこの割合未満のときだけ緊急停止を有効化
 
     def _forward_one_cell(self) -> Tuple[List[str], bool]:
         """1セル前進(台形、停止)。走行中の#WEDGEを集め、前壁接近で中断。
@@ -106,11 +118,14 @@ class Explorer:
                 if len(p) == 13:
                     try:
                         lf = int(p[3])
+                        traveled = float(p[9])  # odo_dist(RDST済みなので移動量)
                     except ValueError:
                         continue
-                    if lf > self.FRONT_ABORT:
+                    # 「まだ大して進んでいないのに壁が至近」= 想定外に近い場合のみ緊急停止。
+                    # 正常到着(終盤にlf~800)では距離ゲートで無効化され誤abortしない。
+                    if lf > self.FRONT_ABORT and traveled < self.FRONT_ABORT_DIST_FRAC * self.cell_mm:
                         aborted = True
-                        print(f"  !! 前壁接近(lf={lf})で緊急停止")
+                        print(f"  !! 前壁が想定外に至近(lf={lf}, 進行{traveled:.0f}/{self.cell_mm:.0f}mm)で緊急停止")
                         break
         self.link.stop()
         return wedges, aborted
