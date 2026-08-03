@@ -52,6 +52,11 @@ struct Params {
     // 弱め遅い方を強める(2026-08-02新規追加、ユーザー指摘)。
     float place_sync_kp;       // 速度差[m/s] → duty
     float place_sync_out_max;  // 補正duty(片輪あたり)のクランプ
+    // 同期誤差(mag_r-mag_l)専用の緩いLPF係数(2026-08-03追加)。車輪速度PID
+    // (place_lpf_alpha)より十分小さくし、同期ループと車輪PIDの反応周波数帯を
+    // 分離して結合振動(旋回中の前後発振→横drift)を防ぐ。旧motion_controllerの
+    // SYNC_ERR_LPF_ALPHA=0.02(≈50ms)に倣う(c816154)。
+    float place_sync_err_lpf_alpha;
 
     // その場旋回(place_controller.cpp、TURNコマンド)。目標角度プロファイル
     // (台形速度、pivot_max_radps/pivot_accel)とその追従PID+FF。

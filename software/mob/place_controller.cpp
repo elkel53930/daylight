@@ -19,6 +19,7 @@ void PlaceController::reset_common() {
     last_duty_diff_f_ = 0.0f;
     last_sync_r_f_ = 0.0f;
     last_sync_l_f_ = 0.0f;
+    sync_err_filt_ = 0.0f;
     accel_filt_mps2_ = 0.0f;
 }
 
@@ -57,6 +58,7 @@ void PlaceController::stop() {
     last_duty_diff_f_ = 0.0f;
     last_sync_r_f_ = 0.0f;
     last_sync_l_f_ = 0.0f;
+    sync_err_filt_ = 0.0f;
     turning_ = false;
     turn_omega_mag_ = 0.0f;
     turn_integ_ = 0.0f;
@@ -179,7 +181,15 @@ void PlaceController::update_wheel_sync(float dt_s) {
     // 打ち消す(2026-08-02追加、ユーザー指摘によりP制御のみで追加)。
     const float mag_r = fabsf(vr_filt_mps_);
     const float mag_l = fabsf(vl_filt_mps_);
-    const float sync_err = mag_r - mag_l;  // +: 右が速い
+    const float sync_err_raw = mag_r - mag_l;  // +: 右が速い
+
+    // 車輪速度PID/並進制御(place_lpf_alpha≈0.12=速い応答)と同じ生の速度信号に
+    // 反応すると結合して振動し、旋回中に前後発振→横drift になる。旧
+    // motion_controller で実証・解決済(c816154): 同期誤差専用の緩いLPF
+    // (place_sync_err_lpf_alpha≈0.02≈50ms)を通し、低周波の定常ずれ(ギア・
+    // 摩擦の個体差)だけに反応させて車輪PIDと周波数帯を分離する。
+    sync_err_filt_ += params.place_sync_err_lpf_alpha * (sync_err_raw - sync_err_filt_);
+    const float sync_err = sync_err_filt_;
 
     float adj = params.place_sync_kp * sync_err;
     if (adj > params.place_sync_out_max) adj = params.place_sync_out_max;

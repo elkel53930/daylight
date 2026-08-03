@@ -42,6 +42,7 @@ const Params kDefaultParams = {
     // ため、100まで下げて改善を確認(-10〜+11mm/s、sync無し同等以上)。
     .place_sync_kp = 100.0f,
     .place_sync_out_max = 200.0f,
+    .place_sync_err_lpf_alpha = 0.02f,  // ≈50ms。車輪PID(0.12)と周波数帯を分離
 
     // その場旋回(2026-08-02実機チューニング: 角度追従は誤差0.22°まで収束、
     // 振動なし。pivot_kpを当初見積もり(旧turn_kp*kf_duty_per_mps=90)から
@@ -115,6 +116,7 @@ const ParamDef PARAM_TABLE[] = {
 
     {"place_sync_kp", offsetof(Params, place_sync_kp)},
     {"place_sync_out_max", offsetof(Params, place_sync_out_max)},
+    {"place_sync_err_lpf_alpha", offsetof(Params, place_sync_err_lpf_alpha)},
 
     {"pivot_max_radps", offsetof(Params, pivot_max_radps)},
     {"pivot_accel", offsetof(Params, pivot_accel)},

@@ -107,6 +107,12 @@ private:
     float last_duty_diff_f_ = 0.0f;    // 旋回側duty(10ms窓、同上)
     float last_sync_r_f_ = 0.0f;       // 左右輪速度同期の右輪側補正(10ms窓、同上)
     float last_sync_l_f_ = 0.0f;       // 左右輪速度同期の左輪側補正(10ms窓、同上)
+    // wheel_sync誤差(mag_r-mag_l)の専用LPF値(2026-08-03追加)。車輪速度PIDと
+    // 同じ生の速度信号(place_lpf_alpha≈0.12=速い)に反応すると結合振動し、
+    // 旋回中に前後発振→横drift になる(旧motion_controllerで実証・解決済、
+    // c816154)。同期ループ専用にさらに緩いLPFをかけ低周波の定常ずれのみに
+    // 反応させ、車輪PIDと周波数帯を分離する。
+    float sync_err_filt_ = 0.0f;
 
     // IMU Y軸(前後方向)加速度のLPF後の値 [m/s^2](2026-08-02追加)
     float accel_filt_mps2_ = 0.0f;
