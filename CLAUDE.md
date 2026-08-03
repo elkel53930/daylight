@@ -85,6 +85,13 @@ software/
   外部の絶対基準で上書きする。DONE を返す。RANG/RDST 同様、走行中の制御
   ループが参照する目標角には触れないため安全だが、意味を持たせたい場合は
   機体が静止しているときに呼ぶこと。
+  ⚠️ **`RANG`/`SANG` を `TURN` の角度保持中(place_controller が動作中)に
+  出してはいけない**(2026-08-03判明)。TURN の追従は
+  `angle_error = turn_goal - get_angle()` を使うが、RANG/SANG は `get_angle()`
+  (=odo_ang)だけを書き換え `turn_goal` は旧フレームのまま残る。すると
+  angle_error が突然大きくなり、機体が旧ゴールを追って暴れ回る(実機で
+  コースを一周して隅まで移動)。**必ず先に `MOT,0,0`(stop)で TURN 保持を
+  抜けてから** RANG/SANG を出すこと。`GCAL` も同様、静止時に呼ぶ。
 - `make upload` 直後の初回シリアル接続は SEN 応答を取りこぼしやすい
   (ポートオープン時の ESP32 自動リセットとの競合)。`sensor read failed` で
   落ちたら再実行すればよい。
