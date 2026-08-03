@@ -83,12 +83,30 @@ def front_wall_by_camera(cam: OnboardCamera, *, crop_frac: float = 0.5,
     return votes >= (n + 1) // 2
 
 
+# 正味の物理回転量[deg]の累積(RANG/SANGでodo_angがリセットされても物理回転は
+# 追える)。電源ケーブルのよじれ対策(2026-08-03、ユーザー指摘): 同方向に偏って
+# 旋回するとケーブルがよじれるので、これを見て左右バランスよく回す/ほどく。
+_net_phys_deg = 0.0
+
+
+def net_rotation_deg() -> float:
+    """セッション中の正味物理回転量[deg]。+ = CCW偏り。"""
+    return _net_phys_deg
+
+
+def reset_net_rotation() -> None:
+    global _net_phys_deg
+    _net_phys_deg = 0.0
+
+
 def _hold_turn(link, delta_rad: float, *, settle_s: float = 0.8) -> None:
     """相対 delta_rad だけ TURN。stop() は呼ばず保持継続(drift防止)。"""
+    global _net_phys_deg
     if abs(delta_rad) < 1e-4:
         return
     link.send(f"TURN,{delta_rad:.5f}")
     time.sleep(settle_s + abs(delta_rad) / 2.5)
+    _net_phys_deg += math.degrees(delta_rad)
 
 
 def _read_ang_deg(link):
@@ -101,7 +119,12 @@ def _read_ang_deg(link):
 
 
 def turn_to(link, target_deg: float, *, tol: float = 1.0, tries: int = 4) -> Optional[float]:
-    """超信地旋回で odo_ang を target_deg[deg] へ最短方向に合わせる(hold継続)。"""
+    """超信地旋回で odo_ang を target_deg[deg] へ合わせる(hold継続)。
+
+    ケーブルよじれ対策: 最短方向(err)と逆回り(alt=err∓360)がほぼ同じ手数のとき
+    (=|err|が180付近で曖昧なとき)は、正味回転(_net_phys_deg)を0へ近づける向きを
+    選ぶ。明確に短い旋回では最短を使う(無駄な大回転を避ける)。
+    """
     for _ in range(tries):
         cur = _read_ang_deg(link)
         if cur is None:
@@ -113,9 +136,28 @@ def turn_to(link, target_deg: float, *, tol: float = 1.0, tries: int = 4) -> Opt
             err += 360.0
         if abs(err) <= tol:
             return cur
-        _hold_turn(link, math.radians(err), settle_s=0.6)
+        # 逆回り候補(|alt| = 360-|err|)。ほぼ同手数(|err|が150°超)かつよじれを
+        # 減らすなら逆回りを選ぶ。
+        alt = err - 360.0 if err > 0 else err + 360.0
+        delta = err
+        if abs(err) > 150.0 and abs(_net_phys_deg + alt) < abs(_net_phys_deg + err):
+            delta = alt
+        _hold_turn(link, math.radians(delta), settle_s=0.6)
         time.sleep(0.15)
     return _read_ang_deg(link)
+
+
+def unwind_cable(link, *, max_deg: float = 200.0) -> float:
+    """電源ケーブルのよじれをほどく: 正味物理回転(_net_phys_deg)を打ち消す向きへ
+    超信地旋回する。大回転は壁と干渉し危険なので max_deg でクランプ(必要なら
+    複数回呼ぶ)。呼び出し後は heading が変わるので B(reanchor)で貼り直すこと。
+    戻り値: 残りの正味回転[deg]。"""
+    if abs(_net_phys_deg) < 5.0:
+        return _net_phys_deg
+    d = max(-max_deg, min(max_deg, -_net_phys_deg))
+    _hold_turn(link, math.radians(d))
+    link.stop()
+    return _net_phys_deg
 
 
 def reanchor_heading(link, cam: OnboardCamera, target_heading_deg: float) -> bool:
