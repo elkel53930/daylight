@@ -19,8 +19,14 @@ C270_DEVICE = "/dev/video4"  # by-id: usb-046d_C270_HD_WEBCAM_*-video-index0
 REMOTE_TMP = "/tmp/c270_fastrun.jpg"
 
 
-def capture(local_path: str, *, video_size: str = "1280x720", timeout_s: float = 20.0) -> str:
-    """C270 で1フレーム撮影して local_path へ保存し、そのパスを返す。"""
+def capture(local_path: str, *, video_size: str = "1280x960", timeout_s: float = 20.0) -> str:
+    """C270 で1フレーム撮影して local_path へ保存し、そのパスを返す。
+
+    C270 の実解像度は 1280x960(Quad-VGA)。HD(1280x720)で撮ると迷路の一部が
+    欠けるので必ず 1280x960 で撮る(2026-08-03 ユーザー指摘)。1マス=180mm、
+    4x4 マス、カメラはほぼ真上設置で中心4マスはほぼ真上見下ろし。Discord へ
+    投稿するときは VGA(640x480)に縮小すること。
+    """
     remote_cmd = (
         f"ffmpeg -y -f v4l2 -input_format mjpeg -video_size {video_size} "
         f"-i {C270_DEVICE} -frames:v 1 {REMOTE_TMP} 2>/dev/null && echo OK"
@@ -37,6 +43,28 @@ def capture(local_path: str, *, video_size: str = "1280x720", timeout_s: float =
         check=True, timeout=timeout_s,
     )
     return local_path
+
+
+def capture_and_post(content: str, *, work_dir: str = "/tmp") -> None:
+    """俯瞰を 1280x960 で撮影し、VGA(640x480)へ縮小して Discord へ投稿する。
+
+    ロボットを動かしたら必ずこれで投稿する(2026-08-03 ユーザー指示: 動かしたら
+    俯瞰を VGA に縮小して Discord へ)。
+    """
+    import sys as _sys
+    from PIL import Image
+
+    ts = int(time.time())
+    full = f"{work_dir}/overhead_{ts}.jpg"
+    vga = f"{work_dir}/overhead_{ts}_vga.jpg"
+    capture(full)
+    img = Image.open(full)
+    img.thumbnail((640, 480))
+    img.save(vga, quality=85)
+
+    _sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from discord_post import post_image
+    post_image(vga, content)
 
 
 if __name__ == "__main__":
