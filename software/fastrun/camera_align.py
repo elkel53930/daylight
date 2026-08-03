@@ -206,9 +206,11 @@ def align_heading(link, pose: PoseEstimate, *, settle_s: float = 0.6) -> None:
     正対へ戻すには -yaw 回す。TURN は完了通知を返さないので時間で待つ。
     """
     _turn_by(link, -math.radians(pose.yaw_deg), settle_s=settle_s, hold=True)
+    # SANG は place_controller の TURN 保持中に出すと turn_goal と角度フレームが
+    # ずれて機体が暴走する。必ず stop() で保持を抜けてから発行する。
+    link.stop()
     link.send("SANG,0")
     link.wait_for("DONE", timeout_s=1.0)
-    link.stop()
 
 
 def align_to_wall(
@@ -253,9 +255,12 @@ def align_to_wall(
             break  # 整定
         step_deg = max(-max_step_deg, min(max_step_deg, est.yaw_deg))
         _turn_by(link, -math.radians(step_deg), hold=True)  # 保持継続=drift防止
+    # SANG/停止の順序に注意: SANG は TURN 保持中に出すと turn_goal と角度フレームが
+    # ずれて暴走するため、必ず stop() で保持を抜けてから SANG を発行する。
     if set_reference:
+        link.stop()
         link.send("SANG,0")
         link.wait_for("DONE", timeout_s=1.0)
-    if stop_at_end:
+    elif stop_at_end:
         link.stop()
     return last
