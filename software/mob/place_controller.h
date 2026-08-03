@@ -50,7 +50,22 @@ public:
     // その場旋回を開始する: 現在角度を基準に delta_angle_rad(正=左/CCW、
     // 単位rad)だけ回転する目標角度プロファイルを生成して追従する。
     // 並進速度ゼロを保つ制御(start()と同じ)も同時に動く。
-    void start_turn(float delta_angle_rad);
+    // as_jog=true のとき「JOGTURN」として扱い、目標角へ到達・整定したら
+    // 一度だけ take_jog_arrived() が true を返す(=完了通知に使う。到達後も
+    // 角度・位置は保持し続ける)。既定 false は従来のTURN(完了通知なし)。
+    void start_turn(float delta_angle_rad, bool as_jog = false);
+
+    // JOGFWD/JOGBACK: 現在のヨー(向き)を保持したまま、前後に delta_dist_mm
+    // (正=前進、負=後退)だけ並進する。並進側の位置P制御(place_pos_kp/
+    // place_pos_max_mpsで低速クランプ)が pos_ref を delta ぶんずらして
+    // 滑らかに到達させ、旋回制御は開始時の向きを保持する。到達・整定で
+    // 一度だけ take_jog_arrived() が true を返す(到達後も位置・向きを保持)。
+    void start_move(float delta_dist_mm);
+
+    // JOG(start_move/start_turn as_jog)が目標へ到達・整定した瞬間に一度だけ
+    // true を返す(ラッチをクリアして返す)。mob.ino が毎tickポーリングして
+    // DONE を送るのに使う。到達後も制御は保持を続ける(停止はMOT,0,0)。
+    bool take_jog_arrived();
 
     // 1kHzループから呼ぶ(motion_state == PLACE_HOLD の間のみ)。
     void update(float dt_s);
@@ -126,6 +141,14 @@ private:
     float turn_omega_mag_ = 0.0f;         // 現在の目標角速度の大きさ[rad/s]
     float turn_omega_signed_radps_ = 0.0f; // 符号付き目標角速度(テレメトリ用)
     float turn_integ_ = 0.0f;             // 角度誤差の積分項
+
+    // JOG(距離/角度指定で到達したら完了通知する)状態。NONE=通常のHOLD/TURN
+    // (完了通知しない)。MOVE=start_move(位置到達で完了)。TURN=start_turn
+    // (as_jog、角度到達で完了)。到達を検出したら kind を NONE に戻して
+    // 保持を継続しつつ arrived ラッチを立てる。
+    enum class JogKind { NONE, MOVE, TURN };
+    JogKind jog_kind_ = JogKind::NONE;
+    bool jog_arrived_latch_ = false;
 
     static int16_t calc_delta_14bit(uint16_t now, uint16_t prev);
     static float counts_to_m(int16_t delta_counts);

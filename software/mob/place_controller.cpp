@@ -2,6 +2,14 @@
 #include "params.h"
 #include <math.h>
 
+// JOG(JOGFWD/JOGBACK/JOGTURN)の到達・整定判定しきい値。到達=目標に十分近い
+// かつ十分止まっている、で完了通知(DONE)する。5mm許容の運用ルールに対し
+// 余裕を持たせた小さめの値。
+static constexpr float JOG_DIST_TOL_MM = 1.5f;      // 位置到達許容[mm]
+static constexpr float JOG_VEL_TOL_MPS = 0.010f;    // 並進速度(vr+vl)の整定許容[m/s]
+static constexpr float JOG_ANG_TOL_RAD = 0.010f;    // 角度到達許容[rad](≈0.57deg)
+static constexpr float JOG_RATE_TOL_RADPS = 0.05f;  // 角速度の整定許容[rad/s]
+
 PlaceController::PlaceController(Motor& motor, Sensors& sensors)
     : motor_(motor), sensors_(sensors) {}
 
@@ -30,9 +38,11 @@ void PlaceController::start() {
     turn_omega_mag_ = 0.0f;
     turn_omega_signed_radps_ = 0.0f;
     turn_integ_ = 0.0f;
+    jog_kind_ = JogKind::NONE;
+    jog_arrived_latch_ = false;
 }
 
-void PlaceController::start_turn(float delta_angle_rad) {
+void PlaceController::start_turn(float delta_angle_rad, bool as_jog) {
     reset_common();
     pos_ref_mm_ = sensors_.get_distance();
     turning_ = true;
@@ -43,6 +53,35 @@ void PlaceController::start_turn(float delta_angle_rad) {
     turn_omega_mag_ = 0.0f;
     turn_omega_signed_radps_ = 0.0f;
     turn_integ_ = 0.0f;
+    jog_kind_ = as_jog ? JogKind::TURN : JogKind::NONE;
+    jog_arrived_latch_ = false;
+}
+
+void PlaceController::start_move(float delta_dist_mm) {
+    reset_common();
+    // 並進側: pos_ref を delta ぶんずらす。update_translational の位置P制御が
+    // place_pos_max_mps で低速クランプしつつ滑らかに寄せ、到達後は保持する。
+    pos_ref_mm_ = sensors_.get_distance() + delta_dist_mm;
+    // 旋回側: 現在の向きを保持(delta=0のstart_turn相当)。移動中もヨーを
+    // 開始角に保つことで、直進が横へ逸れるのを防ぐ。
+    turning_ = true;
+    turn_dir_ = 1.0f;
+    turn_start_angle_rad_ = sensors_.get_angle();
+    turn_goal_angle_rad_ = turn_start_angle_rad_;
+    turn_target_angle_rad_ = turn_start_angle_rad_;
+    turn_omega_mag_ = 0.0f;
+    turn_omega_signed_radps_ = 0.0f;
+    turn_integ_ = 0.0f;
+    jog_kind_ = JogKind::MOVE;
+    jog_arrived_latch_ = false;
+}
+
+bool PlaceController::take_jog_arrived() {
+    if (jog_arrived_latch_) {
+        jog_arrived_latch_ = false;
+        return true;
+    }
+    return false;
 }
 
 void PlaceController::stop() {
@@ -62,6 +101,8 @@ void PlaceController::stop() {
     turning_ = false;
     turn_omega_mag_ = 0.0f;
     turn_integ_ = 0.0f;
+    jog_kind_ = JogKind::NONE;
+    jog_arrived_latch_ = false;
 }
 
 int16_t PlaceController::calc_delta_14bit(uint16_t now, uint16_t prev) {
@@ -272,4 +313,23 @@ void PlaceController::update(float dt_s) {
 
     motor_.set_right(static_cast<int16_t>(u_r));
     motor_.set_left(static_cast<int16_t>(u_l));
+
+    // JOG完了判定: 目標へ到達し十分止まったら arrived ラッチを立て、以降は
+    // 通常の保持へ移す(kind=NONE、pos_ref/turn_goalはそのままなので位置・
+    // 向きの保持は継続する)。開始直後は目標まで距離/角度があり誤検出しない。
+    if (jog_kind_ == JogKind::MOVE) {
+        const float pos_err_mm = fabsf(pos_ref_mm_ - sensors_.get_distance());
+        const float v_sum = fabsf(vr_filt_mps_ + vl_filt_mps_);
+        if (pos_err_mm < JOG_DIST_TOL_MM && v_sum < JOG_VEL_TOL_MPS) {
+            jog_arrived_latch_ = true;
+            jog_kind_ = JogKind::NONE;
+        }
+    } else if (jog_kind_ == JogKind::TURN) {
+        const float ang_err = fabsf(turn_goal_angle_rad_ - sensors_.get_angle());
+        const float rate = fabsf(sensors_.get_gyro_z());
+        if (ang_err < JOG_ANG_TOL_RAD && rate < JOG_RATE_TOL_RADPS) {
+            jog_arrived_latch_ = true;
+            jog_kind_ = JogKind::NONE;
+        }
+    }
 }

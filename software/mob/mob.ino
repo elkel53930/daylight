@@ -88,6 +88,8 @@ enum CommandID : uint8_t {
     CMD_SET_ANGLE = 0x0F,
     CMD_PLACE_HOLD_START = 0x11,
     CMD_TURN = 0x12,
+    CMD_JOG_MOVE = 0x13,     // JOGFWD/JOGBACK: ヨー保持のまま前後に指定距離だけ低速並進(到達でDONE)
+    CMD_JOG_TURN = 0x14,     // JOGTURN: その場旋回で指定角へ(到達でDONE)
     CMD_PATTERN_RUN = 0x17,  // 走行開始のみ。組み立て(PCLEAR/PADD)はcmd_queueを介さない
 };
 
@@ -107,6 +109,8 @@ struct Command {
         SetDutyCommand set_duty;
         float set_angle_rad;
         float turn_angle_rad;
+        float jog_dist_mm;   // CMD_JOG_MOVE: 正=前進, 負=後退
+        float jog_turn_rad;  // CMD_JOG_TURN: 正=左/CCW
     } parameter;
 };
 
@@ -259,6 +263,23 @@ void processCommandQueue() {
                 enqueue_msg_line("#PLACE_HOLD: turn start\n");
                 break;
 
+            case CMD_JOG_MOVE:
+                // JOGFWD/JOGBACK: ヨー保持のまま前後に指定距離だけ低速並進。
+                // 到達・整定で place_controller が完了を通知(updatePlaceHoldが
+                // DONEを送る)。到達後も位置・向きを保持する(停止はMOT,0,0)。
+                motion_state = MotionState::PLACE_HOLD;
+                place_controller.start_move(q.parameter.jog_dist_mm);
+                enqueue_msg_line("#PLACE_HOLD: jog move start\n");
+                break;
+
+            case CMD_JOG_TURN:
+                // JOGTURN: その場旋回で指定角へ。TURNと同じ台形プロファイルだが
+                // 到達・整定でDONEを返す(完了を待てる)。
+                motion_state = MotionState::PLACE_HOLD;
+                place_controller.start_turn(q.parameter.jog_turn_rad, /*as_jog=*/true);
+                enqueue_msg_line("#PLACE_HOLD: jog turn start\n");
+                break;
+
             case CMD_PATTERN_RUN:
                 // 競合回避: ほかのモーションを停止。start()内でg_pattern_segmentsを
                 // 内部へコピーするので、以後Core1がバッファを触っても走行に影響しない。
@@ -277,6 +298,12 @@ void processCommandQueue() {
 void updatePlaceHold(float dt_s) {
     if (motion_state != MotionState::PLACE_HOLD) return;
     place_controller.update(dt_s);
+
+    // JOG(JOGFWD/JOGBACK/JOGTURN)が目標へ到達・整定したら一度だけDONEを返す。
+    // 到達後も place_controller は位置・向きの保持を続ける(停止はMOT,0,0)。
+    if (place_controller.take_jog_arrived()) {
+        enqueue_msg_line("DONE\n");
+    }
 
     static int dbg_count = 0;
     dbg_count++;
@@ -675,6 +702,40 @@ void loop() {
                 }
             } else {
                 Serial.printf("#Invalid TURN format\n");
+            }
+        } else if (cmd.startsWith("JOGFWD,") || cmd.startsWith("JOGBACK,")) {
+            // JOGFWD,<mm> / JOGBACK,<mm>: ヨー保持のまま前後へ指定距離だけ
+            // 低速並進し、到達・整定でDONEを返す(壁上面位置補正の位置成分
+            // 等、精密な微小前後移動用)。距離は絶対値(符号は前進/後退で決定)。
+            int comma1 = cmd.indexOf(',');
+            if (comma1 > 0) {
+                float mm = fabsf(cmd.substring(comma1 + 1).toFloat());
+                Command q;
+                q.cmd_id = CMD_JOG_MOVE;
+                q.parameter.jog_dist_mm = cmd.startsWith("JOGBACK,") ? -mm : mm;
+                if (xQueueSend(cmd_queue, &q, pdMS_TO_TICKS(10)) == pdTRUE) {
+                    Serial.printf("#JOG move=%.2fmm\n", q.parameter.jog_dist_mm);
+                } else {
+                    Serial.printf("#Queue full!\n");
+                }
+            } else {
+                Serial.printf("#Invalid JOG format\n");
+            }
+        } else if (cmd.startsWith("JOGTURN,")) {
+            // JOGTURN,<angle_rad>(正=左/CCW): その場旋回で指定角へ回し、到達・
+            // 整定でDONEを返す(完了を待てるその場旋回)。
+            int comma1 = cmd.indexOf(',');
+            if (comma1 > 0) {
+                Command q;
+                q.cmd_id = CMD_JOG_TURN;
+                q.parameter.jog_turn_rad = cmd.substring(comma1 + 1).toFloat();
+                if (xQueueSend(cmd_queue, &q, pdMS_TO_TICKS(10)) == pdTRUE) {
+                    Serial.printf("#JOG turn=%.4frad\n", q.parameter.jog_turn_rad);
+                } else {
+                    Serial.printf("#Queue full!\n");
+                }
+            } else {
+                Serial.printf("#Invalid JOGTURN format\n");
             }
         } else if (cmd == "PCLEAR") {
             // PCLEAR: PATTERN走行パスのバッファをクリア(PADDの前に毎回呼ぶ)。

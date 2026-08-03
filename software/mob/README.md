@@ -181,6 +181,8 @@ esp32:esp32`）が必要。ビルドサーバー側の `arduino-cli` が PATH �
 | `SEN` | センサデータ一括取得 |
 | `HOLD` | その場静止制御を開始(左右輪速度の和をゼロへ、`place_controller.cpp`)。停止は`MOT,0,0` |
 | `TURN,<angle_rad>` | その場旋回(角度制御、台形速度プロファイル、正=左/CCW)。並進ゼロを保つHOLDの制御を同時に動かしたまま追従する。停止は`MOT,0,0` |
+| `JOGFWD,<mm>` / `JOGBACK,<mm>` | ヨー(向き)を保持したまま前/後へ指定距離だけ低速並進し、到達・整定で`DONE`を返す(精密な微小前後移動用。壁上面位置補正の位置成分など)。距離は絶対値。到達後も位置・向きを保持(停止は`MOT,0,0`)。`place_controller`の位置P制御を再利用 |
+| `JOGTURN,<angle_rad>` | その場旋回で指定角へ回し、到達・整定で`DONE`を返す(完了を待てる`TURN`、正=左/CCW)。`TURN`と同じ台形プロファイル。到達後も角度・位置を保持(停止は`MOT,0,0`) |
 | `PCLEAR` | PATTERN走行パスのバッファをクリア(`PADD`の前に毎回呼ぶ) |
 | `PADD,STRAIGHT,<distance_mm>,<v_start_mmps>,<v_cruise_mmps>,<v_end_mmps>` | PATTERN走行パスへ直進区間を1つ追加(台形速度プロファイル) |
 | `PADD,SLALOM,<v_mmps>,<L\|R>,<radius_mm>,<angle_deg>` | PATTERN走行パスへスラローム旋回区間を1つ追加(定速円弧、L=左/CCW、R=右/CW。角度は度指定、桁数節約のためradではなくdeg) |
