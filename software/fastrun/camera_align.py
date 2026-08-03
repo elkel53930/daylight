@@ -82,17 +82,27 @@ def estimate_pose(
     *,
     slope_gain: float = SLOPE_DEG_PER_YAW_DEG,
     straight_slope: float = STRAIGHT_SLOPE_DEG,
+    crop_frac: float = 0.5,
 ) -> Optional[PoseEstimate]:
     """RGB画像(H,W,3 uint8)から推定ヨー角・距離オフセットを求める。
 
-    中央50%クロップ(画面端の別の壁を巻き込まないため)→ 赤帯上端エッジ検出。
-    検出できなければ None。
+    中央 crop_frac 幅クロップ(画面端の別の壁を巻き込まないため)→ 赤帯上端
+    エッジ検出。検出できなければ None。
 
     slope_gain/straight_slope は壁までの距離に応じた較正定数。既定は約1セル
     距離。センタリング等で半セル(≈90mm)の壁を見るときは *_HALFCELL を渡す。
+
+    crop_frac: 中央クロップの幅割合(既定0.5)。側壁に正対して補正するときは
+    機体の向きによって隣の壁が中央付近まで写り込みフィットが壊れるため、
+    狭く(例0.3)して隣壁混入を減らせる。ヨーは赤帯slope[deg]から求まり、
+    slope[deg] はクロップ幅に不変なので gain/intercept 較正はそのまま使える
+    (距離=row_at_center はクロップ幅依存なので dist を使う用途では要注意)。
     """
     h, w, _ = img.shape
-    cropped = np.ascontiguousarray(img[:, w // 4 : 3 * w // 4, :])
+    half = max(0.05, min(0.5, crop_frac / 2.0))
+    lo = int(round(w * (0.5 - half)))
+    hi = int(round(w * (0.5 + half)))
+    cropped = np.ascontiguousarray(img[:, lo:hi, :])
 
     edge = detect_red_band_top_edge(cropped)
     if edge is None:
@@ -225,6 +235,7 @@ def align_to_wall(
     straight_slope: float = STRAIGHT_SLOPE_DEG,
     stop_at_end: bool = True,
     check_dist: bool = True,
+    crop_frac: float = 0.5,
 ) -> Optional[PoseEstimate]:
     """前壁に正対するまでカメラ推定→TURN補正を反復する閉ループ(2026-08-03)。
 
@@ -246,7 +257,8 @@ def align_to_wall(
     last: Optional[PoseEstimate] = None
     for _ in range(iterations):
         est = estimate_pose(
-            cam.capture(), slope_gain=slope_gain, straight_slope=straight_slope
+            cam.capture(), slope_gain=slope_gain, straight_slope=straight_slope,
+            crop_frac=crop_frac,
         )
         last = est
         if est is None or not is_confident(est, check_dist=check_dist):

@@ -91,6 +91,16 @@ class TestHalfCellCalib(unittest.TestCase):
         # 近い壁(半セル)は同じヨーで傾きが大きく出る => gain が大きい。
         self.assertGreater(SLOPE_DEG_PER_YAW_DEG_HALFCELL, SLOPE_DEG_PER_YAW_DEG)
 
+    def test_crop_frac_yaw_invariant(self):
+        # ヨーは赤帯slope[deg]から求まり slope はクロップ幅に不変。
+        # 狭いクロップ(0.3)でも広いクロップ(0.5)とほぼ同じヨーになること。
+        img = make_band_image(800, 1000, slope=0.10, intercept=500.0)
+        e50 = estimate_pose(img, crop_frac=0.5)
+        e30 = estimate_pose(img, crop_frac=0.3)
+        self.assertIsNotNone(e50)
+        self.assertIsNotNone(e30)
+        self.assertAlmostEqual(e50.yaw_deg, e30.yaw_deg, delta=0.2)
+
     def test_halfcell_params_change_yaw(self):
         # 同じ画像でも較正定数を変えると推定ヨーが変わる(gainが効いている)。
         img = make_band_image(800, 1000, slope=0.10, intercept=500.0)
