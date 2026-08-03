@@ -222,6 +222,26 @@ void PathController::update(float dt_s) {
         heading_error_rad_ = heading_err;
     }
 
+    // 側壁による横位置補正(壁追従)。直進セグメントで両側に壁があるときだけ、
+    // ls/rs差から機体を迷路中心へ寄せる微小な heading バイアスを重畳する。
+    // gyro heading制御自身がこのバイアスへ追従して中心へ寄り、寄れば(rs-ls)→0で
+    // バイアスも消える。robot相対(左右センサ)なので全方位で成立する。
+    // 側壁センサは角度に敏感で near-straight のときだけ信頼できるため、直進中
+    // (heading制御でほぼまっすぐ)に限定し、ゲインは小さくバイアスをクランプする。
+    // 既定 path_wall_kp=0 で無効(PSETで有効化・ライブ調整する)。
+    if (params.path_wall_kp > 0.0f && seg_index_ < seg_count_ &&
+        segments_[seg_index_].type == SegmentType::STRAIGHT) {
+        const float ls = static_cast<float>(sensors_.get_ls());
+        const float rs = static_cast<float>(sensors_.get_rs());
+        if (ls > params.path_wall_present && rs > params.path_wall_present) {
+            // rs>ls(右/右壁寄り)→ 左(CCW,+heading)へ寄せる = 中心へ。
+            float wall_bias = params.path_wall_kp * (rs - ls);
+            if (wall_bias > params.path_wall_bias_max) wall_bias = params.path_wall_bias_max;
+            if (wall_bias < -params.path_wall_bias_max) wall_bias = -params.path_wall_bias_max;
+            heading_error_rad_ = normalize_angle(heading_error_rad_ + wall_bias);
+        }
+    }
+
     const float dist_error_mm = dist_to_target_mm_ - params.path_follow_mm;
 
     float vbatt = sensors_.get_battery_voltage();

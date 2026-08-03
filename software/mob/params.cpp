@@ -86,6 +86,9 @@ const Params kDefaultParams = {
     // ブレンドはごく僅か・ゲートは非発動。実機で要チューニング。
     .path_blend_mm = 40.0f,
     .path_gate_mm = 90.0f,
+    .path_wall_kp = 0.0f,        // 既定は無効。PSETでライブ調整して有効化する。
+    .path_wall_present = 150.0f,
+    .path_wall_bias_max = 0.10f, // ≈5.7° まで
 };
 
 Params params = kDefaultParams;
@@ -130,6 +133,9 @@ const ParamDef PARAM_TABLE[] = {
     {"path_out_max", offsetof(Params, path_out_max)},
     {"path_blend_mm", offsetof(Params, path_blend_mm)},
     {"path_gate_mm", offsetof(Params, path_gate_mm)},
+    {"path_wall_kp", offsetof(Params, path_wall_kp)},
+    {"path_wall_present", offsetof(Params, path_wall_present)},
+    {"path_wall_bias_max", offsetof(Params, path_wall_bias_max)},
 };
 
 const size_t PARAM_COUNT = sizeof(PARAM_TABLE) / sizeof(PARAM_TABLE[0]);

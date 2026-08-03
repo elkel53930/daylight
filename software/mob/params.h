@@ -81,6 +81,13 @@ struct Params {
     // この値に達したとき完全にベアリング主体になる幅。
     float path_blend_mm;   // ベアリングへのブレンド幅 [mm]
     float path_gate_mm;    // dist_to_targetがこの値を超えたらターゲットの前進を止めて待つ [mm]
+    // 側壁センサによる横位置補正(壁追従、2026-08-03追加)。直進セグメントで
+    // 両側に壁があるとき、ls/rs差から機体を迷路中心へ寄せる微小な heading
+    // バイアスを重畳する。側壁センサは角度に敏感なので near-straight のときだけ
+    // 信頼でき、ゲインは小さくバイアスはクランプする。既定 path_wall_kp=0(無効)。
+    float path_wall_kp;       // (rs-ls)[sensor unit] → heading バイアス [rad]
+    float path_wall_present;  // ls,rs がこれ以上で「側壁あり」とみなす
+    float path_wall_bias_max; // heading バイアスのクランプ [rad]
 };
 
 // ビルド時デフォルト値(現行の実機チューニング値と一致させること)
