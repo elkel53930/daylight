@@ -380,6 +380,10 @@ void Core0RealtimeTask(void* parameter) {
         // 1msごとの待機
         time_delta = waitTick(last_tick);
 
+        // 停止判定を渡す(前cycleのモーター出力=1ms遅れ、問題なし)。停止中は
+        // sensors側で角度積分を凍結し、静止中の残留バイアス積分ドリフトを防ぐ。
+        sensors.set_stationary(motor.is_stopped());
+
         // センサーデータの更新
         sensors.update(time_delta);
 

@@ -5,7 +5,8 @@ Sensors::Sensors(IMU& imu, WallSensor& wall_sensor, Battery& battery, Encoder& e
       gyro_z_(0.0f), accel_forward_(0.0f), f_(0), ls_(0), rs_(0),
       battery_voltage_(0.0f), right_wheel_angle_(0), left_wheel_angle_(0),
       distance_(0.0f), angle_(0.0f), prev_right_angle_(0), prev_left_angle_(0),
-      gyro_offset_(0.0f), calibrating_(false), calib_count_(0), calib_sum_(0.0f),
+      gyro_offset_(0.0f), calibrating_(false), stationary_(false),
+      calib_count_(0), calib_sum_(0.0f),
       calib_interval_ms_(5), calib_timer_ms_(0) {
 }
 
@@ -73,13 +74,22 @@ void Sensors::update(uint32_t time_delta_ms) {
     float distance_l = -1 * delta_l * COUNT_TO_MM;
     float delta_distance = (distance_r + distance_l) / 2.0f;
     
-    // 角度計算（rad）
-    float delta_angle_gyro = gyro_z_radps * (static_cast<float>(time_delta_ms) / 1000.0f);
+    // 角度計算（rad）。ジャイロオフセット(GCAL)を差し引いてから積分する
+    // (2026-08-03修正: 従来は生ジャイロを積分しておりGCALが角度に効いていなかった)。
+    const float gyro_offset = gyro_offset_.load(std::memory_order_relaxed);
+    float delta_angle_gyro = (gyro_z_radps - gyro_offset) * (static_cast<float>(time_delta_ms) / 1000.0f);
     float delta_angle_encoder = (distance_r - distance_l) / WHEEL_BASE;
-    
+
     // ジャイロ積分を優先（相補フィルタは後で追加可）
     float delta_angle = delta_angle_gyro;
-    
+
+    // 停止中(モーター出力0)は外力が無ければ機体は動かず角度も変わらないので、
+    // 残留バイアスの積分によるドリフトを防ぐため角度積分を凍結する
+    // (2026-08-03、ユーザー指摘)。距離はエンコーダ実測なので凍結不要。
+    if (stationary_.load(std::memory_order_relaxed)) {
+        delta_angle = 0.0f;
+    }
+
     // 累積値更新
     distance_.store(distance_.load(std::memory_order_relaxed) + delta_distance, std::memory_order_relaxed);
     angle_.store(angle_.load(std::memory_order_relaxed) + delta_angle, std::memory_order_relaxed);
@@ -147,6 +157,10 @@ void Sensors::reset_angle() {
 
 void Sensors::set_angle(float rad) {
     angle_.store(rad, std::memory_order_relaxed);
+}
+
+void Sensors::set_stationary(bool s) {
+    stationary_.store(s, std::memory_order_relaxed);
 }
 
 void Sensors::calibrate_gyro() {

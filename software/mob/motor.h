@@ -22,7 +22,15 @@ public:
     void set_left(int16_t speed);   // 左モーター (-1023〜+1023)
     void stop();                    // 両モーター停止
 
+    // 両モーターの最後の指令が共に0か(=停止中)。外力が無い前提では停止中は
+    // 機体が動かず角度も変わらないので、ジャイロ角度積分の凍結判定に使う
+    // (2026-08-03、ユーザー指摘)。
+    bool is_stopped() const { return last_right_ == 0 && last_left_ == 0; }
+
 private:
+    int16_t last_right_ = 0;  // 最後に set_right した速度指令
+    int16_t last_left_  = 0;  // 最後に set_left した速度指令
+
     static constexpr int RIGHT_PWM_PIN = 48;
     static constexpr int RIGHT_DIR_PIN = 45;
     static constexpr int LEFT_PWM_PIN  = 21;

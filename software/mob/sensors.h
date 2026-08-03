@@ -32,7 +32,8 @@ public:
     void reset_distance();                   // 距離リセット
     void reset_angle();                      // 角度リセット(0にする)
     void set_angle(float rad);               // 角度を任意の値に上書き(カメラ補正等、外部の絶対基準での補正用)
-    
+    void set_stationary(bool s);             // 停止中フラグ(true=モーター停止中)。停止中はジャイロ角度積分を凍結する
+
     // ジャイロキャリブレーション
     void calibrate_gyro();                   // ジャイロオフセットを計算（100回 サンプル平均）
     float get_gyro_offset() const;           // 現在のジャイロオフセット値を取得
@@ -64,6 +65,7 @@ private:
     // ジャイロキャリブレーション用
     std::atomic<float> gyro_offset_;    // ジャイロオフセット（rad/s）
     std::atomic<bool> calibrating_;     // キャリブレーション中フラグ
+    std::atomic<bool> stationary_;      // モーター停止中フラグ(true=角度積分を凍結)
     int calib_count_;                   // キャリブレーションサンプルカウント
     float calib_sum_;                   // キャリブレーションサンプル合計
     uint32_t calib_interval_ms_;        // キャリブレーションサンプル間隔

@@ -68,14 +68,18 @@ void Motor::begin() {
 }
 
 void Motor::set_right(int16_t speed) {
+    last_right_ = speed;
     set_motor(speed, _cmpr_right, RIGHT_DIR_PIN);
 }
 
 void Motor::set_left(int16_t speed) {
+    last_left_ = speed;
     set_motor(speed, _cmpr_left, LEFT_DIR_PIN);
 }
 
 void Motor::stop() {
+    last_right_ = 0;
+    last_left_ = 0;
     ESP_ERROR_CHECK(mcpwm_comparator_set_compare_value(_cmpr_right, 0));
     ESP_ERROR_CHECK(mcpwm_comparator_set_compare_value(_cmpr_left,  0));
     digitalWrite(RIGHT_DIR_PIN, LOW);
