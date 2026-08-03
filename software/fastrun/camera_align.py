@@ -42,6 +42,16 @@ from vision_wall import detect_red_band_top_edge
 SLOPE_DEG_PER_YAW_DEG = 0.248   # d(slope_deg)/d(yaw_deg) @ 約1セル
 STRAIGHT_SLOPE_DEG = 0.203      # 正対(yaw=0)時の赤帯slope[deg]
 
+# --- ヨー角較正(半セル≈90mm、2026-08-03) ---
+# セル・センタリングでは前壁がマス前縁・側壁がマス側縁にあり、正対距離は
+# 半セル(≈90mm)になる。1セル用のgainでは大きくずれる(距離依存)。マス中心・
+# 北向きに置いた機体をGCAL/RANG→TURNで東壁正面(gyro基準の真の垂直)にし、
+# 保持を切らずCCW側(清浄側)へ+2°刻み6点スイープして再較正した(全点k=5/5・
+# spread≈0.03°・スイープ中drift+0.5mm・fit RMS=0.20°)。gainは1セル(0.248)の
+# 約3.4倍。詳細な検証経緯は fastrun-project メモ参照。
+SLOPE_DEG_PER_YAW_DEG_HALFCELL = 0.840
+STRAIGHT_SLOPE_DEG_HALFCELL = 0.973
+
 # --- 距離較正(暫定・要再較正) ---
 # 旧micromouse定数のまま。dist_offset_mm は「基準距離からの前進オフセット」で、
 # ヨー角較正と同様この機体・距離では未検証。当面は計測・ログのみに使い、
@@ -67,11 +77,19 @@ class PoseEstimate:
     inlier_count: int
 
 
-def estimate_pose(img: np.ndarray) -> Optional[PoseEstimate]:
+def estimate_pose(
+    img: np.ndarray,
+    *,
+    slope_gain: float = SLOPE_DEG_PER_YAW_DEG,
+    straight_slope: float = STRAIGHT_SLOPE_DEG,
+) -> Optional[PoseEstimate]:
     """RGB画像(H,W,3 uint8)から推定ヨー角・距離オフセットを求める。
 
     中央50%クロップ(画面端の別の壁を巻き込まないため)→ 赤帯上端エッジ検出。
     検出できなければ None。
+
+    slope_gain/straight_slope は壁までの距離に応じた較正定数。既定は約1セル
+    距離。センタリング等で半セル(≈90mm)の壁を見るときは *_HALFCELL を渡す。
     """
     h, w, _ = img.shape
     cropped = np.ascontiguousarray(img[:, w // 4 : 3 * w // 4, :])
@@ -81,7 +99,7 @@ def estimate_pose(img: np.ndarray) -> Optional[PoseEstimate]:
         return None
 
     slope_deg = math.degrees(math.atan(edge.slope))
-    yaw_deg = (slope_deg - STRAIGHT_SLOPE_DEG) / SLOPE_DEG_PER_YAW_DEG
+    yaw_deg = (slope_deg - straight_slope) / slope_gain
 
     cropped_width = cropped.shape[1]
     row_at_center = edge.slope * (cropped_width / 2) + edge.intercept
@@ -97,13 +115,20 @@ def estimate_pose(img: np.ndarray) -> Optional[PoseEstimate]:
     )
 
 
-def is_confident(estimate: PoseEstimate) -> bool:
-    """較正範囲から大きく外れた(=信頼できない)推定値を弾く。"""
-    return (
+def is_confident(estimate: PoseEstimate, *, check_dist: bool = True) -> bool:
+    """較正範囲から大きく外れた(=信頼できない)推定値を弾く。
+
+    check_dist=False のとき距離ゲートを外す。距離較正は約1セル用のため、
+    半セル(センタリングのヨー補正)では dist_offset_mm が範囲外になる。
+    ヨー補正だけを行う用途では距離ゲートを無効化して使う。
+    """
+    ok = (
         estimate.residual_px <= CAMERA_CORRECTION_MAX_RESIDUAL_PX
         and abs(estimate.yaw_deg) <= CAMERA_CORRECTION_MAX_YAW_DEG
-        and abs(estimate.dist_offset_mm) <= CAMERA_CORRECTION_MAX_DIST_MM
     )
+    if check_dist:
+        ok = ok and abs(estimate.dist_offset_mm) <= CAMERA_CORRECTION_MAX_DIST_MM
+    return ok
 
 
 class OnboardCamera:
@@ -158,12 +183,20 @@ class OnboardCamera:
         self.close()
 
 
-def _turn_by(link, turn_rad: float, *, settle_s: float = 0.6) -> None:
-    """TURN で相対 turn_rad だけ回し、旋回時間ぶん待ってから停止する。"""
+def _turn_by(link, turn_rad: float, *, settle_s: float = 0.6, hold: bool = True) -> None:
+    """TURN で相対 turn_rad だけ回し、旋回時間ぶん待つ。
+
+    hold=True(既定)では stop() を呼ばず、TURN の並進+角度保持を効かせたまま
+    にする。旋回を連続で行うとき各回の間に MOT,0,0 で保持を切ると、
+    place_controller が次の start_turn で drift した現在位置を新基準に
+    再アンカーしてズレが累積する(実機で約15回でマス中心→隅まで移動)。
+    そのため連続旋回では保持を切らないこと。最後だけ hold=False で停止する。
+    """
     link.send(f"TURN,{turn_rad:.5f}")
     time.sleep(settle_s + abs(turn_rad) / 3.0)  # おおまかな旋回時間ぶん余裕
-    link.stop()  # MOT,0,0 で TURN の継続角度保持を止める
-    time.sleep(0.15)
+    if not hold:
+        link.stop()  # MOT,0,0 で TURN の継続角度保持を止める
+        time.sleep(0.15)
 
 
 def align_heading(link, pose: PoseEstimate, *, settle_s: float = 0.6) -> None:
@@ -172,9 +205,10 @@ def align_heading(link, pose: PoseEstimate, *, settle_s: float = 0.6) -> None:
     pose.yaw_deg は「正=機体が壁への正対から左(CCW)を向いている」ので、
     正対へ戻すには -yaw 回す。TURN は完了通知を返さないので時間で待つ。
     """
-    _turn_by(link, -math.radians(pose.yaw_deg), settle_s=settle_s)
+    _turn_by(link, -math.radians(pose.yaw_deg), settle_s=settle_s, hold=True)
     link.send("SANG,0")
     link.wait_for("DONE", timeout_s=1.0)
+    link.stop()
 
 
 def align_to_wall(
@@ -185,6 +219,10 @@ def align_to_wall(
     deadband_deg: float = 1.0,
     max_step_deg: float = 20.0,
     set_reference: bool = True,
+    slope_gain: float = SLOPE_DEG_PER_YAW_DEG,
+    straight_slope: float = STRAIGHT_SLOPE_DEG,
+    stop_at_end: bool = True,
+    check_dist: bool = True,
 ) -> Optional[PoseEstimate]:
     """前壁に正対するまでカメラ推定→TURN補正を反復する閉ループ(2026-08-03)。
 
@@ -193,22 +231,31 @@ def align_to_wall(
     それ以外は -yaw(max_step_degでクランプ)だけ TURN で回す。最後に
     set_reference なら SANG,0 で「正対=角度0」を走行の基準に定める。
 
+    slope_gain/straight_slope は壁距離に応じた較正定数(既定=約1セル、
+    センタリングの半セル壁には *_HALFCELL を渡す)。旋回間は保持を切らず
+    (drift累積防止)、stop_at_end=True のとき最後に一度だけ停止する。
+    連続してさらに旋回する呼び出し側では stop_at_end=False にして保持継続。
+
     戻り値は最後の推定値(ログ用)。1回で約9°→1°、数回でサブ度まで収束
-    (実機確認、2026-08-03)。壁までの距離が較正時(約1セル)と大きく違うと
-    ゲインがずれる点、機体が左を向くと中央クロップに隣の壁が混入して
-    detection が壊れ is_confident に弾かれ補正できない点が既知の限界。
+    (実機確認、2026-08-03)。距離が較正と違うと gain がずれる点、機体の
+    向きによって中央クロップに隣の壁が混入して detection が壊れ
+    is_confident に弾かれる点が既知の限界。
     """
     last: Optional[PoseEstimate] = None
     for _ in range(iterations):
-        est = estimate_pose(cam.capture())
+        est = estimate_pose(
+            cam.capture(), slope_gain=slope_gain, straight_slope=straight_slope
+        )
         last = est
-        if est is None or not is_confident(est):
+        if est is None or not is_confident(est, check_dist=check_dist):
             break  # 信頼できない推定では補正しない(安全側)
         if abs(est.yaw_deg) <= deadband_deg:
             break  # 整定
         step_deg = max(-max_step_deg, min(max_step_deg, est.yaw_deg))
-        _turn_by(link, -math.radians(step_deg))
+        _turn_by(link, -math.radians(step_deg), hold=True)  # 保持継続=drift防止
     if set_reference:
         link.send("SANG,0")
         link.wait_for("DONE", timeout_s=1.0)
+    if stop_at_end:
+        link.stop()
     return last

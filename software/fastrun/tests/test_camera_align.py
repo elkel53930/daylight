@@ -13,7 +13,9 @@ from camera_align import (
     CAMERA_DIST_GAIN_PX_PER_MM,
     CAMERA_DIST_INTERCEPT_PX,
     SLOPE_DEG_PER_YAW_DEG,
+    SLOPE_DEG_PER_YAW_DEG_HALFCELL,
     STRAIGHT_SLOPE_DEG,
+    STRAIGHT_SLOPE_DEG_HALFCELL,
     PoseEstimate,
     estimate_pose,
     is_confident,
@@ -84,6 +86,26 @@ class TestEstimatePose(unittest.TestCase):
         self.assertGreater(est1.yaw_deg, est0.yaw_deg)
 
 
+class TestHalfCellCalib(unittest.TestCase):
+    def test_halfcell_gain_larger(self):
+        # 近い壁(半セル)は同じヨーで傾きが大きく出る => gain が大きい。
+        self.assertGreater(SLOPE_DEG_PER_YAW_DEG_HALFCELL, SLOPE_DEG_PER_YAW_DEG)
+
+    def test_halfcell_params_change_yaw(self):
+        # 同じ画像でも較正定数を変えると推定ヨーが変わる(gainが効いている)。
+        img = make_band_image(800, 1000, slope=0.10, intercept=500.0)
+        est_full = estimate_pose(img)
+        est_half = estimate_pose(
+            img,
+            slope_gain=SLOPE_DEG_PER_YAW_DEG_HALFCELL,
+            straight_slope=STRAIGHT_SLOPE_DEG_HALFCELL,
+        )
+        self.assertIsNotNone(est_full)
+        self.assertIsNotNone(est_half)
+        # gain が約3.4倍 => 半セルの推定ヨーは絶対値が小さくなる。
+        self.assertLess(abs(est_half.yaw_deg), abs(est_full.yaw_deg))
+
+
 class TestConfidenceGate(unittest.TestCase):
     def _mk(self, yaw=0.0, dist=0.0, res=0.5, n=100):
         return PoseEstimate(yaw_deg=yaw, dist_offset_mm=dist, residual_px=res, inlier_count=n)
@@ -99,6 +121,12 @@ class TestConfidenceGate(unittest.TestCase):
 
     def test_rejects_large_residual(self):
         self.assertFalse(is_confident(self._mk(res=5.0)))
+
+    def test_check_dist_false_bypasses_dist_gate(self):
+        # 距離較正が未対応な半セルでは check_dist=False で距離ゲートを外す。
+        est = self._mk(yaw=5.0, dist=200.0, res=1.0)  # dist は範囲外
+        self.assertFalse(is_confident(est))                    # 既定は弾く
+        self.assertTrue(is_confident(est, check_dist=False))   # 距離ゲート無効なら通す
 
 
 if __name__ == "__main__":
