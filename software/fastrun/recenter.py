@@ -40,6 +40,11 @@ from vision_wall import detect_red_band_top_edge
 # 赤帯の row_at_center は壁に1mm近づくごと約5.38px 増加(crop0.3、1px≈0.19mm)。
 # 壁上面位置補正の位置成分(row差→mm)に使う。
 CAMERA_ROW_PX_PER_MM = 5.38
+# 壁が90mm(マス中心)のときの row_at_center(crop0.3)。専用治具で(1,1)中心・西向きに
+# 正確固定して取得(2026-08-03、res<=0.38, n=10の精密値)。壁上面位置補正の位置成分の
+# 絶対基準: 現在のrowとの差 (row-CAMERA_ROW_AT_90MM)/CAMERA_ROW_PX_PER_MM [mm] で
+# 壁までの距離のマス中心(90mm)からのずれが出る。
+CAMERA_ROW_AT_90MM = 689.9
 
 # 方位規約(超信地旋回・SANG用、deg): 北=0, 西=+90(+CCW=TURN正), 東=-90, 南=±180。
 HEADING_NORTH = 0.0
