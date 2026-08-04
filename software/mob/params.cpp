@@ -11,14 +11,14 @@ const Params kDefaultParams = {
     .speed_kd = 0.0f,
     .kf_duty_per_mps = 250.0f,
     .vbatt_nom = 8.0f,
-    .speed_lpf_alpha = 0.12f,
+    .speed_lpf_alpha = 0.04171603f,
 
     // JOGFWD/JOGBACK の並進制御(速度内側ループ)。
     .place_kp = 1200.0f,
     .place_ki = 12000.0f,
     .place_kd = 0.0f,
     .place_out_max = 400.0f,
-    .place_lpf_alpha = 0.12f,
+    .place_lpf_alpha = 0.04171603f,
 
     // JOGFWD/JOGBACK の位置外側ループ。target_v_sum は左右輪速度の
     // 「和」なので機体前後速度はこの半分。
@@ -47,14 +47,14 @@ const Params kDefaultParams = {
     // 旋回中は向心・接線加速度が混入して大暴走した実機事象があるため)。
     // ゲイン自体は初期値のまま静止時に発散しないことのみ確認済み。
     .place_accel_kd = 20.0f,
-    .place_accel_lpf_alpha = 0.3f,
+    .place_accel_lpf_alpha = 0.11209600f,
 
     // 左右輪速度同期(P制御のみ、2026-08-02実機チューニング)。300では
     // 旋回中の急激な速度変化に対して逆に外乱を増やした(vsum -24〜+19mm/s)
     // ため、100まで下げて改善を確認(-10〜+11mm/s、sync無し同等以上)。
     .place_sync_kp = 100.0f,
     .place_sync_out_max = 200.0f,
-    .place_sync_err_lpf_alpha = 0.02f,  // ≈50ms。車輪PID(0.12)と周波数帯を分離
+    .place_sync_err_lpf_alpha = 0.00671161f,  // ≈3倍低いカットオフ。車輪PID帯域と分離
 
     // その場旋回(2026-08-02実機チューニング: 角度追従は誤差0.22°まで収束、
     // 振動なし。pivot_kpを当初見積もり(旧turn_kp*kf_duty_per_mps=90)から
@@ -66,12 +66,12 @@ const Params kDefaultParams = {
     // 留まるため実質的な影響は緩やか、収束誤差0.24°・vsumも悪化なしを
     // 実機確認済み)。pivot_accelは1.5倍の30を試したが、実機で目視すると
     // 振動気味だったため20に戻した(2026-08-02)。
-    .pivot_max_radps = 7.8f,
-    .pivot_accel = 20.0f,
+    .pivot_max_radps = 6.24f,
+    .pivot_accel = 16.0f,
     .pivot_kf = 19.0f,
-    .pivot_kp = 3600.0f,
-    .pivot_ki = 75.0f,
-    .pivot_kd = 80.0f,
+    .pivot_kp = 400.0f,
+    .pivot_ki = 40.0f,
+    .pivot_kd = 50.0f,
     .pivot_out_max = 500.0f,
 
     // 仮想ターゲット追従パス走行。角度誤差は2026-08-02にベアリング角
