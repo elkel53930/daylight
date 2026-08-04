@@ -104,7 +104,7 @@ def render(bgr: np.ndarray, mode: int) -> Image.Image:
             a, b = edge
             p0 = (0.0, b * sy)
             p1 = ((cw - 1) * sx, (a * (cw - 1) + b) * sy)
-            draw.line([p0, p1], fill=(255, 0, 0), width=2)
+            draw.line([p0, p1], fill=(0, 0, 255), width=2)
         else:
             draw.text((2, 12), "no edge", fill=(255, 0, 0))
 
