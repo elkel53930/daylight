@@ -13,18 +13,15 @@ const Params kDefaultParams = {
     .vbatt_nom = 8.0f,
     .speed_lpf_alpha = 0.12f,
 
-    // その場静止制御(2026-08-02実機チューニング: kp/kiともspeed_kp/kiの
-    // 4倍まで上げても発散せず安定。振動幅がエンコーダのノイズフロアで
-    // 頭打ちになったためここで確定)
+    // JOGFWD/JOGBACK の並進制御(速度内側ループ)。
     .place_kp = 1200.0f,
     .place_ki = 12000.0f,
     .place_kd = 0.0f,
     .place_out_max = 400.0f,
     .place_lpf_alpha = 0.12f,
 
-    // 位置ホールド(外側ループ、2026-08-02追加)。速度(左右輪速度の和)の
-    // 平均をゼロにするだけでは位置の復元力が無くドリフトしうるため追加。
-    // target_v_sum は左右輪速度の「和」なので機体前後速度はこの半分。
+    // JOGFWD/JOGBACK の位置外側ループ。target_v_sum は左右輪速度の
+    // 「和」なので機体前後速度はこの半分。
     // 2026-08-05: JOGFWD/JOGBACK が本体≈25mm/sと遅く低速で制御性が悪い
     // (静止摩擦・バックラッシで動きがぎこちない)ため速度を引き上げ:
     // kp 2.0→6.0、max 0.05→0.14(和=0.14 → 本体巡航≈70mm/s、従来25mm/sの
@@ -34,6 +31,15 @@ const Params kDefaultParams = {
     // 旋回後保持(並進 p2p 0.26mm)も発振しないことを実機確認済み。
     .place_pos_kp = 6.0f,
     .place_pos_max_mps = 0.14f,
+
+    // HOLD/TURN/JOGTURN の並進抑制専用。JOG移動より弱いゲインにして
+    // 旋回時の並進抑制ループ起因のガタつきを抑える。
+    .place_hold_kp = 600.0f,
+    .place_hold_ki = 6000.0f,
+    .place_hold_kd = 0.0f,
+    .place_hold_out_max = 250.0f,
+    .place_hold_pos_kp = 2.0f,
+    .place_hold_pos_max_mps = 0.05f,
 
     // IMU Y軸(ロボット前後方向、+=前進)加速度フィードフォワード
     // (2026-08-02追加)。静止時(HOLD)のみ有効、旋回中は無効
@@ -116,6 +122,13 @@ const ParamDef PARAM_TABLE[] = {
 
     {"place_pos_kp", offsetof(Params, place_pos_kp)},
     {"place_pos_max_mps", offsetof(Params, place_pos_max_mps)},
+
+    {"ph_kp", offsetof(Params, place_hold_kp)},
+    {"ph_ki", offsetof(Params, place_hold_ki)},
+    {"ph_kd", offsetof(Params, place_hold_kd)},
+    {"ph_out_max", offsetof(Params, place_hold_out_max)},
+    {"ph_pos_kp", offsetof(Params, place_hold_pos_kp)},
+    {"ph_pos_max", offsetof(Params, place_hold_pos_max_mps)},
 
     {"place_accel_kd", offsetof(Params, place_accel_kd)},
     {"place_accel_lpf_alpha", offsetof(Params, place_accel_lpf_alpha)},

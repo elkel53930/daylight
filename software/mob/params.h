@@ -25,21 +25,29 @@ struct Params {
     float vbatt_nom;
     float speed_lpf_alpha;
 
-    // その場静止制御(place_controller.cpp)。左右輪速度の和(並進成分)を
-    // ゼロへ追い込むPID。速度PID(speed_kp/ki)と誤差の単位・出力スケール
-    // (m/s→duty)は同じだがフィードフォワードが無いため、経路が異なる
-    // (2026-08-02新規追加、実機チューニング済み)。
+    // JOGFWD/JOGBACK の並進制御(place_controller.cpp)。左右輪速度の和
+    // (並進成分)を目標へ追い込むPID。速度PID(speed_kp/ki)と誤差の単位・
+    // 出力スケール(m/s→duty)は同じだがフィードフォワードが無いため、
+    // 経路が異なる(2026-08-02新規追加、実機チューニング済み)。
     float place_kp;
     float place_ki;
     float place_kd;
     float place_out_max;
     float place_lpf_alpha;
 
-    // その場静止制御の位置ホールド(外側ループ)。sensors.get_distance()を
-    // 開始時の値に保つP制御で目標並進速度を作り、上記の速度PIDへ渡す
-    // (2026-08-02新規追加)。
+    // JOGFWD/JOGBACK の位置制御(外側ループ)。sensors.get_distance()を
+    // 目標位置へ寄せるP制御で目標並進速度を作り、上記の速度PIDへ渡す。
     float place_pos_kp;       // 位置誤差[m] → 目標速度[m/s]
     float place_pos_max_mps;  // 目標速度のクランプ
+
+    // HOLD/TURN/JOGTURN の「並進抑制」専用パラメータ。旋回時のガタつきを
+    // 抑えるため、JOG移動用とは分離して個別に弱めて調整できるようにする。
+    float place_hold_kp;
+    float place_hold_ki;
+    float place_hold_kd;
+    float place_hold_out_max;
+    float place_hold_pos_kp;       // 位置誤差[m] → 目標速度[m/s]
+    float place_hold_pos_max_mps;  // 目標速度のクランプ
 
     // その場静止制御のIMU加速度フィードフォワード。エンコーダ差分ベースの
     // 速度PID(10ms窓)より速く外乱に反応させる狙いで、IMU Y軸(ロボット

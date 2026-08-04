@@ -123,13 +123,21 @@ float PlaceController::counts_to_m(int16_t delta_counts) {
 }
 
 float PlaceController::update_translational(float dt_s) {
-    // 外側ループ: 位置(sensors.get_distance())を開始時の基準へ戻すP制御で
-    // 目標並進速度を作る。速度(左右輪速度の和)の平均をゼロにするだけでは
-    // 復元力が無く、位置がゆっくりドリフトしうるため(2026-08-02追加)。
+    // 外側ループ: 位置(sensors.get_distance())から目標並進速度を作る。
+    // JOGFWD/JOGBACK は移動用ゲイン、HOLD/TURN/JOGTURN は並進抑制専用
+    // の弱めゲインを使い分ける(2026-08-05)。
+    const bool jog_move = (jog_kind_ == JogKind::MOVE);
+    const float pos_kp = jog_move ? params.place_pos_kp : params.place_hold_pos_kp;
+    const float pos_max = jog_move ? params.place_pos_max_mps : params.place_hold_pos_max_mps;
+    const float pid_kp = jog_move ? params.place_kp : params.place_hold_kp;
+    const float pid_ki = jog_move ? params.place_ki : params.place_hold_ki;
+    const float pid_kd = jog_move ? params.place_kd : params.place_hold_kd;
+    const float pid_out_max = jog_move ? params.place_out_max : params.place_hold_out_max;
+
     const float pos_error_m = (pos_ref_mm_ - sensors_.get_distance()) / 1000.0f;
-    float target_v_sum = params.place_pos_kp * pos_error_m;
-    if (target_v_sum > params.place_pos_max_mps) target_v_sum = params.place_pos_max_mps;
-    if (target_v_sum < -params.place_pos_max_mps) target_v_sum = -params.place_pos_max_mps;
+    float target_v_sum = pos_kp * pos_error_m;
+    if (target_v_sum > pos_max) target_v_sum = pos_max;
+    if (target_v_sum < -pos_max) target_v_sum = -pos_max;
 
     // 内側ループ: 並進速度(左右輪速度の和)を上記の目標値へ追い込むPID。
     // 誤差が正(目標より遅れている/後ろへ流れている)なら両輪へ同じ正の
@@ -139,17 +147,17 @@ float PlaceController::update_translational(float dt_s) {
     const float err = target_v_sum - v_sum;
 
     integ_ += err * dt_s;
-    if (params.place_ki > 0.0f) {
-        const float integ_max = params.place_out_max / params.place_ki;
+    if (pid_ki > 0.0f) {
+        const float integ_max = pid_out_max / pid_ki;
         if (integ_ > integ_max) integ_ = integ_max;
         if (integ_ < -integ_max) integ_ = -integ_max;
     }
     const float deriv = (dt_s > 0) ? (err - prev_err_) / dt_s : 0.0f;
     prev_err_ = err;
 
-    float u = params.place_kp * err + params.place_ki * integ_ + params.place_kd * deriv;
-    if (u > params.place_out_max) u = params.place_out_max;
-    if (u < -params.place_out_max) u = -params.place_out_max;
+    float u = pid_kp * err + pid_ki * integ_ + pid_kd * deriv;
+    if (u > pid_out_max) u = pid_out_max;
+    if (u < -pid_out_max) u = -pid_out_max;
     return u;
 }
 
