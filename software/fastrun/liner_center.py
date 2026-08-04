@@ -20,6 +20,7 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
+import camera_model
 from geometry import Direction
 from liner_pose import LinerPose, direction_to_gyro_deg
 from maze import WallMap
@@ -69,9 +70,14 @@ class AxisResult:
     face: Direction
     offset_mm: float
     ok: bool
+    camera_yaw_deg: Optional[float] = None
+    camera_dist_mm: Optional[float] = None
+    camera_row_calib: Optional[float] = None
 
 
 YAW_GATE_DEG = 15.0  # これ超のヨー推定は較正外/汚染として動かさない
+RANGE_ADJUST_MM = 15.0
+MAX_RANGE_ADJUST_STEPS = 4
 
 
 def center_axis(link, cam, face: Direction, *,
@@ -90,34 +96,107 @@ def center_axis(link, cam, face: Direction, *,
     (オープンループなので補正後の残差は測らない)。汚染/範囲外で ok=False。
     """
     import math
+
+    def measure_in_range(stage: str) -> Optional[recenter.WallMeasure]:
+        for attempt in range(MAX_RANGE_ADJUST_STEPS + 1):
+            measure = recenter.measure_wall(cam)
+            if measure is None:
+                return None
+            range_state = camera_model.row_range_state(measure.row_calib)
+            if measure.ok or range_state == "in":
+                return measure
+            if attempt >= MAX_RANGE_ADJUST_STEPS:
+                return measure
+
+            if range_state == "far":
+                print(
+                    f"center_axis {stage}: face={face.name} row_calib={measure.row_calib:.1f} too far -> "
+                    f"JOGFWD {RANGE_ADJUST_MM:.1f} mm"
+                )
+                recenter._jog(link, f"JOGFWD,{RANGE_ADJUST_MM:.1f}")
+            elif range_state == "near":
+                print(
+                    f"center_axis {stage}: face={face.name} row_calib={measure.row_calib:.1f} too near -> "
+                    f"JOGBACK {RANGE_ADJUST_MM:.1f} mm"
+                )
+                recenter._jog(link, f"JOGBACK,{RANGE_ADJUST_MM:.1f}")
+            time.sleep(0.2)
+        return None
+
     target_deg = direction_to_gyro_deg(face)
     recenter.turn_to(link, target_deg)          # ジャイロで概ね壁へ向く
     time.sleep(0.2)
 
     # --- 測定1: 距離認識モデルで (距離,ヨー) → ヨーを一発旋回 → SANG で絶対方位確定 ---
-    m1 = recenter.measure_wall(cam)
+    m1 = measure_in_range("measure1")
     if m1 is None or not m1.ok or abs(m1.yaw_deg) > YAW_GATE_DEG:
-        return AxisResult(face=face, offset_mm=float("nan"), ok=False)
+        if m1 is None:
+            print(f"center_axis skip: face={face.name} measure1 unavailable")
+        else:
+            print(
+                f"center_axis skip: face={face.name} measure1 dist_mm={m1.dist_mm:.1f} "
+                f"yaw_deg={m1.yaw_deg:+.2f} offset_mm={m1.offset_mm:+.1f} row_calib={m1.row_calib:.1f} "
+                f"res_px={m1.res_px:.2f} "
+                f"n_clean={m1.n_clean} ok={m1.ok}"
+            )
+        return AxisResult(
+            face=face,
+            offset_mm=float("nan"),
+            ok=False,
+            camera_yaw_deg=(m1.yaw_deg if m1 is not None else None),
+            camera_dist_mm=(m1.dist_mm if m1 is not None else None),
+            camera_row_calib=(m1.row_calib if m1 is not None else None),
+        )
     if abs(m1.yaw_deg) > yaw_deadband_deg:
         recenter._jog(link, f"JOGTURN,{math.radians(-m1.yaw_deg):.5f}", timeout_s=6.0)
     link.stop()
     time.sleep(0.15)
     link.send(f"SANG,{math.radians(target_deg):.5f}")
     link.wait_for("DONE", timeout_s=1.0)
+    print(f"center_axis step1: face={face.name} SANG heading={target_deg:+.1f} deg")
     time.sleep(0.1)
 
     # --- 測定2: 正対後に距離を測り一発移動(正対後なので row-yaw結合がなく距離が正確) ---
-    m2 = recenter.measure_wall(cam)
+    m2 = measure_in_range("measure2")
     if m2 is None or not m2.ok:
-        return AxisResult(face=face,
-                          offset_mm=(m2.offset_mm if m2 else float("nan")), ok=False)
+        if m2 is not None:
+            print(
+                f"center_axis skip: face={face.name} measure2 dist_mm={m2.dist_mm:.1f} "
+                f"yaw_deg={m2.yaw_deg:+.2f} offset_mm={m2.offset_mm:+.1f} row_calib={m2.row_calib:.1f} "
+                f"res_px={m2.res_px:.2f} n_clean={m2.n_clean} ok={m2.ok}"
+            )
+        return AxisResult(
+            face=face,
+            offset_mm=(m2.offset_mm if m2 else float("nan")),
+            ok=False,
+            camera_yaw_deg=(m2.yaw_deg if m2 is not None else m1.yaw_deg),
+            camera_dist_mm=(m2.dist_mm if m2 is not None else m1.dist_mm),
+            camera_row_calib=(m2.row_calib if m2 is not None else m1.row_calib),
+        )
     if abs(m2.offset_mm) > center_tol_mm:
         # offset>0 = 中心より前(壁に近い)→ JOGBACK で後退。offset<0 → JOGFWD。
         if m2.offset_mm > 0:
+            print(
+                f"center_axis step2: face={face.name} offset_mm={m2.offset_mm:+.1f} -> "
+                f"JOGBACK {m2.offset_mm:.1f} mm"
+            )
             recenter._jog(link, f"JOGBACK,{m2.offset_mm:.1f}")
         else:
+            print(
+                f"center_axis step2: face={face.name} offset_mm={m2.offset_mm:+.1f} -> "
+                f"JOGFWD {-m2.offset_mm:.1f} mm"
+            )
             recenter._jog(link, f"JOGFWD,{-m2.offset_mm:.1f}")
-    return AxisResult(face=face, offset_mm=m2.offset_mm, ok=True)
+    else:
+        print(f"center_axis step2: face={face.name} offset_mm={m2.offset_mm:+.1f} within tolerance")
+    return AxisResult(
+        face=face,
+        offset_mm=m2.offset_mm,
+        ok=True,
+        camera_yaw_deg=m2.yaw_deg,
+        camera_dist_mm=m2.dist_mm,
+        camera_row_calib=m2.row_calib,
+    )
 
 
 def recenter_cell(link, cam, maze: WallMap, pose: LinerPose) -> dict:

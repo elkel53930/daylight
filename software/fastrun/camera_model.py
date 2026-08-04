@@ -87,6 +87,15 @@ def is_row_in_range(row_calib: float) -> bool:
     return _ROW_MIN <= row_calib <= _ROW_MAX
 
 
+def row_range_state(row_calib: float) -> str:
+    """row の較正範囲状態を返す: 'far' / 'near' / 'in'。"""
+    if row_calib < _ROW_MIN:
+        return "far"
+    if row_calib > _ROW_MAX:
+        return "near"
+    return "in"
+
+
 def estimate(row_calib: float, slope_deg: float) -> Tuple[float, float]:
     """下端エッジの (row_calib, slope[deg]) → (距離[mm], ヨー[deg])。
 

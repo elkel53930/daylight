@@ -157,14 +157,18 @@ def measure_front_row(cam: OnboardCamera, *, crop_frac: float = 0.3,
 
 def _jog(link, cmd: str, *, timeout_s: float = 9.0) -> bool:
     """JOG系コマンドを送り DONE を待つ(JOGだけは到達でDONEを返す)。"""
+    print(f"jog send: {cmd}")
     link.send(cmd)
-    return link.wait_for("DONE", timeout_s=timeout_s) is not None
+    done = link.wait_for("DONE", timeout_s=timeout_s) is not None
+    print(f"jog result: {cmd} -> {'DONE' if done else 'TIMEOUT'}")
+    return done
 
 
 class WallMeasure(NamedTuple):
     dist_mm: float       # 壁までの距離[mm](距離認識モデル)
     yaw_deg: float       # 相対ヨー[deg](正=機体が左/CCW)
     offset_mm: float     # マス中心(90mm)からの前後ずれ(正=中心より前=壁に近い)
+    row_calib: float     # 較正基準高さへ換算した row(範囲外判定の生値)
     res_px: float        # 下端エッジフィット残差の中央値
     n_clean: int         # 清浄フレーム数
     ok: bool             # 較正範囲内かつ清浄(移動に使ってよいか)
@@ -206,6 +210,7 @@ def measure_wall(cam: OnboardCamera, *, crop_frac: float = 0.3, n: int = 6,
     ok = camera_model.is_row_in_range(row_med) and len(dists) >= (n + 1) // 2
     return WallMeasure(dist_mm=dist, yaw_deg=yaw,
                        offset_mm=camera_model.CELL_CENTER_MM - dist,
+                       row_calib=row_med,
                        res_px=res, n_clean=len(dists), ok=ok)
 
 
