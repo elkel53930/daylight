@@ -96,6 +96,14 @@ PSAVE                 # 全paramを現在RAM値でNVSへ保存(応答は DONE)
   `.gyro_calibrate()`/`.stop()`)。接続時にESP32が自動リセットされる。
 - `make upload` 直後の初回接続は SEN を取りこぼしやすい → 落ちたら再実行。
 
+### 座標系・方位の規約(CLAUDE.md 用語集も参照)
+- 絶対位置[mm]: 原点(0,0)=**南西端の柱**、**x=東・y=北**に増加。初期(90,90)mm。
+  セル(cx,cy)中心 = (90+180·cx, 90+180·cy)mm(1マス180mm)。4x4の北東端=(3,3)。
+- ジャイロ/SANG系の絶対方位[deg](`liner_pose.direction_to_gyro_deg`):
+  **北=0・西=+90・東=−90・南=±180**(正=左/CCW)。カメラのヨーも正=左/CCW。
+- 俯瞰画像の方位: **上=北・右=東・下=南・左=西**(実機確認済)。ロボット前方向=北へ
+  100mm前進で俯瞰約130px上移動。
+
 ### 移動系コマンド(現行、CLAUDE.md も参照)
 - `MOT,<r>,<l>` 速度[mm/s]即時指令(完了通知なし)。停止は `MOT,0,0`。
 - `DUTY,<r>,<l>` 生duty(−1023〜1023)。
@@ -128,6 +136,17 @@ software/venv/bin/python3 software/fastrun/recenter_cli.py \
 入るかを確認するのがよい。ズレが大きい/ok=False が多い場合は `camera_model.py` の
 較正点(`_DIST_ROW`/`_DIST_GAIN`)を治具で再取得する。
 
+### 俯瞰カメラで真値確認(Eiffel代理、memory `overhead-camera-c270`)
+カメラは唯一の絶対基準だが、開発中の**真値確認は俯瞰カメラ(x13u の C270)**を使う。
+- デバイスは **`/dev/video4`**(x13uに内蔵カメラが video0〜3 に居るので番号固定不可)。
+  x13uに `fswebcam`/`v4l2-ctl` は無いが `ffmpeg` は有る。CM4(実機)から x13u へ ssh 可能。
+- **必ず 1280x960 で撮影**(C270の実解像度はQuad-VGA。HD 1280x720で撮ると迷路が欠ける):
+  `ffmpeg -y -f v4l2 -input_format mjpeg -video_size 1280x960 -i /dev/video4 -frames:v 1 out.jpg`
+- ヘルパー `software/fastrun/overhead.py`: `capture(path)` は1280x960撮影。**ロボットを
+  動かしたら `capture_and_post(content)` で VGA(640x480)へ縮小して Discord 投稿**する(必須)。
+- 映る迷路は4x4マス。中心4マスはほぼ真上見下ろしで位置を取りやすい(外周マスは斜めで不正確)。
+  斜めの俯瞰ピクセル読みは不正確なので、精密な真値は搭載カメラ/センサが本筋。
+
 ### テスト
 ```bash
 software/venv/bin/python3 -m unittest discover -s software/fastrun/tests -q
@@ -137,16 +156,46 @@ software/venv/bin/python3 -m unittest discover -s software/fastrun/tests -q
 ### ファーム(mob)ビルド/書き込み
 `make build`/`make upload` は x13u へオフロード(memory `mob-remote-build`)。書き込みは
 許可済み(memory `user-permits-mob-upload`)。**paramsは上記NVS注意に従い PSET+PSAVE**。
+- ⚠️ **`make` は `cd software/mob` を伴うためシェルの cwd が移動し、以後の相対パス
+  (`software/venv` 等)が壊れる**。スクリプト/コマンドは**絶対パスで叩く**こと。
+- ⚠️ 環境を変える操作(**pip install**、依存追加等)は**勝手に実行しない**。requirements/
+  手順の提示に留めユーザーに委ねる(memory `user-prefers-env-control`)。ファーム書き込みは例外的に許可済み。
 
 ---
 
-## 5. 次にやること(優先順)
+## 5. 壁上面補正の既知の落とし穴・限界(実機で必ず当たる)
+- **★角の「∧」問題★**(liner-dev-plan で特定): **角セルでその軸の壁を向くと、隣り合う
+  2枚の壁の交わる角が視野に入り、赤帯が山形(∧)になって単一直線に乗らない**→ RANSAC
+  残差 res が清浄閾(2px)の10倍(≈21px)に跳ね上がり汚染として棄却→ ok=False/失敗。
+  実例: (3,3)角で北(Y軸)を向くと失敗、東(X軸)は東壁が平らに見えて成功。**対策**: その軸の
+  壁が**平らに見えるセル**(=角でないセル)で補正する。`neighbor_for_axis` で隣マスへ移って
+  補正(XとYは別マスで可、というユーザー方針)。または中央クロップをさらに狭める。
+- **カメラ汚染の一般則**: 清浄に測れるのは「近くで視野を埋める solid な壁」(外周壁・
+  正対して近い内壁)。短い壁の脇・隙間・奥が見える向きは遠くの別の壁の赤帯を拾い res 大。
+- **YAW_GATE_DEG=15°ゲート**: `center_axis` は |ヨー|>15° の推定を較正外/汚染として弾く。
+  これは**大ヨーの清浄フィットも弾いてしまう**既知の限界(初手の turn_to が大きく外れると
+  1回で復帰できない)。turn_to はジャイロで概ね正対させる前提。
+- **近距離限界 ~72〜75mm**: それより壁に近いと下端エッジが画像枠外へ出て検出不能
+  (row がクランプし res≈0 の縮退)。高速移動のオーバーシュートで壁へ寄りすぎたら、
+  `center_on_front_wall` の後退リカバリ(966e50f)や JOGBACK で一旦離してから測る。
+- **回復知見(odoフレームが壊れたとき)**: 俯瞰(絶対基準)でロボットの向きを見て相対
+  `JOGTURN` で北へ寄せ→搭載カメラで微調整→`SANG` で貼り直す。乱雑/近接位置では搭載
+  カメラは単一壁を安定に測れず発散するので、まず俯瞰で大まかに立て直す。
+
+### 横位置(左右)センタリングの選択肢
+`center_axis` は「面の壁へ正対→前後 JOG」で軸ごとに前後方向として中心化する(旋回発振は
+`7c87013` で ~1mm/360° まで解決済みなので、面を向いて測る方式が実用になった)。別解として
+firmware に**壁追従**(直進中に両側壁 rs−ls で横位置を自己センタリング、`path_wall_kp`、
+PSETライブ調整可、概念実証済み `dc5c39f`)がある。L2高速移動と組み合わせるときの横drift
+対策として有効。詳細は memory `fastrun-project`。
+
+## 6. 次にやること(優先順)
 1. **壁上面補正の end-to-end 実機検証**(measure_wall→center_axis の通し)。俯瞰で真値
    確認しながら1面ずつ。残差5mm以内を目標。ずれたら camera_model 較正点を再取得。
 2. `recenter_cell` の近傍マス・フォールバック経路の実装/検証(壁が片軸しか無いセル)。
 3. L2(点対点高速移動、`fastrun` の path/planner)との統合(memory `fastrun-project`)。
 
-## 6. 便利スクリプト(scratchpad、参考)
+## 7. 便利スクリプト(scratchpad、参考)
 セッションのscratchpadに JOG検証スクリプトあり(jog_speed_test.py / jog_profile.py /
 jog_sweep.py / hold_turn_check.py)。掃引はPSETでライブ、リフラッシュ不要。手法は
 本ドキュメント3章の通り。
