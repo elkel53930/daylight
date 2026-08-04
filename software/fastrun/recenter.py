@@ -40,6 +40,11 @@ from vision_wall import detect_red_band_top_edge
 # 搭載カメラの距離較正(2026-08-03、俯瞰を真値にオドメトリ後退で取得):
 # 赤帯の row_at_center は壁に1mm近づくごと約5.38px 増加(crop0.3、1px≈0.19mm)。
 # 壁上面位置補正の位置成分(row差→mm)に使う。
+# ⚠️ この線形較正は90mm付近でしか有効でない(2026-08-04実走で判明)。row→距離は
+# 遠近法で非線形: 遠距離ほどrowが距離に鈍感(実測 遠距離≈0.97px/mm→近距離≈7.8px/mm、
+# 約8倍差)。遠い壁(row小)に線形外挿すると距離を大幅に過小評価する(実288mmを183mmと
+# 誤認した)。→ 遠距離からの接近は row 自体(距離に単調)を信号にし、近距離域(row≈690)
+# でだけこのmm較正を使う(center_on_front_wall がそれを行う)。
 CAMERA_ROW_PX_PER_MM = 5.38
 # 壁が90mm(マス中心)のときの row_at_center(crop0.3)。専用治具で(1,1)中心・西向きに
 # 正確固定して取得(2026-08-03、res<=0.38, n=10の精密値)。壁上面位置補正の位置成分の
@@ -99,6 +104,102 @@ def forward_offset_from_image(img: np.ndarray, *, crop_frac: float = 0.3) -> Opt
                  and abs(offset) <= FORWARD_OFFSET_MAX_MM)
     return ForwardOffset(offset_mm=offset, row_at_center=row_c,
                          residual_px=e.residual_std, confident=confident)
+
+
+# --- 前壁への接近+中心化(壁上面位置補正の位置成分、2026-08-04実走検証) ---
+# row_at_center→距離[mm]の線形較正(CAMERA_ROW_PX_PER_MM)は90mm付近でしか
+# 有効でない(遠近法で遠距離ほどrowが距離に鈍感、実測 遠0.97px/mm→近7.8px/mm)。
+# よって接近は「row(距離に単調)」を信号に近距離域(row≈690=90mm)へ寄せ、近距離
+# だけmm較正で微調整する。衝突ガードもrow(信頼できる)で行う。
+ROW_NEAR_STOP = 650.0    # rowがこれ以上で近距離域(≈95mm)に到達→接近停止
+ROW_TOO_CLOSE = 720.0    # rowがこれ超で近すぎ(≈<85mm)→後退で戻す
+APPROACH_TOTAL_CAP_MM = 240.0  # 接近の総前進上限(暴走バックストップ)
+CENTER_TOL_MM = 4.0      # |offset|がこれ以下で中心とみなす
+
+
+def approach_step_mm(row: float) -> float:
+    """rowに応じた接近ステップ[mm](純関数)。遠い(row小)ほど大きく、近い
+    (row大=急変域)ほど小さく刻んで、近距離での行き過ぎを防ぐ。"""
+    if row < 350.0:
+        return 30.0
+    if row < 500.0:
+        return 18.0
+    if row < 600.0:
+        return 10.0
+    return 6.0
+
+
+def measure_front_row(cam: OnboardCamera, *, crop_frac: float = 0.3,
+                      n: int = 5) -> tuple[Optional[float], Optional[float]]:
+    """前壁赤帯の row_at_center と残差の中央値(検出フレームのみ)。撮影のみ。"""
+    rows: list[float] = []
+    ress: list[float] = []
+    for _ in range(n):
+        est = forward_offset_from_image(cam.capture(), crop_frac=crop_frac)
+        if est is not None:
+            rows.append(est.row_at_center)
+            ress.append(est.residual_px)
+        time.sleep(0.04)
+    if not rows:
+        return None, None
+    return float(np.median(rows)), float(np.median(ress))
+
+
+def _jog(link, cmd: str, *, timeout_s: float = 9.0) -> bool:
+    """JOG系コマンドを送り DONE を待つ(JOGだけは到達でDONEを返す)。"""
+    link.send(cmd)
+    return link.wait_for("DONE", timeout_s=timeout_s) is not None
+
+
+def center_on_front_wall(link, cam: OnboardCamera, *,
+                         res_max: float = FORWARD_OFFSET_MAX_RES,
+                         crop_frac: float = 0.3) -> Optional[ForwardOffset]:
+    """前壁に対しマス中心(壁90mm)へ寄せる(壁上面位置補正の位置成分)。
+
+    2段階: (1)row駆動の接近でrowをROW_NEAR_STOP(≈95mm)まで前進、(2)近距離域で
+    mm較正を使い JOGFWD/JOGBACK で offset→0 に微調整。前壁が近距離域より遠くても
+    近距離まで安全に寄せられる。汚染(res>res_max)・検出不能・総前進上限で安全中断。
+    ⚠️ 呼ぶ前に前壁へ概ね正対していること(必要なら reanchor_heading/relock で先に
+    正対)。低速JOGはヨーを保持するので接近中に横へ逸れにくいが、初期のヨーずれは
+    そのまま横位置ずれになる。戻り値は最終の前後オフセット推定(Noneは失敗)。
+    """
+    # (1) row駆動の接近
+    total_fwd = 0.0
+    for _ in range(40):
+        row, res = measure_front_row(cam, crop_frac=crop_frac, n=5)
+        if row is None or res is None or res > res_max:
+            return None  # 検出不能/汚染は安全側で中断
+        if row > ROW_TOO_CLOSE:
+            back = (row - CAMERA_ROW_AT_90MM) / CAMERA_ROW_PX_PER_MM
+            _jog(link, f"JOGBACK,{max(2.0, back):.1f}")
+            continue
+        if row >= ROW_NEAR_STOP:
+            break  # 近距離域に到達
+        step = approach_step_mm(row)
+        if total_fwd + step > APPROACH_TOTAL_CAP_MM:
+            break  # 総前進上限(バックストップ)
+        total_fwd += step
+        _jog(link, f"JOGFWD,{step:.1f}")
+        time.sleep(0.2)
+
+    # (2) 近距離域での mm 微調整
+    last: Optional[ForwardOffset] = None
+    for _ in range(6):
+        row, res = measure_front_row(cam, crop_frac=crop_frac, n=6)
+        if row is None or res is None or res > res_max:
+            return last
+        off = forward_offset_from_row(row)
+        last = ForwardOffset(offset_mm=off, row_at_center=row,
+                             residual_px=res, confident=abs(off) <= FORWARD_OFFSET_MAX_MM)
+        if abs(off) <= CENTER_TOL_MM:
+            return last
+        move = max(-15.0, min(15.0, -off))  # +前進/-後退、1回15mm上限
+        if move > 0:
+            _jog(link, f"JOGFWD,{move:.1f}")
+        else:
+            _jog(link, f"JOGBACK,{-move:.1f}")
+        time.sleep(0.2)
+    return last
 
 
 def estimate_forward_offset(cam: OnboardCamera, *, crop_frac: float = 0.3,

@@ -13,7 +13,9 @@ from recenter import (
     CAMERA_ROW_PX_PER_MM,
     FORWARD_OFFSET_MAX_MM,
     FORWARD_OFFSET_MAX_RES,
+    ROW_NEAR_STOP,
     ForwardOffset,
+    approach_step_mm,
     forward_offset_from_image,
     forward_offset_from_row,
 )
@@ -86,6 +88,26 @@ class TestForwardOffsetFromImage(unittest.TestCase):
         self.assertIsNotNone(e30)
         self.assertIsNotNone(e50)
         self.assertAlmostEqual(e30.offset_mm, e50.offset_mm, delta=1.0)
+
+
+class TestApproachStep(unittest.TestCase):
+    def test_far_uses_large_step(self):
+        # 遠い(row小)ほど大きく刻む。
+        self.assertEqual(approach_step_mm(200.0), 30.0)
+
+    def test_near_uses_small_step(self):
+        # 近い(row大=急変域)ほど小さく刻み、行き過ぎを防ぐ。
+        self.assertEqual(approach_step_mm(630.0), 6.0)
+
+    def test_step_monotonic_nonincreasing_with_row(self):
+        rows = [100, 340, 360, 480, 520, 590, 610, 700]
+        steps = [approach_step_mm(r) for r in rows]
+        for a, b in zip(steps, steps[1:]):
+            self.assertGreaterEqual(a, b)
+
+    def test_near_stop_row_maps_below_90mm_distance(self):
+        # ROW_NEAR_STOP(接近停止)は90mm手前(row<row@90mm)で止まる=近づきすぎない。
+        self.assertLess(ROW_NEAR_STOP, CAMERA_ROW_AT_90MM)
 
 
 if __name__ == "__main__":
