@@ -115,6 +115,10 @@ ROW_NEAR_STOP = 650.0    # rowがこれ以上で近距離域(≈95mm)に到達�
 ROW_TOO_CLOSE = 720.0    # rowがこれ超で近すぎ(≈<85mm)→後退で戻す
 APPROACH_TOTAL_CAP_MM = 240.0  # 接近の総前進上限(暴走バックストップ)
 CENTER_TOL_MM = 4.0      # |offset|がこれ以下で中心とみなす
+# 到達時に壁へ寄りすぎ(高速移動のオーバーシュート等)て赤エッジが枠外/未検出の
+# とき、既知の壁がある前提なら少し後退して視野に入れてから中心化する。
+BACKOFF_STEP_MM = 25.0
+BACKOFF_CAP_MM = 90.0
 
 
 def approach_step_mm(row: float) -> float:
@@ -153,7 +157,8 @@ def _jog(link, cmd: str, *, timeout_s: float = 9.0) -> bool:
 
 def center_on_front_wall(link, cam: OnboardCamera, *,
                          res_max: float = FORWARD_OFFSET_MAX_RES,
-                         crop_frac: float = 0.3) -> Optional[ForwardOffset]:
+                         crop_frac: float = 0.3,
+                         expect_wall: bool = True) -> Optional[ForwardOffset]:
     """前壁に対しマス中心(壁90mm)へ寄せる(壁上面位置補正の位置成分)。
 
     2段階: (1)row駆動の接近でrowをROW_NEAR_STOP(≈95mm)まで前進、(2)近距離域で
@@ -165,10 +170,19 @@ def center_on_front_wall(link, cam: OnboardCamera, *,
     """
     # (1) row駆動の接近
     total_fwd = 0.0
+    back_off_total = 0.0
     for _ in range(40):
         row, res = measure_front_row(cam, crop_frac=crop_frac, n=5)
         if row is None or res is None or res > res_max:
-            return None  # 検出不能/汚染は安全側で中断
+            # 未検出/汚染。既知の壁がある前提(expect_wall)なら、壁へ寄りすぎて枠外に
+            # なっている可能性があるので少し後退して視野に入れてから再測定する。
+            # 上限まで後退しても駄目なら本当に壁が無い/掴めないとして中断。
+            if expect_wall and back_off_total < BACKOFF_CAP_MM:
+                _jog(link, f"JOGBACK,{BACKOFF_STEP_MM:.1f}")
+                back_off_total += BACKOFF_STEP_MM
+                time.sleep(0.15)
+                continue
+            return None
         if row > ROW_TOO_CLOSE:
             back = (row - CAMERA_ROW_AT_90MM) / CAMERA_ROW_PX_PER_MM
             _jog(link, f"JOGBACK,{max(2.0, back):.1f}")
