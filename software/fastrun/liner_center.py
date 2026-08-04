@@ -71,24 +71,53 @@ class AxisResult:
     ok: bool
 
 
-def center_axis(link, cam, face: Direction, *,
-                center_tol_mm: float = 4.0) -> Optional[AxisResult]:
-    """face 方向の壁に対して1軸を補正する(位置90mm + ヨー絶対化)。
+YAW_GATE_DEG = 15.0  # これ超のヨー推定は較正外/汚染として動かさない
 
-    手順: (1)turn_to で face をおおまかに向く、(2)center_on_front_wall で前壁90mmへ
-    (row駆動で遠くても安全に寄る)、(3)reanchor_heading で90mmの壁にヨー正対させ
-    odo_ang を face の絶対方位へSANG。撮影は静止時、旋回はhold/左右バランス。
-    戻り値: AxisResult(face, 到達offset, ok)。壁を掴めない等で失敗なら ok=False。
+
+def center_axis(link, cam, face: Direction, *,
+                center_tol_mm: float = 4.0,
+                yaw_deadband_deg: float = 0.8) -> Optional[AxisResult]:
+    """face 方向の壁に対して1軸を補正する(オープンループ、2026-08-04ユーザー指示)。
+
+    フィードバック反復をやめ、2測定・2一発補正にする(高速化):
+      (1) turn_to で face をおおまかに向く(ジャイロ)
+      (2) 【測定1】下端エッジで角度(ヨー)を測り、-yaw だけ JOGTURN で一発旋回。
+          停止して SANG で face の絶対方位を確定(絶対基準の貼り直し)。
+      (3) 【測定2】下端エッジで前後距離オフセットを測り、その分を JOGFWD/JOGBACK で
+          一発移動して 90mm(マス中心)へ。
+    各測定はフレーム数を減らさず(信頼性維持)中央値で頑健化する。撮影は静止時。
+    戻り値: AxisResult(face, 測定した距離offset[mm], ok)。offset は補正した検出値
+    (オープンループなので補正後の残差は測らない)。汚染/範囲外で ok=False。
     """
+    import math
     target_deg = direction_to_gyro_deg(face)
-    recenter.turn_to(link, target_deg)
+    recenter.turn_to(link, target_deg)          # ジャイロで概ね壁へ向く
     time.sleep(0.2)
-    off = recenter.center_on_front_wall(link, cam)
-    if off is None or abs(off.offset_mm) > center_tol_mm or off.residual_px > recenter.FORWARD_OFFSET_MAX_RES:
-        return AxisResult(face=face, offset_mm=(off.offset_mm if off else float("nan")), ok=False)
-    # 90mm に居るのでHALFCELL較正が有効。ヨーを絶対方位へ貼り直す。
-    yaw_ok = recenter.reanchor_heading(link, cam, target_deg)
-    return AxisResult(face=face, offset_mm=off.offset_mm, ok=yaw_ok)
+
+    # --- 測定1: 距離認識モデルで (距離,ヨー) → ヨーを一発旋回 → SANG で絶対方位確定 ---
+    m1 = recenter.measure_wall(cam)
+    if m1 is None or not m1.ok or abs(m1.yaw_deg) > YAW_GATE_DEG:
+        return AxisResult(face=face, offset_mm=float("nan"), ok=False)
+    if abs(m1.yaw_deg) > yaw_deadband_deg:
+        recenter._jog(link, f"JOGTURN,{math.radians(-m1.yaw_deg):.5f}", timeout_s=6.0)
+    link.stop()
+    time.sleep(0.15)
+    link.send(f"SANG,{math.radians(target_deg):.5f}")
+    link.wait_for("DONE", timeout_s=1.0)
+    time.sleep(0.1)
+
+    # --- 測定2: 正対後に距離を測り一発移動(正対後なので row-yaw結合がなく距離が正確) ---
+    m2 = recenter.measure_wall(cam)
+    if m2 is None or not m2.ok:
+        return AxisResult(face=face,
+                          offset_mm=(m2.offset_mm if m2 else float("nan")), ok=False)
+    if abs(m2.offset_mm) > center_tol_mm:
+        # offset>0 = 中心より前(壁に近い)→ JOGBACK で後退。offset<0 → JOGFWD。
+        if m2.offset_mm > 0:
+            recenter._jog(link, f"JOGBACK,{m2.offset_mm:.1f}")
+        else:
+            recenter._jog(link, f"JOGFWD,{-m2.offset_mm:.1f}")
+    return AxisResult(face=face, offset_mm=m2.offset_mm, ok=True)
 
 
 def recenter_cell(link, cam, maze: WallMap, pose: LinerPose) -> dict:

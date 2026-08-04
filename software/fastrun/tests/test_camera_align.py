@@ -59,7 +59,8 @@ class TestVisionWall(unittest.TestCase):
 class TestEstimatePose(unittest.TestCase):
     def test_horizontal_edge_yaw_matches_formula(self):
         # 水平エッジ(slope=0)。クロップは水平方向のみなので slope 不変。
-        img = make_band_image(800, 1000, slope=0.0, intercept=691.55)
+        # 距離を検証するので画像高さは較正基準(CALIB_HEIGHT)にして row スケール=1 にする
+        img = make_band_image(800, 1296, slope=0.0, intercept=691.55)
         est = estimate_pose(img)
         self.assertIsNotNone(est)
         # yaw_deg = (slope_deg - STRAIGHT_SLOPE_DEG) / SLOPE_DEG_PER_YAW_DEG、slope_deg≈0
@@ -70,7 +71,7 @@ class TestEstimatePose(unittest.TestCase):
 
     def test_dist_offset_sign(self):
         # 赤帯が下側(row大)に写る = より手前(=基準より前進側にいる) → dist>0
-        img_near = make_band_image(800, 1000, slope=0.0, intercept=750.0)
+        img_near = make_band_image(800, 1296, slope=0.0, intercept=750.0)
         est = estimate_pose(img_near)
         self.assertIsNotNone(est)
         self.assertGreater(est.dist_offset_mm, 0.0)

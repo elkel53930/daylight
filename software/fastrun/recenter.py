@@ -23,15 +23,18 @@ from __future__ import annotations
 import math
 import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import NamedTuple, Optional
 
 import numpy as np
 
+import camera_model
 from camera_align import (
     OnboardCamera,
     PoseEstimate,
     align_to_wall,
+    estimate_pose,
     is_confident,
+    CALIB_HEIGHT,
     SLOPE_DEG_PER_YAW_DEG_HALFCELL_BOTTOM,
     STRAIGHT_SLOPE_DEG_HALFCELL_BOTTOM,
 )
@@ -74,10 +77,10 @@ class ForwardOffset:
 def forward_offset_from_row(row_at_center: float) -> float:
     """赤帯 row_at_center[px] から前後オフセット[mm]を返す(治具検証済み定数)。
 
-    row は画面下ほど大=壁が近い。90mm(マス中心)基準の row=CAMERA_ROW_AT_90MM から
-    1mm近づくごと CAMERA_ROW_PX_PER_MM 増える。正=中心より前(壁に近い)。純関数。
+    row は画面下ほど大=壁が近い。90mm(マス中心)からの前後ずれ[mm]を返す(正=中心より
+    前=壁に近い)。距離認識モデル(camera_model、治具較正の非線形)を使う。純関数。
     """
-    return (row_at_center - CAMERA_ROW_AT_90MM) / CAMERA_ROW_PX_PER_MM
+    return camera_model.forward_offset_mm(row_at_center)
 
 
 def forward_offset_from_image(img: np.ndarray, *, crop_frac: float = 0.3) -> Optional[ForwardOffset]:
@@ -97,10 +100,12 @@ def forward_offset_from_image(img: np.ndarray, *, crop_frac: float = 0.3) -> Opt
     if e is None:
         return None
     cw = crop.shape[1]
-    row_c = e.slope * (cw / 2) + e.intercept
+    # row を較正基準(CALIB_HEIGHT)換算へスケール(撮影が小さくても較正定数そのまま)。
+    row_c = (e.slope * (cw / 2) + e.intercept) * (CALIB_HEIGHT / h)
     offset = forward_offset_from_row(row_c)
+    # 較正範囲(75〜115mm)外はクランプされるので、生rowで範囲判定する。
     confident = (e.residual_std < FORWARD_OFFSET_MAX_RES
-                 and abs(offset) <= FORWARD_OFFSET_MAX_MM)
+                 and camera_model.is_row_in_range(row_c))
     return ForwardOffset(offset_mm=offset, row_at_center=row_c,
                          residual_px=e.residual_std, confident=confident)
 
@@ -154,6 +159,63 @@ def _jog(link, cmd: str, *, timeout_s: float = 9.0) -> bool:
     """JOG系コマンドを送り DONE を待つ(JOGだけは到達でDONEを返す)。"""
     link.send(cmd)
     return link.wait_for("DONE", timeout_s=timeout_s) is not None
+
+
+class WallMeasure(NamedTuple):
+    dist_mm: float       # 壁までの距離[mm](距離認識モデル)
+    yaw_deg: float       # 相対ヨー[deg](正=機体が左/CCW)
+    offset_mm: float     # マス中心(90mm)からの前後ずれ(正=中心より前=壁に近い)
+    res_px: float        # 下端エッジフィット残差の中央値
+    n_clean: int         # 清浄フレーム数
+    ok: bool             # 較正範囲内かつ清浄(移動に使ってよいか)
+
+
+def measure_wall(cam: OnboardCamera, *, crop_frac: float = 0.3, n: int = 6,
+                 res_max: float = FORWARD_OFFSET_MAX_RES) -> Optional[WallMeasure]:
+    """下端エッジを撮り、距離認識モデルで (距離, ヨー) を同時に求める(撮影のみ)。
+
+    1枚の検出から row と slope を得て camera_model.estimate へ渡す。距離依存の
+    gain/straight を使うので 90mm 以外でも正確。res<res_max の清浄フレームだけを
+    n枚から中央値化(信頼性のためフレーム数は減らさない)。検出不能なら None。
+    ok は「清浄 かつ 較正範囲(75〜115mm)内」= 一発補正に使ってよいか。
+    """
+    dists: list[float] = []
+    yaws: list[float] = []
+    ress: list[float] = []
+    rows: list[float] = []
+    for _ in range(n):
+        img = cam.capture()
+        h, w, _ = img.shape
+        half = max(0.05, min(0.5, crop_frac / 2.0))
+        lo = int(round(w * (0.5 - half))); hi = int(round(w * (0.5 + half)))
+        crop = np.ascontiguousarray(img[:, lo:hi, :])
+        e = detect_red_band_bottom_edge(crop)
+        if e is not None and e.residual_std < res_max:
+            cw = crop.shape[1]
+            row_calib = (e.slope * (cw / 2) + e.intercept) * (CALIB_HEIGHT / h)
+            slope_deg = math.degrees(math.atan(e.slope))
+            d, y = camera_model.estimate(row_calib, slope_deg)
+            dists.append(d); yaws.append(y); ress.append(e.residual_std)
+            rows.append(row_calib)
+        time.sleep(0.04)
+    if not dists:
+        return None
+    dist = float(np.median(dists)); yaw = float(np.median(yaws))
+    res = float(np.median(ress)); row_med = float(np.median(rows))
+    # 較正範囲外(近すぎ/遠すぎ)はクランプ後距離では検出できないので生rowで判定。
+    ok = camera_model.is_row_in_range(row_med) and len(dists) >= (n + 1) // 2
+    return WallMeasure(dist_mm=dist, yaw_deg=yaw,
+                       offset_mm=camera_model.CELL_CENTER_MM - dist,
+                       res_px=res, n_clean=len(dists), ok=ok)
+
+
+def measure_wall_yaw(cam: OnboardCamera, *, crop_frac: float = 0.3,
+                     n: int = 6) -> tuple[Optional[float], Optional[float]]:
+    """後方互換: 距離認識モデルで求めた (ヨー[deg], 残差) を返す。"""
+    m = measure_wall(cam, crop_frac=crop_frac, n=n)
+    if m is None:
+        return None, None
+    return m.yaw_deg, m.res_px
 
 
 def center_on_front_wall(link, cam: OnboardCamera, *,

@@ -80,9 +80,17 @@ CAMERA_CORRECTION_MAX_RESIDUAL_PX = 2.0
 CAMERA_CORRECTION_MAX_YAW_DEG = 15.0
 CAMERA_CORRECTION_MAX_DIST_MM = 40.0
 
-# 較正時の撮影解像度(この解像度でないと画素単位の較正式が合わない)
+# 較正時の基準解像度。row系の較正定数(row@90mm・px/mm 等)は「高さ CALIB_HEIGHT
+# 換算の row」で表す。実際の撮影がこれより小さくても、検出側で
+# row_at_center を CALIB_HEIGHT へスケールして使うので較正はそのまま有効
+# (slope=傾きは解像度不変なのでヨー較正はスケール不要)。
 CALIB_WIDTH = 2304
 CALIB_HEIGHT = 1296
+
+# 実際の撮影解像度(2026-08-04、高速化: 高解像度キャプチャ取得が遅いのを軽減)。
+# CALIB の正確に 1/3(16:9維持=歪みなし)。row は検出側で CALIB_HEIGHT へ戻す。
+DETECT_WIDTH = 768
+DETECT_HEIGHT = 432
 
 
 @dataclass(frozen=True)
@@ -129,7 +137,10 @@ def estimate_pose(
     yaw_deg = (slope_deg - straight_slope) / slope_gain
 
     cropped_width = cropped.shape[1]
-    row_at_center = edge.slope * (cropped_width / 2) + edge.intercept
+    # row は較正基準(CALIB_HEIGHT)換算にスケール。撮影が小さくても較正定数を
+    # そのまま使える(slope=傾きは不変なのでヨーはスケール不要)。
+    row_scale = CALIB_HEIGHT / h
+    row_at_center = (edge.slope * (cropped_width / 2) + edge.intercept) * row_scale
     dist_offset_mm = (
         row_at_center - CAMERA_DIST_INTERCEPT_PX
     ) / CAMERA_DIST_GAIN_PX_PER_MM
@@ -165,7 +176,7 @@ class OnboardCamera:
     サーボは論理角0度(前方固定)にしてカメラの向きを走行時と揃える。
     """
 
-    def __init__(self, width: int = CALIB_WIDTH, height: int = CALIB_HEIGHT,
+    def __init__(self, width: int = DETECT_WIDTH, height: int = DETECT_HEIGHT,
                  move_servo: bool = True):
         import sys
         from pathlib import Path
@@ -177,14 +188,23 @@ class OnboardCamera:
 
             self._servo = FutabaServo()
             self._servo.set_torque(True)
+            # 再現性向上のワンクッション: 一度20度へ動かしてから0度へ戻す
+            # (ユーザー指摘のFutabaサーボのクセ。0度未満にはしない)。
+            self._servo.set_angle(20.0, move_time_ms=400)
+            time.sleep(0.5)
             self._servo.set_angle(0.0, move_time_ms=500)
             time.sleep(0.8)
 
         from picamera2 import Picamera2
 
         self._cam = Picamera2()
+        # raw センサーモードを較正時(CALIB)に固定し、main だけ縮小して ISP で
+        # ダウンスケールする。こうしないと小さい main サイズで別のセンサーモード
+        # (FOVが違う=クロップ)が選ばれ、row の単純スケールが合わなくなる
+        # (2026-08-04、768x432で実測 row が1.36倍ずれたため修正)。
         cfg = self._cam.create_still_configuration(
-            main={"size": (width, height), "format": "RGB888"}
+            main={"size": (width, height), "format": "RGB888"},
+            raw={"size": (CALIB_WIDTH, CALIB_HEIGHT)},
         )
         self._cam.configure(cfg)
         self._cam.start()
