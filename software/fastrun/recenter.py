@@ -36,21 +36,20 @@ from camera_align import (
     STRAIGHT_SLOPE_DEG_HALFCELL,
 )
 from vision_wall import detect_red_band_top_edge
+from wall_bottom import detect_red_band_bottom_edge
 
-# 搭載カメラの距離較正(2026-08-03、俯瞰を真値にオドメトリ後退で取得):
-# 赤帯の row_at_center は壁に1mm近づくごと約5.38px 増加(crop0.3、1px≈0.19mm)。
-# 壁上面位置補正の位置成分(row差→mm)に使う。
-# ⚠️ この線形較正は90mm付近でしか有効でない(2026-08-04実走で判明)。row→距離は
-# 遠近法で非線形: 遠距離ほどrowが距離に鈍感(実測 遠距離≈0.97px/mm→近距離≈7.8px/mm、
-# 約8倍差)。遠い壁(row小)に線形外挿すると距離を大幅に過小評価する(実288mmを183mmと
-# 誤認した)。→ 遠距離からの接近は row 自体(距離に単調)を信号にし、近距離域(row≈690)
-# でだけこのmm較正を使う(center_on_front_wall がそれを行う)。
-CAMERA_ROW_PX_PER_MM = 5.38
-# 壁が90mm(マス中心)のときの row_at_center(crop0.3)。専用治具で(1,1)中心・西向きに
-# 正確固定して取得(2026-08-03、res<=0.38, n=10の精密値)。壁上面位置補正の位置成分の
-# 絶対基準: 現在のrowとの差 (row-CAMERA_ROW_AT_90MM)/CAMERA_ROW_PX_PER_MM [mm] で
-# 壁までの距離のマス中心(90mm)からのずれが出る。
-CAMERA_ROW_AT_90MM = 689.9
+# 搭載カメラの距離較正。位置成分は「赤壁の下端エッジ」を使う(2026-08-04、ユーザー方針)。
+# 上端エッジは迷路外の背景色に汚染されうるが、下端(赤上面と白壁面=迷路内側の境界)は
+# 背景に強い。下端の row_at_center は壁に1mm近づくごと約7.647px 増加(crop0.3)。
+# (1,3)平らな北壁で、上端(較正済)を真距離の基準に5点掃引して取得(res<0.8、全点清浄)。
+# ⚠️ この線形較正は90mm付近でのみ有効(遠近法で遠距離ほどrowが鈍感)。遠距離からの
+# 接近は row 自体(距離に単調)を信号にし、近距離域(row≈ROW_NEAR_STOP)でだけこのmm較正を
+# 使う(center_on_front_wall がそれを行う)。上端の旧値は 5.38 / 689.9(参考)。
+CAMERA_ROW_PX_PER_MM = 7.647
+# 壁が90mm(マス中心)のときの下端エッジ row_at_center(crop0.3)。(1,3)平らな北壁で
+# 上端(較正済)を真距離基準に取得(2026-08-04)。位置成分の絶対基準: 現在のrowとの差
+# (row-CAMERA_ROW_AT_90MM)/CAMERA_ROW_PX_PER_MM [mm] で90mmからのずれが出る。
+CAMERA_ROW_AT_90MM = 841.5
 
 # 位置成分(壁上面位置補正)の信頼度ゲート。
 FORWARD_OFFSET_MAX_RES = 2.0   # 赤帯フィット残差[px]の上限(角度成分と同じ清浄判定)
@@ -94,7 +93,7 @@ def forward_offset_from_image(img: np.ndarray, *, crop_frac: float = 0.3) -> Opt
     lo = int(round(w * (0.5 - half)))
     hi = int(round(w * (0.5 + half)))
     crop = np.ascontiguousarray(img[:, lo:hi, :])
-    e = detect_red_band_top_edge(crop)
+    e = detect_red_band_bottom_edge(crop)  # 位置成分は下端エッジ(背景汚染に強い)
     if e is None:
         return None
     cw = crop.shape[1]
@@ -111,8 +110,9 @@ def forward_offset_from_image(img: np.ndarray, *, crop_frac: float = 0.3) -> Opt
 # 有効でない(遠近法で遠距離ほどrowが距離に鈍感、実測 遠0.97px/mm→近7.8px/mm)。
 # よって接近は「row(距離に単調)」を信号に近距離域(row≈690=90mm)へ寄せ、近距離
 # だけmm較正で微調整する。衝突ガードもrow(信頼できる)で行う。
-ROW_NEAR_STOP = 650.0    # rowがこれ以上で近距離域(≈95mm)に到達→接近停止
-ROW_TOO_CLOSE = 720.0    # rowがこれ超で近すぎ(≈<85mm)→後退で戻す
+# 下端エッジ較正(row@90mm=841.5, 7.647px/mm)での距離しきい値。
+ROW_NEAR_STOP = 800.0    # rowがこれ以上で近距離域(≈95mm)に到達→接近停止
+ROW_TOO_CLOSE = 880.0    # rowがこれ超で近すぎ(≈<85mm)→後退で戻す
 APPROACH_TOTAL_CAP_MM = 240.0  # 接近の総前進上限(暴走バックストップ)
 CENTER_TOL_MM = 4.0      # |offset|がこれ以下で中心とみなす
 # 到達時に壁へ寄りすぎ(高速移動のオーバーシュート等)て赤エッジが枠外/未検出の
@@ -123,12 +123,13 @@ BACKOFF_CAP_MM = 90.0
 
 def approach_step_mm(row: float) -> float:
     """rowに応じた接近ステップ[mm](純関数)。遠い(row小)ほど大きく、近い
-    (row大=急変域)ほど小さく刻んで、近距離での行き過ぎを防ぐ。"""
-    if row < 350.0:
+    (row大=急変域)ほど小さく刻んで、近距離での行き過ぎを防ぐ。しきい値は下端
+    エッジ較正(row@90mm=841.5, 7.647px/mm)基準: row360≈153mm/575≈125mm/710≈107mm。"""
+    if row < 360.0:
         return 30.0
-    if row < 500.0:
+    if row < 575.0:
         return 18.0
-    if row < 600.0:
+    if row < 710.0:
         return 10.0
     return 6.0
 

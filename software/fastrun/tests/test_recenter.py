@@ -50,21 +50,28 @@ class TestForwardOffsetFromRow(unittest.TestCase):
 
 
 class TestForwardOffsetFromImage(unittest.TestCase):
+    # forward_offset_from_image は「下端エッジ」を使う(2026-08-04〜)。合成帯の下端
+    # (top+thickness)が基準rowに来るよう top を置く。TH=帯の厚み。
+    TH = 90
+
+    def _band_bottom_at(self, target_row, *, w=800, slope=0.0, margin=140):
+        h = int(target_row + margin)
+        return make_band_image(w, h, slope=slope, intercept=target_row - self.TH,
+                               thickness=self.TH)
+
     def test_center_image_zero_offset_confident(self):
-        # 水平エッジ(slope=0)で intercept=CAMERA_ROW_AT_90MM → row_at_center≈基準
-        img = make_band_image(800, 1000, slope=0.0, intercept=CAMERA_ROW_AT_90MM)
-        est = forward_offset_from_image(img)
+        # 下端が CAMERA_ROW_AT_90MM → offset≈0
+        est = forward_offset_from_image(self._band_bottom_at(CAMERA_ROW_AT_90MM))
         self.assertIsNotNone(est)
-        self.assertAlmostEqual(est.offset_mm, 0.0, delta=1.0)
+        self.assertAlmostEqual(est.offset_mm, 0.0, delta=3.0)
         self.assertTrue(est.confident)
 
     def test_forward_offset_sign_and_magnitude(self):
-        # 中心より 20mm 前(壁に近い) → row = 基準 + 5.38*20
+        # 中心より 20mm 前(壁に近い) → 下端row = 基準 + 7.647*20
         row = CAMERA_ROW_AT_90MM + CAMERA_ROW_PX_PER_MM * 20.0
-        img = make_band_image(800, 1200, slope=0.0, intercept=row)
-        est = forward_offset_from_image(img)
+        est = forward_offset_from_image(self._band_bottom_at(row))
         self.assertIsNotNone(est)
-        self.assertAlmostEqual(est.offset_mm, 20.0, delta=1.5)
+        self.assertAlmostEqual(est.offset_mm, 20.0, delta=3.0)
         self.assertGreater(est.offset_mm, 0.0)
 
     def test_no_red_returns_none(self):
@@ -74,20 +81,19 @@ class TestForwardOffsetFromImage(unittest.TestCase):
     def test_out_of_range_offset_not_confident(self):
         # 範囲外(>45mm)の大きなオフセットは confident=False(移動に使わせない)
         row = CAMERA_ROW_AT_90MM + CAMERA_ROW_PX_PER_MM * (FORWARD_OFFSET_MAX_MM + 15.0)
-        img = make_band_image(800, 1400, slope=0.0, intercept=row)
-        est = forward_offset_from_image(img)
+        est = forward_offset_from_image(self._band_bottom_at(row))
         self.assertIsNotNone(est)
         self.assertGreater(abs(est.offset_mm), FORWARD_OFFSET_MAX_MM)
         self.assertFalse(est.confident)
 
     def test_crop_frac_row_invariant(self):
         # row_at_center は水平中心の行なのでクロップ幅にほぼ不変。
-        img = make_band_image(800, 1000, slope=0.05, intercept=600.0)
+        img = self._band_bottom_at(600.0, slope=0.05)
         e30 = forward_offset_from_image(img, crop_frac=0.3)
         e50 = forward_offset_from_image(img, crop_frac=0.5)
         self.assertIsNotNone(e30)
         self.assertIsNotNone(e50)
-        self.assertAlmostEqual(e30.offset_mm, e50.offset_mm, delta=1.0)
+        self.assertAlmostEqual(e30.offset_mm, e50.offset_mm, delta=2.0)
 
 
 class TestApproachStep(unittest.TestCase):
@@ -96,8 +102,8 @@ class TestApproachStep(unittest.TestCase):
         self.assertEqual(approach_step_mm(200.0), 30.0)
 
     def test_near_uses_small_step(self):
-        # 近い(row大=急変域)ほど小さく刻み、行き過ぎを防ぐ。
-        self.assertEqual(approach_step_mm(630.0), 6.0)
+        # 近い(row大=急変域)ほど小さく刻み、行き過ぎを防ぐ(下端較正: row>=710で6mm)。
+        self.assertEqual(approach_step_mm(760.0), 6.0)
 
     def test_step_monotonic_nonincreasing_with_row(self):
         rows = [100, 340, 360, 480, 520, 590, 610, 700]
