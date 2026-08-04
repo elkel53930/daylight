@@ -52,6 +52,14 @@ STRAIGHT_SLOPE_DEG = 0.203      # 正対(yaw=0)時の赤帯slope[deg]
 SLOPE_DEG_PER_YAW_DEG_HALFCELL = 0.840
 STRAIGHT_SLOPE_DEG_HALFCELL = 0.973
 
+# --- ヨー角較正(半セル、下端エッジ、2026-08-04) ---
+# 位置成分に続きヨー成分も下端エッジ(wall_bottom)へ切替(背景・照明汚染に強い。
+# 実測: 暗い赤み照明で上端res157失敗・下端res1.3清浄)。(1,3)平らな北壁で、前回
+# 正対時のSANG,0がジャイロ凍結で保持された状態を正対基準に、ジャイロ角±6°を掃引して
+# 下端slope_deg=gain*yaw+straight を最小二乗(7/7清浄、fit RMS=0.126°)。
+SLOPE_DEG_PER_YAW_DEG_HALFCELL_BOTTOM = 0.6871
+STRAIGHT_SLOPE_DEG_HALFCELL_BOTTOM = 0.8870
+
 # --- 距離較正(⚠️stale・位置補正には使わないこと) ---
 # 旧micromouse定数のまま。dist_offset_mm は「基準距離からの前進オフセット」で、
 # ヨー角較正と同様この機体・距離では未検証。当面は計測・ログのみに使い、
@@ -91,6 +99,7 @@ def estimate_pose(
     slope_gain: float = SLOPE_DEG_PER_YAW_DEG,
     straight_slope: float = STRAIGHT_SLOPE_DEG,
     crop_frac: float = 0.5,
+    detector=detect_red_band_top_edge,
 ) -> Optional[PoseEstimate]:
     """RGB画像(H,W,3 uint8)から推定ヨー角・距離オフセットを求める。
 
@@ -112,7 +121,7 @@ def estimate_pose(
     hi = int(round(w * (0.5 + half)))
     cropped = np.ascontiguousarray(img[:, lo:hi, :])
 
-    edge = detect_red_band_top_edge(cropped)
+    edge = detector(cropped)
     if edge is None:
         return None
 
@@ -244,6 +253,7 @@ def align_to_wall(
     stop_at_end: bool = True,
     check_dist: bool = True,
     crop_frac: float = 0.5,
+    detector=detect_red_band_top_edge,
 ) -> Optional[PoseEstimate]:
     """前壁に正対するまでカメラ推定→TURN補正を反復する閉ループ(2026-08-03)。
 
@@ -266,7 +276,7 @@ def align_to_wall(
     for _ in range(iterations):
         est = estimate_pose(
             cam.capture(), slope_gain=slope_gain, straight_slope=straight_slope,
-            crop_frac=crop_frac,
+            crop_frac=crop_frac, detector=detector,
         )
         last = est
         if est is None or not is_confident(est, check_dist=check_dist):

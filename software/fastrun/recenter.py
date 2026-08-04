@@ -32,8 +32,8 @@ from camera_align import (
     PoseEstimate,
     align_to_wall,
     is_confident,
-    SLOPE_DEG_PER_YAW_DEG_HALFCELL,
-    STRAIGHT_SLOPE_DEG_HALFCELL,
+    SLOPE_DEG_PER_YAW_DEG_HALFCELL_BOTTOM,
+    STRAIGHT_SLOPE_DEG_HALFCELL_BOTTOM,
 )
 from vision_wall import detect_red_band_top_edge
 from wall_bottom import detect_red_band_bottom_edge
@@ -383,8 +383,9 @@ def reanchor_heading(link, cam: OnboardCamera, target_heading_deg: float) -> boo
     est = align_to_wall(
         link, cam, iterations=5, deadband_deg=0.8, max_step_deg=15,
         set_reference=False, stop_at_end=True, check_dist=False,
-        slope_gain=SLOPE_DEG_PER_YAW_DEG_HALFCELL,
-        straight_slope=STRAIGHT_SLOPE_DEG_HALFCELL, crop_frac=0.3,
+        slope_gain=SLOPE_DEG_PER_YAW_DEG_HALFCELL_BOTTOM,
+        straight_slope=STRAIGHT_SLOPE_DEG_HALFCELL_BOTTOM, crop_frac=0.3,
+        detector=detect_red_band_bottom_edge,
     )
     if est is None or not is_confident(est, check_dist=False):
         return False
@@ -424,9 +425,10 @@ def relock_heading(
         link, cam,
         iterations=iterations, deadband_deg=deadband_deg, max_step_deg=15,
         set_reference=True, check_dist=False,
-        slope_gain=SLOPE_DEG_PER_YAW_DEG_HALFCELL,
-        straight_slope=STRAIGHT_SLOPE_DEG_HALFCELL,
+        slope_gain=SLOPE_DEG_PER_YAW_DEG_HALFCELL_BOTTOM,
+        straight_slope=STRAIGHT_SLOPE_DEG_HALFCELL_BOTTOM,
         crop_frac=0.3,  # 側壁正対時の隣壁混入を減らす(清浄な角度範囲を広げる)
+        detector=detect_red_band_bottom_edge,
     )
     # align_to_wall は set_reference=True 時に内部で stop→SANG,0 済み。
     # ここから元の向きへ戻す(逆回転)。
