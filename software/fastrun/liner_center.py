@@ -153,8 +153,9 @@ def center_axis(link, cam, face: Direction, *,
         )
     if abs(m1.yaw_deg) > yaw_deadband_deg:
         t_jog = time.time()
-        recenter._jog(link, f"JOGTURN,{math.radians(-m1.yaw_deg):.5f}", timeout_s=6.0)
-        print(f"center_axis perf: JOGTURN yaw={m1.yaw_deg:+.2f}deg time={time.time()-t_jog:.3f}s")
+        link.send(f"TURN,{math.radians(-m1.yaw_deg):.5f}")
+        time.sleep(0.5 + abs(m1.yaw_deg) / 2.5)
+        print(f"center_axis perf: TURN yaw={m1.yaw_deg:+.2f}deg time={time.time()-t_jog:.3f}s")
     link.stop()
     time.sleep(0.15)
     t_sang = time.time()
