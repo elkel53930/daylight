@@ -96,18 +96,32 @@ def center_axis(link, cam, face: Direction, *,
     (オープンループなので補正後の残差は測らない)。汚染/範囲外で ok=False。
     """
     import math
+    t_axis_start = time.perf_counter()
 
     def measure_in_range(stage: str) -> Optional[recenter.WallMeasure]:
         for attempt in range(MAX_RANGE_ADJUST_STEPS + 1):
+            t_attempt = time.perf_counter()
             measure = recenter.measure_wall(cam)
+            dt_measure = time.perf_counter() - t_attempt
             if measure is None:
+                print(
+                    f"center_axis perf: face={face.name} {stage} attempt={attempt} "
+                    f"measure_wall={dt_measure:.3f}s -> None"
+                )
                 return None
             range_state = camera_model.row_range_state(measure.row_calib)
+            print(
+                f"center_axis perf: face={face.name} {stage} attempt={attempt} "
+                f"measure_wall={dt_measure:.3f}s range={range_state} "
+                f"ok={measure.ok} dist={measure.dist_mm:.1f} yaw={measure.yaw_deg:+.2f} "
+                f"offset={measure.offset_mm:+.1f} row={measure.row_calib:.1f}"
+            )
             if measure.ok or range_state == "in":
                 return measure
             if attempt >= MAX_RANGE_ADJUST_STEPS:
                 return measure
 
+            t_adjust = time.perf_counter()
             if range_state == "far":
                 print(
                     f"center_axis {stage}: face={face.name} row_calib={measure.row_calib:.1f} too far -> "
@@ -120,20 +134,33 @@ def center_axis(link, cam, face: Direction, *,
                     f"JOGBACK {RANGE_ADJUST_MM:.1f} mm"
                 )
                 recenter._jog(link, f"JOGBACK,{RANGE_ADJUST_MM:.1f}")
+            print(
+                f"center_axis perf: face={face.name} {stage} attempt={attempt} "
+                f"range_adjust={time.perf_counter()-t_adjust:.3f}s"
+            )
+            t_sleep = time.perf_counter()
             time.sleep(0.2)
+            print(
+                f"center_axis perf: face={face.name} {stage} attempt={attempt} "
+                f"post_adjust_sleep={time.perf_counter()-t_sleep:.3f}s"
+            )
         return None
 
     target_deg = direction_to_gyro_deg(face)
-    t_start = time.time()
+    t_start = time.perf_counter()
     recenter.turn_to(link, target_deg)          # ジャイロで概ね壁へ向く
+    t_sleep = time.perf_counter()
     time.sleep(0.2)
-    print(f"center_axis perf: face={face.name} turn_to={time.time()-t_start:.3f}s")
+    print(
+        f"center_axis perf: face={face.name} turn_to_total={time.perf_counter()-t_start:.3f}s "
+        f"post_turn_sleep={time.perf_counter()-t_sleep:.3f}s"
+    )
 
     # --- 測定1: 距離認識モデルで (距離,ヨー) → ヨーを一発旋回 → SANG で絶対方位確定 ---
-    t_m1 = time.time()
+    t_m1 = time.perf_counter()
     m1 = measure_in_range("measure1")
     if m1 is None or not m1.ok or abs(m1.yaw_deg) > YAW_GATE_DEG:
-        print(f"center_axis perf: measure1={time.time()-t_m1:.3f}s", end="")
+        print(f"center_axis perf: measure1={time.perf_counter()-t_m1:.3f}s", end="")
         if m1 is None:
             print(f"center_axis skip: face={face.name} measure1 unavailable")
         else:
@@ -151,24 +178,44 @@ def center_axis(link, cam, face: Direction, *,
             camera_dist_mm=(m1.dist_mm if m1 is not None else None),
             camera_row_calib=(m1.row_calib if m1 is not None else None),
         )
+    print(
+        f"center_axis perf: face={face.name} measure1_total={time.perf_counter()-t_m1:.3f}s "
+        f"yaw_gate={YAW_GATE_DEG:.1f}deg yaw={m1.yaw_deg:+.2f}deg"
+    )
     if abs(m1.yaw_deg) > yaw_deadband_deg:
-        t_jog = time.time()
-        link.send(f"TURN,{math.radians(-m1.yaw_deg):.5f}")
-        time.sleep(0.5 + abs(m1.yaw_deg) / 2.5)
-        print(f"center_axis perf: TURN yaw={m1.yaw_deg:+.2f}deg time={time.time()-t_jog:.3f}s")
+        turn_rad = math.radians(-m1.yaw_deg)
+        planned_wait = 1.0
+        t_jog = time.perf_counter()
+        link.send(f"TURN,{turn_rad:.5f}")
+        t_turn_sleep = time.perf_counter()
+        time.sleep(planned_wait)
+        print(
+            f"center_axis perf: TURN yaw={m1.yaw_deg:+.2f}deg rad={turn_rad:+.5f} "
+            f"planned_wait={planned_wait:.3f}s actual_wait={time.perf_counter()-t_turn_sleep:.3f}s "
+            f"total={time.perf_counter()-t_jog:.3f}s"
+        )
     link.stop()
+    t_stop_sleep = time.perf_counter()
     time.sleep(0.15)
-    t_sang = time.time()
+    t_sang = time.perf_counter()
     link.send(f"SANG,{math.radians(target_deg):.5f}")
-    link.wait_for("DONE", timeout_s=1.0)
-    print(f"center_axis step1: face={face.name} SANG heading={target_deg:+.1f} deg time={time.time()-t_sang:.3f}s")
+    sang_done = link.wait_for("DONE", timeout_s=1.0) is not None
+    print(
+        f"center_axis step1: face={face.name} SANG heading={target_deg:+.1f} deg "
+        f"wait={time.perf_counter()-t_sang:.3f}s done={sang_done}"
+    )
+    t_post_sang_sleep = time.perf_counter()
     time.sleep(0.1)
+    print(
+        f"center_axis perf: face={face.name} post_stop_sleep={time.perf_counter()-t_stop_sleep:.3f}s "
+        f"post_sang_sleep={time.perf_counter()-t_post_sang_sleep:.3f}s"
+    )
 
     # --- 測定2: 正対後に距離を測り一発移動(正対後なので row-yaw結合がなく距離が正確) ---
-    t_m2 = time.time()
+    t_m2 = time.perf_counter()
     m2 = measure_in_range("measure2")
     if m2 is None or not m2.ok:
-        t_elapsed = time.time() - t_m2
+        t_elapsed = time.perf_counter() - t_m2
         print(f"center_axis perf: measure2={t_elapsed:.3f}s")
         if m2 is not None:
             print(
@@ -184,8 +231,12 @@ def center_axis(link, cam, face: Direction, *,
             camera_dist_mm=(m2.dist_mm if m2 is not None else m1.dist_mm),
             camera_row_calib=(m2.row_calib if m2 is not None else m1.row_calib),
         )
+    print(
+        f"center_axis perf: face={face.name} measure2_total={time.perf_counter()-t_m2:.3f}s "
+        f"offset={m2.offset_mm:+.1f}mm tol={center_tol_mm:.1f}mm"
+    )
     if abs(m2.offset_mm) > center_tol_mm:
-        t_jog = time.time()
+        t_jog = time.perf_counter()
         # offset>0 = 中心より前(壁に近い)→ JOGBACK で後退。offset<0 → JOGFWD。
         if m2.offset_mm > 0:
             print(
@@ -199,10 +250,11 @@ def center_axis(link, cam, face: Direction, *,
                 f"JOGFWD {-m2.offset_mm:.1f} mm"
             )
             recenter._jog(link, f"JOGFWD,{-m2.offset_mm:.1f}")
-        print(f"center_axis perf: final_jog time={time.time()-t_jog:.3f}s")
+        print(f"center_axis perf: final_jog time={time.perf_counter()-t_jog:.3f}s")
     else:
         print(f"center_axis step2: face={face.name} offset_mm={m2.offset_mm:+.1f} within tolerance")
-    print(f"center_axis perf: total_measure2={time.time()-t_m2:.3f}s")
+    print(f"center_axis perf: total_measure2={time.perf_counter()-t_m2:.3f}s")
+    print(f"center_axis perf: face={face.name} axis_total={time.perf_counter()-t_axis_start:.3f}s")
     return AxisResult(
         face=face,
         offset_mm=m2.offset_mm,

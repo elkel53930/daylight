@@ -165,9 +165,13 @@ def measure_front_row(cam: OnboardCamera, *, crop_frac: float = 0.3,
 def _jog(link, cmd: str, *, timeout_s: float = 9.0) -> bool:
     """JOG系コマンドを送り DONE を待つ(JOGだけは到達でDONEを返す)。"""
     print(f"jog send: {cmd}")
+    t_wait = time.perf_counter()
     link.send(cmd)
     done = link.wait_for("DONE", timeout_s=timeout_s) is not None
-    print(f"jog result: {cmd} -> {'DONE' if done else 'TIMEOUT'}")
+    print(
+        f"jog result: {cmd} -> {'DONE' if done else 'TIMEOUT'} "
+        f"wait={time.perf_counter()-t_wait:.3f}s timeout={timeout_s:.1f}s"
+    )
     return done
 
 
@@ -195,31 +199,63 @@ def measure_wall(cam: OnboardCamera, *, crop_frac: float = 0.3, n: int = 4,
     yaws: list[float] = []
     ress: list[float] = []
     rows: list[float] = []
-    t_cap = time_module.time()
+    t_total = time_module.perf_counter()
+    cap_total = 0.0
+    detect_total = 0.0
+    estimate_total = 0.0
+    sleep_total = 0.0
     for i in range(n):
+        t_cap = time_module.perf_counter()
         img = cam.capture()
+        dt_cap = time_module.perf_counter() - t_cap
+        cap_total += dt_cap
+
+        t_detect = time_module.perf_counter()
         h, w, _ = img.shape
         half = max(0.05, min(0.5, crop_frac / 2.0))
         lo = int(round(w * (0.5 - half))); hi = int(round(w * (0.5 + half)))
         crop = np.ascontiguousarray(img[:, lo:hi, :])
         e = detect_red_band_bottom_edge(crop)
+        dt_detect = time_module.perf_counter() - t_detect
+        detect_total += dt_detect
+
+        dt_est = 0.0
         if e is not None and e.residual_std < res_max:
+            t_est = time_module.perf_counter()
             cw = crop.shape[1]
             row_calib = (e.slope * (cw / 2) + e.intercept) * (CALIB_HEIGHT / h)
             slope_deg = math.degrees(math.atan(e.slope))
             d, y = camera_model.estimate(row_calib, slope_deg)
+            dt_est = time_module.perf_counter() - t_est
+            estimate_total += dt_est
             dists.append(d); yaws.append(y); ress.append(e.residual_std)
             rows.append(row_calib)
+        t_sleep = time_module.perf_counter()
         time_module.sleep(0.04)
-    elapsed_cap = time_module.time() - t_cap
+        dt_sleep = time_module.perf_counter() - t_sleep
+        sleep_total += dt_sleep
+        print(
+            f"measure_wall frame[{i+1}/{n}] cap={dt_cap*1000:.1f}ms detect={dt_detect*1000:.1f}ms "
+            f"est={dt_est*1000:.1f}ms sleep={dt_sleep*1000:.1f}ms "
+            f"accepted={e is not None and e.residual_std < res_max}"
+        )
+    elapsed_total = time_module.perf_counter() - t_total
     if not dists:
+        print(
+            f"measure_wall perf: {n}frames total={elapsed_total:.3f}s "
+            f"cap={cap_total:.3f}s detect={detect_total:.3f}s est={estimate_total:.3f}s "
+            f"sleep={sleep_total:.3f}s clean=0/{n}"
+        )
         return None
     dist = float(np.median(dists)); yaw = float(np.median(yaws))
     res = float(np.median(ress)); row_med = float(np.median(rows))
     # 較正範囲外(近すぎ/遠すぎ)はクランプ後距離では検出できないので生rowで判定。
     ok = camera_model.is_row_in_range(row_med) and len(dists) >= (n + 1) // 2
-    print(f"measure_wall perf: {n}frames capture={elapsed_cap:.3f}s clean={len(dists)}/{n} "
-          f"dist={dist:.0f}mm yaw={yaw:+.1f}deg ok={ok}")
+    print(
+        f"measure_wall perf: {n}frames total={elapsed_total:.3f}s cap={cap_total:.3f}s "
+        f"detect={detect_total:.3f}s est={estimate_total:.3f}s sleep={sleep_total:.3f}s "
+        f"clean={len(dists)}/{n} dist={dist:.0f}mm yaw={yaw:+.1f}deg ok={ok}"
+    )
     return WallMeasure(dist_mm=dist, yaw_deg=yaw,
                        offset_mm=camera_model.CELL_CENTER_MM - dist,
                        row_calib=row_med,
@@ -407,9 +443,16 @@ def _hold_turn(link, delta_rad: float, *, settle_s: float = 0.8) -> None:
     global _net_phys_deg
     if abs(delta_rad) < 1e-4:
         return
+    planned_wait = settle_s + abs(delta_rad) / 2.5
+    t_turn = time.perf_counter()
     link.send(f"TURN,{delta_rad:.5f}")
-    time.sleep(settle_s + abs(delta_rad) / 2.5)
+    time.sleep(planned_wait)
     _net_phys_deg += math.degrees(delta_rad)
+    print(
+        f"hold_turn perf: delta={math.degrees(delta_rad):+.2f}deg "
+        f"planned_wait={planned_wait:.3f}s actual={time.perf_counter()-t_turn:.3f}s "
+        f"net_phys={_net_phys_deg:+.2f}deg"
+    )
 
 
 def _read_ang_deg(link):
@@ -428,9 +471,12 @@ def turn_to(link, target_deg: float, *, tol: float = 1.0, tries: int = 4) -> Opt
     (=|err|が180付近で曖昧なとき)は、正味回転(_net_phys_deg)を0へ近づける向きを
     選ぶ。明確に短い旋回では最短を使う(無駄な大回転を避ける)。
     """
-    for _ in range(tries):
+    t_total = time.perf_counter()
+    for i in range(tries):
+        t_try = time.perf_counter()
         cur = _read_ang_deg(link)
         if cur is None:
+            print(f"turn_to perf: target={target_deg:+.2f} try={i+1}/{tries} read_ang=None")
             continue
         err = target_deg - cur
         while err > 180.0:
@@ -438,6 +484,11 @@ def turn_to(link, target_deg: float, *, tol: float = 1.0, tries: int = 4) -> Opt
         while err < -180.0:
             err += 360.0
         if abs(err) <= tol:
+            print(
+                f"turn_to perf: target={target_deg:+.2f} try={i+1}/{tries} cur={cur:+.2f} "
+                f"err={err:+.2f} tol={tol:.2f} -> reached in {time.perf_counter()-t_try:.3f}s "
+                f"total={time.perf_counter()-t_total:.3f}s"
+            )
             return cur
         # 逆回り候補(|alt| = 360-|err|)。ほぼ同手数(|err|が150°超)かつよじれを
         # 減らすなら逆回りを選ぶ。
@@ -445,9 +496,23 @@ def turn_to(link, target_deg: float, *, tol: float = 1.0, tries: int = 4) -> Opt
         delta = err
         if abs(err) > 150.0 and abs(_net_phys_deg + alt) < abs(_net_phys_deg + err):
             delta = alt
+        print(
+            f"turn_to perf: target={target_deg:+.2f} try={i+1}/{tries} cur={cur:+.2f} "
+            f"err={err:+.2f} alt={alt:+.2f} chosen={delta:+.2f}"
+        )
         _hold_turn(link, math.radians(delta), settle_s=0.6)
+        t_sleep = time.perf_counter()
         time.sleep(0.15)
-    return _read_ang_deg(link)
+        print(
+            f"turn_to perf: target={target_deg:+.2f} try={i+1}/{tries} "
+            f"post_turn_sleep={time.perf_counter()-t_sleep:.3f}s try_total={time.perf_counter()-t_try:.3f}s"
+        )
+    last = _read_ang_deg(link)
+    print(
+        f"turn_to perf: target={target_deg:+.2f} exhausted tries={tries} "
+        f"last={last} total={time.perf_counter()-t_total:.3f}s"
+    )
+    return last
 
 
 def unwind_cable(link, *, max_deg: float = 200.0) -> float:
