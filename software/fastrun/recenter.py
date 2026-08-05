@@ -142,6 +142,8 @@ def approach_step_mm(row: float) -> float:
 def measure_front_row(cam: OnboardCamera, *, crop_frac: float = 0.3,
                       n: int = 5) -> tuple[Optional[float], Optional[float]]:
     """前壁赤帯の row_at_center と残差の中央値(検出フレームのみ)。撮影のみ。"""
+    import time as time_module
+    t_start = time_module.time()
     rows: list[float] = []
     ress: list[float] = []
     for _ in range(n):
@@ -149,10 +151,15 @@ def measure_front_row(cam: OnboardCamera, *, crop_frac: float = 0.3,
         if est is not None:
             rows.append(est.row_at_center)
             ress.append(est.residual_px)
-        time.sleep(0.04)
+        time_module.sleep(0.04)
+    elapsed = time_module.time() - t_start
     if not rows:
+        print(f"measure_front_row perf: {n}frames={elapsed:.3f}s clean=0/{n}")
         return None, None
-    return float(np.median(rows)), float(np.median(ress))
+    row_med = float(np.median(rows))
+    res_med = float(np.median(ress))
+    print(f"measure_front_row perf: {n}frames={elapsed:.3f}s clean={len(rows)}/{n} row={row_med:.0f}")
+    return row_med, res_med
 
 
 def _jog(link, cmd: str, *, timeout_s: float = 9.0) -> bool:
@@ -183,11 +190,13 @@ def measure_wall(cam: OnboardCamera, *, crop_frac: float = 0.3, n: int = 6,
     n枚から中央値化(信頼性のためフレーム数は減らさない)。検出不能なら None。
     ok は「清浄 かつ 較正範囲(75〜115mm)内」= 一発補正に使ってよいか。
     """
+    import time as time_module
     dists: list[float] = []
     yaws: list[float] = []
     ress: list[float] = []
     rows: list[float] = []
-    for _ in range(n):
+    t_cap = time_module.time()
+    for i in range(n):
         img = cam.capture()
         h, w, _ = img.shape
         half = max(0.05, min(0.5, crop_frac / 2.0))
@@ -201,13 +210,16 @@ def measure_wall(cam: OnboardCamera, *, crop_frac: float = 0.3, n: int = 6,
             d, y = camera_model.estimate(row_calib, slope_deg)
             dists.append(d); yaws.append(y); ress.append(e.residual_std)
             rows.append(row_calib)
-        time.sleep(0.04)
+        time_module.sleep(0.04)
+    elapsed_cap = time_module.time() - t_cap
     if not dists:
         return None
     dist = float(np.median(dists)); yaw = float(np.median(yaws))
     res = float(np.median(ress)); row_med = float(np.median(rows))
     # 較正範囲外(近すぎ/遠すぎ)はクランプ後距離では検出できないので生rowで判定。
     ok = camera_model.is_row_in_range(row_med) and len(dists) >= (n + 1) // 2
+    print(f"measure_wall perf: {n}frames capture={elapsed_cap:.3f}s clean={len(dists)}/{n} "
+          f"dist={dist:.0f}mm yaw={yaw:+.1f}deg ok={ok}")
     return WallMeasure(dist_mm=dist, yaw_deg=yaw,
                        offset_mm=camera_model.CELL_CENTER_MM - dist,
                        row_calib=row_med,
@@ -236,9 +248,13 @@ def center_on_front_wall(link, cam: OnboardCamera, *,
     正対)。低速JOGはヨーを保持するので接近中に横へ逸れにくいが、初期のヨーずれは
     そのまま横位置ずれになる。戻り値は最終の前後オフセット推定(Noneは失敗)。
     """
+    import time as time_module
+    t_total = time_module.time()
     # (1) row駆動の接近
     total_fwd = 0.0
     back_off_total = 0.0
+    t_phase1 = time_module.time()
+    n_approach_steps = 0
     for _ in range(40):
         row, res = measure_front_row(cam, crop_frac=crop_frac, n=5)
         if row is None or res is None or res > res_max:
@@ -248,8 +264,10 @@ def center_on_front_wall(link, cam: OnboardCamera, *,
             if expect_wall and back_off_total < BACKOFF_CAP_MM:
                 _jog(link, f"JOGBACK,{BACKOFF_STEP_MM:.1f}")
                 back_off_total += BACKOFF_STEP_MM
-                time.sleep(0.15)
+                time_module.sleep(0.15)
                 continue
+            print(f"center_on_front_wall perf: phase1(row approach)={time_module.time()-t_phase1:.3f}s "
+                  f"steps={n_approach_steps} total_mm={total_fwd:.0f}")
             return None
         if row > ROW_TOO_CLOSE:
             back = (row - CAMERA_ROW_AT_90MM) / CAMERA_ROW_PX_PER_MM
@@ -261,26 +279,38 @@ def center_on_front_wall(link, cam: OnboardCamera, *,
         if total_fwd + step > APPROACH_TOTAL_CAP_MM:
             break  # 総前進上限(バックストップ)
         total_fwd += step
+        n_approach_steps += 1
         _jog(link, f"JOGFWD,{step:.1f}")
-        time.sleep(0.2)
+        time_module.sleep(0.2)
+    print(f"center_on_front_wall perf: phase1(row approach)={time_module.time()-t_phase1:.3f}s "
+          f"steps={n_approach_steps} total_mm={total_fwd:.0f}")
 
     # (2) 近距離域での mm 微調整
+    t_phase2 = time_module.time()
     last: Optional[ForwardOffset] = None
+    n_tune_steps = 0
     for _ in range(6):
         row, res = measure_front_row(cam, crop_frac=crop_frac, n=6)
         if row is None or res is None or res > res_max:
+            print(f"center_on_front_wall perf: phase2(mm tune)={time_module.time()-t_phase2:.3f}s "
+                  f"steps={n_tune_steps} total={time_module.time()-t_total:.3f}s")
             return last
         off = forward_offset_from_row(row)
         last = ForwardOffset(offset_mm=off, row_at_center=row,
                              residual_px=res, confident=abs(off) <= FORWARD_OFFSET_MAX_MM)
         if abs(off) <= CENTER_TOL_MM:
+            print(f"center_on_front_wall perf: phase2(mm tune)={time_module.time()-t_phase2:.3f}s "
+                  f"steps={n_tune_steps} total={time_module.time()-t_total:.3f}s -> centered")
             return last
         move = max(-15.0, min(15.0, -off))  # +前進/-後退、1回15mm上限
         if move > 0:
             _jog(link, f"JOGFWD,{move:.1f}")
         else:
             _jog(link, f"JOGBACK,{-move:.1f}")
+        n_tune_steps += 1
         time.sleep(0.2)
+    print(f"center_on_front_wall perf: phase2(mm tune)={time_module.time()-t_phase2:.3f}s "
+          f"steps={n_tune_steps} total={time_module.time()-t_total:.3f}s -> limit reached")
     return last
 
 
