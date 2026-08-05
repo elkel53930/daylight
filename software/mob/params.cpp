@@ -11,14 +11,14 @@ const Params kDefaultParams = {
     .speed_kd = 0.0f,
     .kf_duty_per_mps = 250.0f,
     .vbatt_nom = 8.0f,
-    .speed_lpf_alpha = 0.04171603f,
+    .speed_lpf_alpha = 0.12f,
 
     // JOGFWD/JOGBACK の並進制御(速度内側ループ)。
     .place_kp = 1200.0f,
     .place_ki = 12000.0f,
     .place_kd = 0.0f,
     .place_out_max = 400.0f,
-    .place_lpf_alpha = 0.04171603f,
+    .place_lpf_alpha = 0.12f,
 
     // JOGFWD/JOGBACK の位置外側ループ。target_v_sum は左右輪速度の
     // 「和」なので機体前後速度はこの半分。
@@ -54,7 +54,7 @@ const Params kDefaultParams = {
     // ため、100まで下げて改善を確認(-10〜+11mm/s、sync無し同等以上)。
     .place_sync_kp = 100.0f,
     .place_sync_out_max = 200.0f,
-    .place_sync_err_lpf_alpha = 0.00671161f,  // ≈3倍低いカットオフ。車輪PID帯域と分離
+    .place_sync_err_lpf_alpha = 0.006712f,  // ≈3倍低いカットオフ。車輪PID帯域と分離
 
     // その場旋回(2026-08-02実機チューニング: 角度追従は誤差0.22°まで収束、
     // 振動なし。pivot_kpを当初見積もり(旧turn_kp*kf_duty_per_mps=90)から
@@ -66,8 +66,8 @@ const Params kDefaultParams = {
     // 留まるため実質的な影響は緩やか、収束誤差0.24°・vsumも悪化なしを
     // 実機確認済み)。pivot_accelは1.5倍の30を試したが、実機で目視すると
     // 振動気味だったため20に戻した(2026-08-02)。
-    .pivot_max_radps = 6.24f,
-    .pivot_accel = 16.0f,
+    .pivot_max_radps = 7.8f,
+    .pivot_accel = 20.0f,
     .pivot_kf = 19.0f,
     .pivot_kp = 400.0f,
     .pivot_ki = 40.0f,
@@ -86,8 +86,8 @@ const Params kDefaultParams = {
     // した(ノイズの可能性もあり要再検証)。
     .path_follow_mm = 30.0f,
     .path_accel = 1000.0f,  // 2026-08-02: PATTERNの巡航速度300mm/s(実機で高精度を確認)に合わせて2倍のまま
-    .path_kp_fwd = 3.0f,
-    .path_kp_ang = 421.875f,
+    .path_kp_fwd = 5.0f,
+    .path_kp_ang = 500.0f,
     .path_kf_ang = 8.015625f,
     .path_kd_ang = 33.75f,
     .path_out_max = 500.0f,
@@ -98,8 +98,8 @@ const Params kDefaultParams = {
     // 止めて追いつくのを待つ。正常追従(dist~30、直進の加減速で最大~55)では
     // ブレンドはごく僅か・ゲートは非発動。実機で要チューニング。
     .path_blend_mm = 40.0f,
-    .path_gate_mm = 90.0f,
-    .path_wall_kp = 0.0f,        // 既定は無効。PSETでライブ調整して有効化する。
+    .path_gate_mm = 200.0f,
+    .path_wall_kp = 0.05f,
     .path_wall_present = 150.0f,
     .path_wall_bias_max = 0.10f, // ≈5.7° まで
 };
