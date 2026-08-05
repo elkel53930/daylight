@@ -37,6 +37,14 @@ from PIL import Image, ImageDraw, ImageFont
 sys.path.insert(0, str(Path(__file__).parent.parent / "ui"))
 from ui_client import UIClient  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).parent.parent / "fastrun"))
+from camera_align import OnboardCamera  # noqa: E402
+from dev_maze import build_dev_maze  # noqa: E402
+from geometry import Direction  # noqa: E402
+from liner_center import recenter_cell  # noqa: E402
+from liner_pose import LinerPose, direction_to_gyro_deg  # noqa: E402
+import recenter as recenter_ops  # noqa: E402
+
 from pattern import DEFAULT_TEST_PATTERN, send_pattern  # noqa: E402
 
 DISPLAY_WIDTH = 96
@@ -82,6 +90,9 @@ class MobLink:
 
     def send(self, cmd: str) -> None:
         self.ser.write((cmd + "\n").encode("ascii"))
+
+    def stop(self) -> None:
+        self.send("MOT,0,0")
 
     def _readline(self, timeout_s: float) -> Optional[str]:
         deadline = time.monotonic() + timeout_s
@@ -193,12 +204,61 @@ def draw_countdown(label: str) -> Image.Image:
     return img
 
 
+def draw_status(title: str, detail: str) -> Image.Image:
+    img = _blank()
+    draw = ImageDraw.Draw(img)
+    draw.text((0, 0), title, fill=(255, 255, 0), font=FONT)
+    draw.text((0, LINE_HEIGHT), detail, fill=(200, 200, 200), font=FONT)
+    return img
+
+
 def calibrate(link: MobLink, client: UIClient) -> None:
     img = _blank()
     ImageDraw.Draw(img).text((0, 0), "Calibrating...", fill=(255, 255, 0), font=FONT)
     client.display(img)
     link.send("GCAL")
     link.wait_for("DONE", timeout_s=3.0)
+
+
+def recenter_before_pattern(link: MobLink, client: UIClient) -> bool:
+    """PATTERN開始前に、既知の初期姿勢(0,0,N)を前提に壁上面補正する。"""
+    maze = build_dev_maze()
+    pose = LinerPose(0, 0, Direction.N)
+    client.display(draw_status("Recentering", "cell=(0,0) dir=N"))
+    with OnboardCamera() as cam:
+        init_heading_deg = direction_to_gyro_deg(Direction.N)
+        link.stop()
+        time.sleep(0.15)
+        link.send(f"SANG,{math.radians(init_heading_deg):.5f}")
+        if link.wait_for("DONE", timeout_s=1.0) is None:
+            client.display(draw_status("Recenter NG", "SANG timeout"))
+            time.sleep(1.0)
+            return False
+        result = recenter_cell(link, cam, maze, pose)
+        link.stop()
+        time.sleep(0.15)
+
+    y_ok = result.get("y") is not None and result["y"].ok
+    x_ok = result.get("x") is not None and result["x"].ok
+    if not (y_ok and x_ok):
+        client.display(draw_status("Recenter NG", f"y={y_ok} x={x_ok}"))
+        time.sleep(1.0)
+        return False
+
+    # 壁上面補正は最後にX軸面(E/W)で終わるため、PATTERN開始前に北へ向き直す。
+    north_deg = direction_to_gyro_deg(Direction.N)
+    recenter_ops.turn_to(link, north_deg)
+    link.stop()
+    time.sleep(0.15)
+    link.send(f"SANG,{math.radians(north_deg):.5f}")
+    if link.wait_for("DONE", timeout_s=1.0) is None:
+        client.display(draw_status("Recenter NG", "north sync timeout"))
+        time.sleep(1.0)
+        return False
+
+    client.display(draw_status("Recenter OK", "start pattern"))
+    time.sleep(0.5)
+    return True
 
 
 def main() -> None:
@@ -243,6 +303,9 @@ def main() -> None:
                             client.display(draw_countdown(label))
                             time.sleep(1.0)
                             if cmd == "PATTERN":
+                                if not recenter_before_pattern(link, client):
+                                    running_cmd = None
+                                    continue
                                 send_pattern(link, DEFAULT_TEST_PATTERN)
                             else:
                                 link.send(cmd)

@@ -73,12 +73,29 @@ def send_pattern(link, segments: Sequence[Segment], *, done_timeout_s: float = 1
 # 390(1.3倍)が実用的なバランスと確認して390で確定。制御パラメータの微調整は継続。
 # 注: 180°を単一のPADD,SLALOM(angle_deg=180)で送ると、90°×2に分けた場合と
 # ターゲット軌道は同じでも追従が破綻しやすいため、90°×2に分割している。
+
+FWD_SPEED = 300.0
+
+START = Straight(distance_mm=60.0, v_start_mmps=0.0, v_cruise_mmps=FWD_SPEED, v_end_mmps=FWD_SPEED)
+FWD = Straight(distance_mm=180.0, v_start_mmps=FWD_SPEED, v_cruise_mmps=FWD_SPEED, v_end_mmps=FWD_SPEED)
+RIGHT90_SLALOM = Slalom(v_mmps=FWD_SPEED, dir="R", radius_mm=90.0, angle_deg=90.0)
+LEFT90_SLALOM = Slalom(v_mmps=FWD_SPEED, dir="L", radius_mm=90.0, angle_deg=90.0)
+STOP = Straight(distance_mm=120.0, v_start_mmps=FWD_SPEED, v_cruise_mmps=FWD_SPEED, v_end_mmps=0.0)
+
 DEFAULT_TEST_PATTERN: tuple[Segment, ...] = (
-    Straight(distance_mm=150.0, v_start_mmps=0.0, v_cruise_mmps=390.0, v_end_mmps=390.0),
-    Straight(distance_mm=90.0, v_start_mmps=390.0, v_cruise_mmps=390.0, v_end_mmps=390.0),
-    Slalom(v_mmps=390.0, dir="R", radius_mm=90.0, angle_deg=90.0),
-    Slalom(v_mmps=390.0, dir="R", radius_mm=90.0, angle_deg=90.0),
-    Slalom(v_mmps=390.0, dir="L", radius_mm=90.0, angle_deg=90.0),
-    Slalom(v_mmps=390.0, dir="L", radius_mm=90.0, angle_deg=90.0),
-    Straight(distance_mm=120.0, v_start_mmps=390.0, v_cruise_mmps=390.0, v_end_mmps=0.0),
+    START,
+    FWD,
+    RIGHT90_SLALOM,
+    FWD,
+    FWD,
+    RIGHT90_SLALOM,
+    FWD,
+    RIGHT90_SLALOM,
+    RIGHT90_SLALOM,
+    LEFT90_SLALOM,
+    RIGHT90_SLALOM,
+    LEFT90_SLALOM,
+    LEFT90_SLALOM,
+    FWD,
+    STOP,
 )
