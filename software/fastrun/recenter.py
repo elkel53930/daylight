@@ -181,7 +181,7 @@ class WallMeasure(NamedTuple):
     ok: bool             # 較正範囲内かつ清浄(移動に使ってよいか)
 
 
-def measure_wall(cam: OnboardCamera, *, crop_frac: float = 0.3, n: int = 6,
+def measure_wall(cam: OnboardCamera, *, crop_frac: float = 0.3, n: int = 4,
                  res_max: float = FORWARD_OFFSET_MAX_RES) -> Optional[WallMeasure]:
     """下端エッジを撮り、距離認識モデルで (距離, ヨー) を同時に求める(撮影のみ)。
 
