@@ -128,7 +128,8 @@ float PlaceController::update_translational(float dt_s) {
     // の弱めゲインを使い分ける(2026-08-05)。
     const bool jog_move = (jog_kind_ == JogKind::MOVE);
     const float pos_kp = jog_move ? params.place_pos_kp : params.place_hold_pos_kp;
-    const float pos_max = jog_move ? params.place_pos_max_mps : params.place_hold_pos_max_mps;
+    // JOGFWD/JOGBACK のみ、位置外側ループの速度上限を2倍にして実速度を引き上げる。
+    const float pos_max = jog_move ? (params.place_pos_max_mps * 2.0f) : params.place_hold_pos_max_mps;
     const float pid_kp = jog_move ? params.place_kp : params.place_hold_kp;
     const float pid_ki = jog_move ? params.place_ki : params.place_hold_ki;
     const float pid_kd = jog_move ? params.place_kd : params.place_hold_kd;
