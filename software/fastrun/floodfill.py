@@ -35,6 +35,8 @@ def flood_fill(wm: WallMap, goals: Iterable[Cell]) -> Dict[Cell, int]:
         x, y = q.popleft()
         d = dist[(x, y)]
         for nd in Direction:
+            if nd.is_diagonal:
+                continue  # 探索はマンハッタン(直交4方向)ベース
             if not wm.can_move(x, y, nd):
                 continue
             dx, dy = nd.delta
@@ -60,6 +62,8 @@ def next_direction(
     best: Optional[Direction] = None
     best_d = here
     for nd in Direction:
+        if nd.is_diagonal:
+            continue
         if not wm.can_move(cx, cy, nd):
             continue
         dx, dy = nd.delta

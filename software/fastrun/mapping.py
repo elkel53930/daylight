@@ -36,13 +36,13 @@ def update_walls(
 ) -> None:
     """機体相対(前/左/右)の壁有無を絶対方向へ変換して WallMap へ記録する。
 
-    前 = heading 方向、左 = heading を反時計回りに1つ、右 = 時計回りに1つ。
+    前 = heading 方向、左 = heading を反時計回りに90°、右 = 時計回りに90°。
     add_wall は隣接セルにも対称に壁を立てる。
     """
     x, y = cell
     if front:
         wm.add_wall(x, y, heading)
     if left:
-        wm.add_wall(x, y, heading.turned(-1))
+        wm.add_wall(x, y, heading.turned(-2))
     if right:
-        wm.add_wall(x, y, heading.turned(1))
+        wm.add_wall(x, y, heading.turned(2))

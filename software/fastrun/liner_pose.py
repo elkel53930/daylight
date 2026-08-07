@@ -20,11 +20,16 @@ CELL_HALF_MM: float = CELL_MM / 2.0  # 90mm(マス中心のオフセット)
 
 # Direction → ジャイロ/odo_ang/SANG 系の方位[deg]。recenter.HEADING_* と一致
 # (北=0, 西=+90, 東=-90, 南=180)。TURN/SANG/reanchor はこの系の角度を使う。
+# 斜めは中間値(北=0基準、CCW正): NE=-45, SE=-135, SW=+135, NW=+45。
 _DIR_TO_GYRO_DEG = {
     Direction.N: 0.0,
-    Direction.W: 90.0,
+    Direction.NE: -45.0,
     Direction.E: -90.0,
+    Direction.SE: -135.0,
     Direction.S: 180.0,
+    Direction.SW: 135.0,
+    Direction.W: 90.0,
+    Direction.NW: 45.0,
 }
 
 

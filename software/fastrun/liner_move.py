@@ -32,6 +32,7 @@ from maze import WallMap
 from pattern import send_pattern  # noqa: E402
 from planner import PlannerConfig, find_path, plan
 import recenter
+from liner_center import recenter_cell  # noqa: E402
 
 _T_RE = re.compile(
     r"^#T,(\d+),(-?\d+),(-?\d+),(-?\d+),(-?\d+),(-?[\d.]+),(-?[\d.]+),(-?[\d.]+)"
@@ -134,3 +135,30 @@ def go_to(link, maze: WallMap, pose: LinerPose, goal: tuple,
         hdg_sign_changes=sign_changes,
         samples=samples,
     )
+
+
+def go_to_and_recenter(link, cam, maze: WallMap, pose: LinerPose, goal: tuple,
+                       *, cfg: Optional[PlannerConfig] = None) -> dict:
+    """go_to で高速移動し、到達後に壁上面補正(L1)でマス中心・最終向きを確定する
+    統合チェーン(Phase 3)。戻り値は {'move': MoveResult, 'recenter': dict,
+    'pose': 補正後の推定LinerPose}。
+
+    到達時点の odo_ang は走行中ドリフトしているため、移動先の物理向き
+    (=go_to の最終向き final_dir)を SANG で貼り直してから recenter_cell を
+    呼ぶ。recenter_cell は pose(ゴールセル+最終向き)の壁がある軸を補正し、
+    壁が無い軸はスキップする(フォールバックは liner_center 側で段階実装中)。
+    """
+    move = go_to(link, maze, pose, goal, cfg=cfg)
+
+    # 移動後: 停止してから最終向きを odo_ang の絶対方位へ再基準化(ドリフト対策)。
+    link.stop()
+    time.sleep(0.15)
+    final_deg = direction_to_gyro_deg(move.pose.heading)
+    link.send(f"SANG,{math.radians(final_deg):.5f}")
+    if link.wait_for("DONE", timeout_s=1.0) is None:
+        raise RuntimeError("go_to_and_recenter: 最終向き SANG timeout")
+
+    result = recenter_cell(link, cam, maze, move.pose)
+    link.stop()
+    time.sleep(0.15)
+    return {"move": move, "recenter": result, "pose": move.pose}

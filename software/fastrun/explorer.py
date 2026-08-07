@@ -74,11 +74,12 @@ class Explorer:
         return s["lf"] if s else 0
 
     def _turn(self, steps: int) -> None:
-        """compass steps(+1=右/CW, -1=左/CCW, ±2=180°)だけその場旋回。"""
+        """turn_between の回転ステップ数(45°単位、+1=右/CW, -1=左/CCW,
+        ±2=90°, ±4=180°)だけその場旋回。"""
         if steps == 0:
             return
-        # TURNは正=左/CCW。右(steps=+1)は負のrad。
-        turn_rad = -steps * (math.pi / 2.0)
+        # TURNは正=左/CCW。右(steps>0)は負のrad。
+        turn_rad = -steps * (math.pi / 4.0)
         self.link.send(f"TURN,{turn_rad:.5f}")
         time.sleep(0.8 + abs(turn_rad) * 0.45)
         self.link.stop()

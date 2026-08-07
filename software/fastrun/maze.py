@@ -27,22 +27,53 @@ class WallMap:
         return 0 <= x < self.width and 0 <= y < self.height
 
     def add_wall(self, x: int, y: int, d: Direction) -> None:
-        """セル (x,y) の d 方向に壁を立てる。隣接セルの反対側にも立てる。"""
+        """セル (x,y) の d 方向に壁を立てる。隣接セルの反対側にも立てる。
+
+        壁は直交辺(N/E/S/W)にのみ存在する。斜め方向へは立てられない。
+        """
+        if d.is_diagonal:
+            raise ValueError(f"壁は直交辺にのみ立てられる: {d.name}")
         self._walls.setdefault((x, y), set()).add(d)
         dx, dy = d.delta
         nx, ny = x + dx, y + dy
         if self.in_bounds(nx, ny):
-            self._walls.setdefault((nx, ny), set()).add(d.turned(2))
+            self._walls.setdefault((nx, ny), set()).add(d.turned(4))
 
     def has_wall(self, x: int, y: int, d: Direction) -> bool:
-        """セル (x,y) の d 方向に壁があるか。コース外周は常に True。"""
+        """セル (x,y) の d 方向に壁があるか。コース外周は常に True。斜め不可。"""
+        if d.is_diagonal:
+            raise ValueError(f"壁は直交辺にのみ存在する: {d.name}")
         dx, dy = d.delta
         if not self.in_bounds(x + dx, y + dy):
             return True
         return d in self._walls.get((x, y), set())
 
     def can_move(self, x: int, y: int, d: Direction) -> bool:
-        """セル (x,y) から d 方向の隣セルへ進めるか(壁が無く範囲内)。"""
+        """セル (x,y) から d 方向の隣セルへ進めるか(壁が無く範囲内)。
+
+        斜め(dx,dy が共に非ゼロ)は角を切って通行するため、機体(幅≲90mm)が
+        壁にクリップしないよう**角を挟む4辺の壁を全て確認**する。NE を例に
+        すると (x,y)→(x+1,y+1) には次の4条件が全て必要:
+          1. (x,y) の北壁なし((x,y)と(x,y+1)の境界)
+          2. (x,y) の東壁なし((x,y)と(x+1,y)の境界)
+          3. (x+1,y+1) の南壁なし((x+1,y+1)と(x+1,y)の境界)
+          4. (x+1,y+1) の西壁なし((x+1,y+1)と(x,y+1)の境界)
+        片側にでも壁があれば通れない。外周へ向かう斜めは範囲外判定で不可。
+        """
+        dx, dy = d.delta
+        if dx != 0 and dy != 0:
+            horiz = Direction.E if dx > 0 else Direction.W
+            vert = Direction.N if dy > 0 else Direction.S
+            nx, ny = x + dx, y + dy
+            if not self.in_bounds(nx, ny):
+                return False
+            # 角を挟む4辺。turn(4) は180°(向きの反対)。
+            return (
+                self.can_move(x, y, horiz)
+                and self.can_move(x, y, vert)
+                and self.can_move(nx, ny, horiz.turned(4))
+                and self.can_move(nx, ny, vert.turned(4))
+            )
         return not self.has_wall(x, y, d)
 
     @classmethod
