@@ -219,10 +219,26 @@ void PathController::update(float dt_s) {
     //      180°Uターン等で横ずれが大きくても path_ky_max でクランプされ、追従
     //      ゲート(path_gate_mm)がターゲットを止めて復帰を待つのはそのまま機能する。
     const float heading_err = normalize_angle(target_heading_rad_ - robot_theta_rad_);
-    if (params.path_ky > 0.0f) {
-        // 機体フレームでのターゲットの横位置(左=+): ロボット前方軸への直交成分。
-        const float e_y = -sinf(robot_theta_rad_) * dx + cosf(robot_theta_rad_) * dy;
-        float lat_bias = params.path_ky * e_y;
+    // Kanayama横復元(lat_bias)は直進セグメントのみ適用する。
+    //  (1) スラローム中は30mm先の仮想ターゲットが曲率のため機体フレームで横へ見え、
+    //      e_yが純粋な横誤差でなくなり、かつその符号が旋回方向と逆(lat_biasが旋回を
+    //      妨害)になる。実測(2026-08-08): 45°Rスラローム中 e_y=+1.5〜18mm→
+    //      lat_bias=+0.3〜7.7°(ky=0.004/0.008)が右旋回を妨げ、スラローム出口の機首角
+    //      誤差+2.6〜3.6°(北寄り)の原因。
+    //  (2) 直進でも機体フレームのe_y(=先読みターゲットの横位置)は機首の方位ずれの
+    //      見かけ成分(follow_mm*sin(heading_err))を含むため、スラローム直後に機首が
+    //      北寄りのままだと ky 復元が方位補正を打ち消して北ドリフトが増える
+    //      (実測: ky=0.004→14.8mm, 0.008→19.8mm)。
+    //  そこで横復元は「直進セグメント中心線からの真のクロストラック」を使い、
+    //  横位置の復元と方位補正を分離する。壁追従(wall_bias)も直進限定なので整合する。
+    const bool on_straight = (seg_index_ < seg_count_) &&
+                             (segments_[seg_index_].type == SegmentType::STRAIGHT);
+    if (params.path_ky > 0.0f && on_straight) {
+        const float pdx = cosf(seg_start_heading_rad_);
+        const float pdy = sinf(seg_start_heading_rad_);
+        const float lat_err = -pdy * (robot_x_mm_ - seg_start_x_mm_)
+                              + pdx * (robot_y_mm_ - seg_start_y_mm_);
+        float lat_bias = params.path_ky * (-lat_err);
         if (lat_bias > params.path_ky_max) lat_bias = params.path_ky_max;
         if (lat_bias < -params.path_ky_max) lat_bias = -params.path_ky_max;
         heading_error_rad_ = normalize_angle(heading_err + lat_bias);

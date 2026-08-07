@@ -19,6 +19,10 @@
 #include "ball_sensor.h"
 #include <math.h>
 
+// ファームウェアバージョン(VERコマンドで応答)。ロジックに意味のある変更を
+// したら必ず上げること(書き込み確認・動作切り分けに使う)。
+#define FW_VERSION "0.4.0"
+
 // Target wheel speed [m/s] (updated from MOT command via cmd_queue)
 static float target_vr_mps = 0.0f;
 static float target_vl_mps = 0.0f;
@@ -875,6 +879,9 @@ void loop() {
             Serial.printf("SEN,%.2f,%.2f,%u,%u,%u,%u,%u,%u,%.2f,%.2f,%u,%u\n",
                           gyro, vbatt, lf, ls, rs, rf, enc_r, enc_l, odo_dist, odo_ang,
                           ball_raw, ball_det ? 1 : 0);
+        } else if (cmd == "VER") {
+            // ファームウェアバージョン確認: VER → VER,<version>,<build date time>
+            Serial.printf("VER,%s,%s %s\n", FW_VERSION, __DATE__, __TIME__);
         } else {
             // デバッグ用: 不明コマンド
             Serial.printf("#Unknown cmd: %s\n", cmd.c_str());
