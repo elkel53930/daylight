@@ -55,9 +55,17 @@ from camera_align import OnboardCamera  # noqa: E402
 
 LOG_DIR = _HERE / "logs"
 
+# path_controller.cpp の仮想ターゲットは start() 時に path_follow_mm(既定30mm)だけ
+# 前方(ローカルx=パターン開始時向き)へ置かれ、セグメント列はその位置から適用される。
+# このため先頭直進がローカルx方向(=北)だと「30mm前方」は経路延長で無害だが、以降の
+# セグメント全体がローカルx(+30mm=北)へ一律シフトし、向きが変わった区間では横ズレに
+# なる(2026-08-08実測: NE回廊のE直進が y=656→686 になり北壁クリアランス63.6→33.6mm、
+# 機体半幅45mmで衝突。ログの目標軌道 y≈686 と一致)。先頭直進から path_follow_mm を
+# 差し引くと、指令経路が意図幾何(ロボット起点 (0,0))と一致する。
 # 閉ループ区間(diag_sim.py で終点 (90,90)・全壁クリアランス63.6mm 検証済み)
+PATH_FOLLOW_MM = 30.0  # mob の params.path_follow_mm と一致させること
 SEGMENTS_GEOM = [
-    ("S", 232.8),  # 北直進 → (90,322.8)
+    ("S", 232.8 - PATH_FOLLOW_MM),  # 北直進 → (90,322.8) ※先頭だけターゲット先読み分を補償
     ("SL", "R", 45.0),  # 45°右 → (116.4,386.4)
     ("S", 344.5),  # 斜め直進(NE) → (360,630)
     ("SL", "R", 45.0),  # NE→E
@@ -67,12 +75,31 @@ SEGMENTS_GEOM = [
     ("SL", "R", 90.0),  # S→W
     ("S", 360.0),  # 西直進 → (180,430)
     ("SL", "L", 90.0),  # W→S
-    ("S", 250.0),  # 南直進 → (90,90)
+    ("S", 250.0 + PATH_FOLLOW_MM),  # 南直進 → ロボは (90,90) で停止(ターゲットは30mm先の(90,60)まで)
 ]
 
 _T_RE = re.compile(
     r"^#T,(\d+),(-?\d+),(-?\d+),(-?\d+),(-?\d+),(-?[\d.]+),(-?[\d.]+),(-?[\d.]+)"
 )
+
+# 直進区間のローカル座標系(x=北/進行開始, y=西)での方向 unit vector。
+# クロストラック誤差(経路に直交する距離)の算出に使う。
+_DIRS = {
+    0: (1.0, 0.0),
+    2: (math.sqrt(0.5), -math.sqrt(0.5)),  # NE(斜め)
+    4: (0.0, -1.0),  # 東
+    6: (-1.0, 0.0),  # 南
+    8: (0.0, 1.0),  # 西
+    10: (-1.0, 0.0),  # 南
+}
+
+
+def _cross_track(rx: float, ry: float, tx: float, ty: float,
+                 dx: float, dy: float) -> float:
+    """ロボット(rx,ry)の、方向(dx,dy)の経路上のターゲット(tx,ty)からの
+    クロストラック誤差(経路に直交する距離)[mm]。"""
+    ex, ey = rx - tx, ry - ty
+    return abs(-dy * ex + dx * ey)
 
 
 def recenter_start(link, cam) -> None:
@@ -116,7 +143,8 @@ def build_segments(cruise: float, slalom: float) -> list:
     return segs
 
 
-def run_once(link, cruise: float, slalom: float, tag: str) -> str:
+def run_once(link, cruise: float, slalom: float, tag: str,
+             pset: Optional[dict] = None) -> str:
     log = LOG_DIR / f"verify_loop_{tag}_{time.strftime('%Y%m%d_%H%M%S')}.csv"
     log.parent.mkdir(parents=True, exist_ok=True)
 
@@ -131,6 +159,15 @@ def run_once(link, cruise: float, slalom: float, tag: str) -> str:
     print("[2/4] (0,0) recenter ...")
     with OnboardCamera() as cam:
         recenter_start(link, cam)
+
+    # PSET: RAM上のみのパラメータ変更(リフラッシュ不要)。走行直前に適用。
+    if pset:
+        print("[PSET] " + ", ".join(f"{k}={v}" for k, v in pset.items()))
+        for k, v in pset.items():
+            link.send(f"PSET,{k},{v}")
+            if link.wait_for("#PSET", timeout_s=1.0) is None:
+                print(f"  [WARN] PSET {k} 応答なし(名前ミス?)")
+            time.sleep(0.05)
 
     segs = build_segments(cruise, slalom)
     print(f"[3/4] パターン {len(segs)} 区間(閉ループ、発着 (0,0)中心):")
@@ -186,6 +223,7 @@ def run_once(link, cruise: float, slalom: float, tag: str) -> str:
     sign_changes = 0
     prev_sign = 0
     end_rx = end_ry = end_rtheta = None
+    ct_max: dict[str, float] = {}  # 直進区間の最大クロストラック
     with log.open() as f:
         for row in csv.DictReader(f):
             if row.get("type") != "#T":
@@ -201,6 +239,11 @@ def run_once(link, cruise: float, slalom: float, tag: str) -> str:
             if s != 0:
                 prev_sign = s
             end_rx, end_ry, end_rtheta = row["rx"], row["ry"], row["rtheta_deg"]
+            d = _DIRS.get(int(row["seg"]))
+            if d:
+                ct = _cross_track(float(row["rx"]), float(row["ry"]),
+                                  float(row["tx"]), float(row["ty"]), d[0], d[1])
+                ct_max[row["seg"]] = max(ct_max.get(row["seg"], 0.0), ct)
     print(f"[まとめ] サンプル{n}件, max|dist|={max_dist:.1f}mm, "
           f"hdg_err符号反転={sign_changes}回, reached={reached}")
     for seg in sorted(seg_max, key=int):
@@ -212,7 +255,9 @@ def run_once(link, cruise: float, slalom: float, tag: str) -> str:
             desc = f"直進{geo[1]:.0f}"
         else:
             desc = f"SL{geo[2]:.0f}{geo[1]}"
-        print(f"  seg{idx} [{desc}]: max|hdg_err|={math.degrees(seg_max[seg]):.2f}deg")
+        ct = ct_max.get(seg)
+        ct_s = f", クロストラック最大{ct:.1f}mm" if ct is not None else ""
+        print(f"  seg{idx} [{desc}]: max|hdg_err|={math.degrees(seg_max[seg]):.2f}deg{ct_s}")
     if end_rx is not None:
         rx, ry = float(end_rx), float(end_ry)
         rtheta = float(end_rtheta)
@@ -241,9 +286,18 @@ def main() -> None:
     ap.add_argument("--cruise", type=float, default=250.0, help="直進速度[mm/s]")
     ap.add_argument("--slalom", type=float, default=220.0, help="スラローム速度[mm/s]")
     ap.add_argument("--tag", default="run", help="ログタグ")
+    ap.add_argument("--pset", action="append", default=[], metavar="NAME=VAL",
+                    help="走行直前にPSETするパラメータ(繰り返し指定可、例 --pset path_ky=0.008)")
     ap.add_argument("--dry-run", action="store_true",
                     help="動かさず区間と終点幾何だけ表示")
     args = ap.parse_args()
+
+    pset: dict[str, float] = {}
+    for kv in args.pset:
+        name, _, val = kv.partition("=")
+        if not name or not val:
+            raise SystemExit(f"--pset は NAME=VAL 形式で指定: {kv!r}")
+        pset[name] = float(val)
 
     if args.dry_run:
         segs = build_segments(args.cruise, args.slalom)
@@ -254,7 +308,8 @@ def main() -> None:
         return
 
     with MobLink(args.port) as link:
-        run_once(link, cruise=args.cruise, slalom=args.slalom, tag=args.tag)
+        run_once(link, cruise=args.cruise, slalom=args.slalom, tag=args.tag,
+                 pset=pset or None)
 
 
 if __name__ == "__main__":
