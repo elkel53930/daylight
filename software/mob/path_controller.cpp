@@ -205,11 +205,28 @@ void PathController::update(float dt_s) {
     // 向きとターゲット自身の向き(target_heading、進行方向)の差」を使い高精度に
     // (ベアリング角は追従距離が旋回半径に対して無視できない比率だと幾何学的に
     // ズレるため)。ただしこれだけでは位置の横ずれを戻す復元力が無く、機体の
-    // 向きが進行方向から90°を超えて回る(180°/Uターン)と発散する。そこで
-    // distが開くほど、ロボット→ターゲット位置への「ベアリング角」の差
-    // (=位置復元力)へ滑らかにブレンドする(2026-08-02追加)。
+    // 向きが進行方向から90°を超えて回る(180°/Uターン)と発散する。
+    //
+    // 位置復元力は2方式ある:
+    //  (1) ベアリングブレンド(2026-08-02追加、既定だった方式): distが開くほど、
+    //      ロボット→ターゲット位置への「ベアリング角」の差(=位置復元力)へ
+    //      滑らかにブレンドする。
+    //  (2) Kanayama式横復元力(2026-08-07追加、Phase 2、path_ky>0で有効):
+    //      機体フレームでのターゲットの横ずれ e_y に比例する heading バイアスを
+    //      毎tick常時重畳する。ベアリングブレンドが「distが開いてから」働く
+    //      遅めの機構なのに対し、e_y は即時計算できるためスラローム中や直進中の
+    //      横driftを連続的に復元する(ExiaIgnis の Kanayama 制御に相当)。
+    //      180°Uターン等で横ずれが大きくても path_ky_max でクランプされ、追従
+    //      ゲート(path_gate_mm)がターゲットを止めて復帰を待つのはそのまま機能する。
     const float heading_err = normalize_angle(target_heading_rad_ - robot_theta_rad_);
-    if (dist_to_target_mm_ > 1.0f && params.path_blend_mm > 0.1f) {
+    if (params.path_ky > 0.0f) {
+        // 機体フレームでのターゲットの横位置(左=+): ロボット前方軸への直交成分。
+        const float e_y = -sinf(robot_theta_rad_) * dx + cosf(robot_theta_rad_) * dy;
+        float lat_bias = params.path_ky * e_y;
+        if (lat_bias > params.path_ky_max) lat_bias = params.path_ky_max;
+        if (lat_bias < -params.path_ky_max) lat_bias = -params.path_ky_max;
+        heading_error_rad_ = normalize_angle(heading_err + lat_bias);
+    } else if (dist_to_target_mm_ > 1.0f && params.path_blend_mm > 0.1f) {
         const float bearing_err = normalize_angle(atan2f(dy, dx) - robot_theta_rad_);
         float blend = (dist_to_target_mm_ - params.path_follow_mm) / params.path_blend_mm;
         if (blend < 0.0f) blend = 0.0f;

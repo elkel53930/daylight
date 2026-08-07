@@ -99,6 +99,9 @@ const Params kDefaultParams = {
     // ブレンドはごく僅か・ゲートは非発動。実機で要チューニング。
     .path_blend_mm = 40.0f,
     .path_gate_mm = 200.0f,
+    // Kanayama式横位置復元力(2026-08-07追加、Phase 2)。初期値は実機検証で調整する。
+    .path_ky = 0.004f,   // e_y=10mm で 0.04rad(≈2.3°)の横復元。実機で増減
+    .path_ky_max = 0.3f, // ≈17°まで
     .path_wall_kp = 0.05f,
     .path_wall_present = 150.0f,
     .path_wall_bias_max = 0.10f, // ≈5.7° まで
@@ -154,6 +157,8 @@ const ParamDef PARAM_TABLE[] = {
     {"path_out_max", offsetof(Params, path_out_max)},
     {"path_blend_mm", offsetof(Params, path_blend_mm)},
     {"path_gate_mm", offsetof(Params, path_gate_mm)},
+    {"path_ky", offsetof(Params, path_ky)},
+    {"path_ky_max", offsetof(Params, path_ky_max)},
     {"path_wall_kp", offsetof(Params, path_wall_kp)},
     {"path_wall_present", offsetof(Params, path_wall_present)},
     {"path_wall_bias_max", offsetof(Params, path_wall_bias_max)},

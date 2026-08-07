@@ -94,6 +94,13 @@ struct Params {
     // この値に達したとき完全にベアリング主体になる幅。
     float path_blend_mm;   // ベアリングへのブレンド幅 [mm]
     float path_gate_mm;    // dist_to_targetがこの値を超えたらターゲットの前進を止めて待つ [mm]
+    // Kanayama式の横位置復元力(2026-08-07追加、Phase 2)。機体フレームでの
+    // ターゲットの横ずれ e_y[mm] に比例する heading バイアスを常時重畳し、
+    // スラローム中の横driftを向き制御で戻す(path_controller.cpp参照)。
+    // path_ky>0 で有効(既定)、0以下なら従来のベアリングブレンド方式へ
+    // フォールバックして後方互換を保つ。
+    float path_ky;         // 横誤差[mm] → headingバイアス [rad]（Kanayama復元力ゲイン）
+    float path_ky_max;     // 横誤差バイアスのクランプ [rad]
     // 側壁センサによる横位置補正(壁追従、2026-08-03追加)。直進セグメントで
     // 両側に壁があるとき、ls/rs差から機体を迷路中心へ寄せる微小な heading
     // バイアスを重畳する。側壁センサは角度に敏感なので near-straight のときだけ
