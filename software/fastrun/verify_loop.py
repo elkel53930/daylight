@@ -21,8 +21,8 @@
 
 使い方:
     verify_loop.py --dry-run            # 区間・終点幾何だけ表示(動かさない)
-    verify_loop.py                      # 既定(直進250 / スラローム220 mm/s)
-    verify_loop.py --cruise 300 --slalom 260 --tag lap2   # 速度を上げて再検証
+    verify_loop.py                      # 既定(直進700 / スラローム550 mm/s)
+    verify_loop.py --cruise 300 --slalom 260 --tag lap2   # 速度を下げて再検証
 
 走行前: 機体を (0,0) マス中心・北向きに手で置く。走行前にブザー予告する。
 走行後: 機体は (0,0) マス中心・南向きで止まり、続けて 180°旋回して
@@ -293,8 +293,8 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", default="/dev/ttyUSB0")
-    ap.add_argument("--cruise", type=float, default=250.0, help="直進速度[mm/s]")
-    ap.add_argument("--slalom", type=float, default=220.0, help="スラローム速度[mm/s]")
+    ap.add_argument("--cruise", type=float, default=700.0, help="直進速度[mm/s]")
+    ap.add_argument("--slalom", type=float, default=550.0, help="スラローム速度[mm/s]")
     ap.add_argument("--tag", default="run", help="ログタグ")
     ap.add_argument("--pset", action="append", default=[], metavar="NAME=VAL",
                     help="走行直前にPSETするパラメータ(繰り返し指定可、例 --pset path_ky=0.008)")
