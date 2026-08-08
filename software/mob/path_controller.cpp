@@ -218,7 +218,19 @@ void PathController::update(float dt_s) {
     //      横driftを連続的に復元する(ExiaIgnis の Kanayama 制御に相当)。
     //      180°Uターン等で横ずれが大きくても path_ky_max でクランプされ、追従
     //      ゲート(path_gate_mm)がターゲットを止めて復帰を待つのはそのまま機能する。
-    const float heading_err = normalize_angle(target_heading_rad_ - robot_theta_rad_);
+    // スラローム中の曲率先読み補正(2026-08-08): 仮想ターゲットは path_follow_mm
+    // (30mm)先にあるため、カーブではターゲットの接線は自車位置の接線より L/R だけ
+    // 曲がりすぎる = 内側をショートカットする角カットの原因(実測: 45°Rスラロームで
+    // 弧の内側へ10〜19mm螺旋状に寄り、斜め進入の壁角(180,360)へ衝突した)。
+    // スラローム時のみ自車位置の接線を目標方位にするよう L/R を打ち消す
+    // (直線は L/R→0 でこの補正は効かない)。
+    float heading_err = normalize_angle(target_heading_rad_ - robot_theta_rad_);
+    if (seg_index_ < seg_count_ &&
+        segments_[seg_index_].type == SegmentType::SLALOM) {
+        const Segment& seg = segments_[seg_index_];
+        heading_err = normalize_angle(heading_err
+                                      - seg.dir * (params.path_follow_mm / seg.radius_mm));
+    }
     // Kanayama横復元(lat_bias)は直進セグメントのみ適用する。
     //  (1) スラローム中は30mm先の仮想ターゲットが曲率のため機体フレームで横へ見え、
     //      e_yが純粋な横誤差でなくなり、かつその符号が旋回方向と逆(lat_biasが旋回を

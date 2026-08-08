@@ -21,7 +21,7 @@
 
 // ファームウェアバージョン(VERコマンドで応答)。ロジックに意味のある変更を
 // したら必ず上げること(書き込み確認・動作切り分けに使う)。
-#define FW_VERSION "0.4.0"
+#define FW_VERSION "0.4.1"
 
 // Target wheel speed [m/s] (updated from MOT command via cmd_queue)
 static float target_vr_mps = 0.0f;
