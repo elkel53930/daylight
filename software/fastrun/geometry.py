@@ -79,6 +79,18 @@ class Direction(IntEnum):
         }[self]
 
 
+def direction_from_delta(dx: int, dy: int) -> Direction:
+    """セル差分 (dx, dy)(1セル移動) に対応する Direction を返す。
+
+    例: (0,1)→N, (1,1)→NE, (1,0)→E, (-1,1)→NW。
+    8方向のいずれにも一致しない差分は ValueError。
+    """
+    for d in Direction:
+        if d.delta == (dx, dy):
+            return d
+    raise ValueError(f"隣接セル移動でない差分: ({dx}, {dy})")
+
+
 def turn_between(frm: Direction, to: Direction) -> int:
     """frm から to への最小回転量を「時計回りステップ数(45°単位)」で返す。
     0=直進, +1=右45°, -1=左45°, +2=右90°, -2=左90°, +3=右135°, -3=左135°,

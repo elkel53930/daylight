@@ -33,6 +33,7 @@ from geometry import (
     CELL_MM,
     DIAG_CELL_MM,
     Direction,
+    direction_from_delta,
     slalom_angle_deg,
     slalom_dir_symbol,
     slalom_tangent_mm,
@@ -247,7 +248,7 @@ def moves_to_segments(
                 dist -= _turn_tangent_mm(cfg, moves[i - 1])
             if next_is_turn:
                 dist -= _turn_tangent_mm(cfg, moves[i + 1])
-            if dist < 0.0:
+            if dist < 1e-6:
                 dist = 0.0
             v_start = v_slalom if prev_is_turn else 0.0
             v_end = v_slalom if next_is_turn else 0.0
@@ -291,6 +292,36 @@ def plan(
     """壁マップ・現在位置姿勢・ゴールから走行区間列を生成する高水準API。"""
     cfg = cfg or PlannerConfig()
     path = find_path(wm, start, start_dir, goal, cfg)
+    moves = _states_to_moves(path, start_dir)
+    return moves_to_segments(moves, cfg)
+
+
+def pattern_from_cells(
+    cells: Sequence[Tuple[int, int]],
+    start_dir: Direction,
+    cfg: Optional[PlannerConfig] = None,
+) -> List[Segment]:
+    """マスの列(セル列)から走行区間列(Straight/Slalom)を生成する。
+
+    経路が「通るマスの列」として与えられる場合(将来のスタート→ゴール
+    走行)に、そのまま PCLEAR/PADD/PRUN で走れる区間列へ変換する。
+    隣接セル間の進行方向をセル中心間の向きとして状態列を作り、
+    planner.py の既存区間生成(_states_to_moves + moves_to_segments)で
+    Straight/Slalom へ展開する。スラロームの接線長短縮・45/90/135°の
+    分割(180°=90°×2)・速度割当は plan() と同じロジック。
+
+    cells は隣接セルが連続する列(閉ループなら先頭と末尾が一致)。
+    同一セルの連続(停止)や非隣接セル間は ValueError。
+    """
+    cfg = cfg or PlannerConfig()
+    if len(cells) < 2:
+        raise ValueError("cells は2つ以上のマスが必要")
+    path: List[State] = [(cells[0][0], cells[0][1], start_dir)]
+    for i in range(1, len(cells)):
+        dx = cells[i][0] - cells[i - 1][0]
+        dy = cells[i][1] - cells[i - 1][1]
+        d = direction_from_delta(dx, dy)
+        path.append((cells[i][0], cells[i][1], d))
     moves = _states_to_moves(path, start_dir)
     return moves_to_segments(moves, cfg)
 

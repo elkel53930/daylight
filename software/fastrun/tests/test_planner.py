@@ -24,6 +24,7 @@ from planner import (
     find_path,
     moves_to_segments,
     plan,
+    pattern_from_cells,
 )
 from pattern import Slalom, Straight
 
@@ -282,6 +283,64 @@ class TestSegments(unittest.TestCase):
         # 少なくともスラロームが2つ含まれる
         slaloms = [s for s in segs if isinstance(s, Slalom)]
         self.assertEqual(len(slaloms), 2)
+
+
+class TestPatternFromCells(unittest.TestCase):
+    def test_pure_straight_two_cells(self):
+        # 北へ2セル: 単一 Straight 360mm、発進停止
+        segs = pattern_from_cells([(0, 0), (0, 1), (0, 2)], Direction.N)
+        self.assertEqual(len(segs), 1)
+        s = segs[0]
+        self.assertIsInstance(s, Straight)
+        self.assertAlmostEqual(s.distance_mm, 2 * CELL_MM)
+
+    def test_l_turn_with_slalom(self):
+        # N→E の L字(2セル→2セル): 直進 → 右90° → 直進
+        segs = pattern_from_cells(
+            [(0, 0), (0, 1), (0, 2), (1, 2), (2, 2)], Direction.N
+        )
+        slaloms = [s for s in segs if isinstance(s, Slalom)]
+        straights = [s for s in segs if isinstance(s, Straight)]
+        self.assertEqual(len(slaloms), 1)
+        self.assertEqual(slaloms[0].dir, "R")
+        self.assertEqual(slaloms[0].angle_deg, 90.0)
+        # 前後直進は接線長(90mm)だけ短縮
+        self.assertAlmostEqual(straights[0].distance_mm, 2 * CELL_MM - 90.0)
+        self.assertAlmostEqual(straights[1].distance_mm, 2 * CELL_MM - 90.0)
+
+    def test_diagonal_move(self):
+        # (0,0)→(1,1) は斜め NE: 45°R スラローム → 斜め直進(√2×180mm)
+        segs = pattern_from_cells([(0, 0), (1, 1)], Direction.N)
+        slaloms = [s for s in segs if isinstance(s, Slalom)]
+        straights = [s for s in segs if isinstance(s, Straight)]
+        self.assertEqual(len(slaloms), 1)
+        self.assertEqual(slaloms[0].angle_deg, 45.0)
+        self.assertEqual(slaloms[0].dir, "R")
+        import math
+        tangent = 90.0 * math.tan(math.radians(45.0) / 2.0)
+        self.assertAlmostEqual(straights[0].distance_mm, DIAG_CELL_MM - tangent)
+
+    def test_initial_turn_respected(self):
+        # start_dir=W なのに経路は北: 最初に右90°スラローム(W→N)
+        segs = pattern_from_cells([(0, 0), (0, 1)], Direction.W)
+        slaloms = [s for s in segs if isinstance(s, Slalom)]
+        self.assertEqual(len(slaloms), 1)
+        self.assertEqual(slaloms[0].dir, "R")
+        self.assertEqual(slaloms[0].angle_deg, 90.0)
+
+    def test_non_adjacent_raises(self):
+        # (0,0)→(0,2) は1セル飛ばし → エラー
+        with self.assertRaises(ValueError):
+            pattern_from_cells([(0, 0), (0, 2)], Direction.N)
+
+    def test_verify_loop_cells_close(self):
+        # 現行 verify_loop と同じ閉ループマス列。
+        cells = [
+            (0, 0), (0, 1), (0, 2), (1, 2), (1, 3), (2, 3), (3, 3),
+            (3, 2), (2, 2), (1, 2), (0, 2), (0, 1), (0, 0),
+        ]
+        segs = pattern_from_cells(cells, Direction.N)
+        self.assertTrue(any(isinstance(s, Slalom) for s in segs))
 
 
 class TestTimeEstimate(unittest.TestCase):
