@@ -18,6 +18,12 @@
 区間生成では、スラロームが前後の直進を接線長(R·tan(θ/2)、90°なら R)
 だけ「食う」ことを考慮して直進距離を短縮する。標準的なクラシックマウス
 のスラローム区間割り。45/90/135°は単一スラローム、180°は90°×2。
+
+pattern_from_cells は、交互90°ターンが3つ以上続く「階段」区間を
+「45°スラローム → 斜め直進 → 45°スラローム」のショートカットに置き換え
+られる(verify_loop の斜め走行と同じ構造、MazeSolver2015 の loadFromPath と
+同じ発想)。斜め直進はコリドー中心を通る45°直線で、壁クリアランスの壁
+ゲート(wm 指定時)で安全性を確認する。
 """
 
 from __future__ import annotations
@@ -180,10 +186,11 @@ def find_path(
 @dataclass
 class _Move:
     """状態列を「直進 run」と「ターン」に畳んだ中間表現。"""
-    kind: str          # "straight" または "turn"
+    kind: str          # "straight" または "turn" または "diag"(斜め直進)
     cells: int = 0     # straight: 直進セル数
     d: Optional[Direction] = None  # straight: 直進 run の向き(斜め距離の算出用)
     turn_steps: int = 0  # turn: +1..+3=右45..135°, -1..-3=左, 4=180°
+    dist_override: Optional[float] = None  # straight/diag: 距離を直接指定(斜め化時)
 
 
 def _states_to_moves(path: List[State], start_dir: Direction) -> List[_Move]:
@@ -222,6 +229,220 @@ def _turn_tangent_mm(cfg: PlannerConfig, mv: _Move) -> float:
     return slalom_tangent_mm(cfg.slalom_radius_mm, slalom_angle_deg(mv.turn_steps))
 
 
+# ----- 斜めショートカット(階段区間の対角化) -----
+
+def _cell_center(cell: Tuple[int, int]) -> Tuple[float, float]:
+    """セルの中心の絶対位置 [mm](原点=南西端の柱、1マス180mm)。"""
+    return (90.0 + CELL_MM * cell[0], 90.0 + CELL_MM * cell[1])
+
+
+def _dir_unit(d: Direction) -> Tuple[float, float]:
+    """向きの単位ベクトル(コース座標系)。"""
+    dx, dy = d.delta
+    n = math.hypot(dx, dy)
+    return (dx / n, dy / n)
+
+
+def _find_staircases(moves: List[_Move]) -> List[Tuple[int, int]]:
+    """moves 列から「交互90°ターンの階段」区間を探す。
+
+    戻り値: [(entry_idx, last_turn_idx)]。entry_idx は階段直前の直進 run、
+    last_turn_idx は最後のターン(その直後が出口 run の直進)。階段は k(≥2)個の
+    交互する90°ターン(例: +2,-2,+2 / +2,-2)と、その間の1セル直進から成る
+    (MazeSolver2015 の loadFromPath の交互ターン検出と同じ構造)。k=2 は単一の
+    コーナー(R90→L90 で1マス分の横移動)、k≥3(奇数)はコーナーの斜めショート
+    カットに対応する。
+    """
+    n = len(moves)
+    out: List[Tuple[int, int]] = []
+    i = 0
+    while i < n:
+        if not (moves[i].kind == "straight" and i + 1 < n
+                and moves[i + 1].kind == "turn"
+                and abs(moves[i + 1].turn_steps) == 2):
+            i += 1
+            continue
+        last_sign = 1 if moves[i + 1].turn_steps > 0 else -1
+        k = 1
+        pos = i + 2
+        while (pos + 1 < n and moves[pos].kind == "straight"
+               and moves[pos].cells == 1 and moves[pos + 1].kind == "turn"
+               and abs(moves[pos + 1].turn_steps) == 2
+               and (1 if moves[pos + 1].turn_steps > 0 else -1) == -last_sign):
+            k += 1
+            last_sign = -last_sign
+            pos += 2
+        last_turn = i + 2 * k - 1
+        if k < 2:
+            i += 1
+            continue
+        if last_turn + 1 >= n or moves[last_turn + 1].kind != "straight":
+            i += 1
+            continue
+        out.append((i, last_turn))
+        i = last_turn + 2
+    return out
+
+
+def _dist_point_segment(px: float, py: float, x1: float, y1: float,
+                        x2: float, y2: float) -> float:
+    """点から線分までの距離 [mm](diag_sim.py と同一)。"""
+    vx, vy = x2 - x1, y2 - y1
+    wx, wy = px - x1, py - y1
+    l2 = vx * vx + vy * vy
+    if l2 == 0:
+        return math.hypot(px - x1, py - y1)
+    t = max(0.0, min(1.0, (wx * vx + wy * vy) / l2))
+    return math.hypot(px - (x1 + t * vx), py - (y1 + t * vy))
+
+
+def _trace_segments(segs: Sequence[Segment], sx0: float, sy0: float,
+                    theta0: float, sample_step: float = 3.0,
+                    slalom_step_deg: float = 2.0) -> List[Tuple[float, float]]:
+    """区間列を mob path_controller と同じ内部フレーム式で世界座標にトレース
+    する(diag_sim.py の trace() と同一の式)。"""
+    pts: List[Tuple[float, float]] = [(sx0, sy0)]
+    cx, cy = math.cos(theta0), math.sin(theta0)
+    sx, sy = -math.sin(theta0), math.cos(theta0)
+    ix = iy = 0.0
+    head = 0.0
+
+    def push(ix: float, iy: float) -> None:
+        pts.append((sx0 + cx * ix + sx * iy, sy0 + cy * ix + sy * iy))
+
+    for seg in segs:
+        if isinstance(seg, Straight):
+            length = seg.distance_mm
+            steps = max(2, int(length / sample_step))
+            for k in range(1, steps + 1):
+                p = length * k / steps
+                push(ix + p * math.cos(head), iy + p * math.sin(head))
+            ix += length * math.cos(head)
+            iy += length * math.sin(head)
+        else:  # Slalom
+            dirv = -1.0 if seg.dir == "R" else 1.0
+            phi_end = math.radians(seg.angle_deg)
+            steps = max(8, int(phi_end / math.radians(slalom_step_deg)))
+            for k in range(1, steps + 1):
+                phi = phi_end * k / steps
+                th = head + dirv * phi
+                ix2 = ix + dirv * seg.radius_mm * (math.sin(th) - math.sin(head))
+                iy2 = iy + dirv * seg.radius_mm * (math.cos(head) - math.cos(th))
+                push(ix2, iy2)
+            head += dirv * phi_end
+            ix, iy = ix2, iy2
+    return pts
+
+
+def _wall_segments_mm(wm: WallMap) -> List[Tuple[float, float, float, float]]:
+    """WallMap の壁を世界座標の線分 (x1,y1,x2,y2) 列に変換する。"""
+    segs: List[Tuple[float, float, float, float]] = []
+    seen = set()
+    for x in range(wm.width):
+        for y in range(wm.height):
+            x0, y0 = CELL_MM * x, CELL_MM * y
+            for d in (Direction.N, Direction.E, Direction.S, Direction.W):
+                if not wm.has_wall(x, y, d):
+                    continue
+                if d == Direction.N:
+                    seg = (x0, y0 + CELL_MM, x0 + CELL_MM, y0 + CELL_MM)
+                elif d == Direction.E:
+                    seg = (x0 + CELL_MM, y0, x0 + CELL_MM, y0 + CELL_MM)
+                elif d == Direction.S:
+                    seg = (x0, y0, x0 + CELL_MM, y0)
+                else:
+                    seg = (x0, y0, x0, y0 + CELL_MM)
+                key = frozenset(((round(seg[0], 3), round(seg[1], 3)),
+                                 (round(seg[2], 3), round(seg[3], 3))))
+                if key not in seen:
+                    seen.add(key)
+                    segs.append(seg)
+    return segs
+
+
+def _min_clearance(pts: Sequence[Tuple[float, float]],
+                   wall_segs: Sequence[Tuple[float, float, float, float]]
+                   ) -> float:
+    """軌跡点列と全壁の最小距離 [mm]。"""
+    return min(min(_dist_point_segment(px, py, *w) for w in wall_segs)
+               for px, py in pts)
+
+
+def _build_shortcut(moves: List[_Move], cells: Sequence[Tuple[int, int]],
+                    entry_idx: int, last_turn_idx: int, cfg: PlannerConfig,
+                    wm: Optional[WallMap], min_clearance_mm: float
+                    ) -> Optional[List[_Move]]:
+    """階段区間を斜めショートカットの _Move 列へ変換する(壁ゲート付き)。
+
+    入口 run(entry_idx の直進)と出口 run(最後のターンの直後)を残し、その間を
+    「45°スラローム → 斜め直進 → 45°スラローム」に置き換える。diag_sim.py と
+    同じ世界座標ジオメトリで、階段の角を結ぶ45°直線(コリドー中心を通る)を
+    通る。前後の直進は接線長を全て織り込み済みの距離に短縮する(dist_override)。
+    wm 指定時は最小クリアランスが min_clearance_mm 未満なら None(階段のまま)。
+    """
+    entry = moves[entry_idx]
+    exit_s = moves[last_turn_idx + 1]
+    turns = [moves[t].turn_steps for t in range(entry_idx + 1,
+                                                last_turn_idx + 1, 2)]
+    k = len(turns)
+    D1, D2 = entry.d, exit_s.d
+    s_sign = 1 if turns[0] > 0 else -1
+    Dd = D1.turned(s_sign)  # 45°斜め方向
+    m0 = sum(m.cells for m in moves[:entry_idx] if m.kind == "straight")
+    n1, n2 = entry.cells, exit_s.cells
+    A = _cell_center(cells[m0 + n1])          # 入口 run の最終セル中心
+    B = _cell_center(cells[m0 + n1 + k])      # 出口 run の2番目セル中心(= Q2 の基準)
+    R = cfg.slalom_radius_mm
+    T = slalom_tangent_mm(R, 45.0)            # 45°スラロームの接線長
+    u1, u2 = _dir_unit(D1), _dir_unit(D2)
+    half = CELL_MM / 2.0                      # 角から半セル手前で45°直線へ
+    Q1 = (A[0] - half * u1[0], A[1] - half * u1[1])
+    Q2 = (B[0] - half * u2[0], B[1] - half * u2[1])
+    vx, vy = Q2[0] - Q1[0], Q2[1] - Q1[1]
+    udx, udy = _dir_unit(Dd)
+    if abs(vx * udy - vy * udx) > 1e-6:       # 45°整合性(想定外なら階段のまま)
+        return None
+    diag_len = math.hypot(vx, vy) - 2.0 * T
+    prev_t = (_turn_tangent_mm(cfg, moves[entry_idx - 1])
+              if entry_idx > 0 and moves[entry_idx - 1].kind == "turn" else 0.0)
+    next_t = (_turn_tangent_mm(cfg, moves[last_turn_idx + 2])
+              if last_turn_idx + 2 < len(moves)
+              and moves[last_turn_idx + 2].kind == "turn" else 0.0)
+    s1 = n1 * CELL_MM - prev_t - (half + T)
+    s2 = n2 * CELL_MM - next_t - (half + T)
+    if min(s1, s2, diag_len) < 1e-6:
+        return None
+    sub = [
+        _Move("straight", cells=n1, d=D1, dist_override=s1),
+        _Move("turn", turn_steps=1 if turns[0] > 0 else -1),
+        _Move("diag", d=Dd, dist_override=diag_len),
+        _Move("turn", turn_steps=1 if turns[-1] > 0 else -1),
+        _Move("straight", cells=n2, d=D2, dist_override=s2),
+    ]
+    if wm is not None:
+        px = A[0] - (n1 * CELL_MM - prev_t) * u1[0]
+        py = A[1] - (n1 * CELL_MM - prev_t) * u1[1]
+        pts = _trace_segments(moves_to_segments(sub, cfg), px, py,
+                              D1.heading_rad)
+        if _min_clearance(pts, _wall_segments_mm(wm)) < min_clearance_mm:
+            return None
+    return sub
+
+
+def _moves_with_diag(path: List[State], start_dir: Direction,
+                     cfg: PlannerConfig, wm: Optional[WallMap] = None,
+                     min_clearance_mm: float = 50.0) -> List[_Move]:
+    """状態列から _Move 列を作り、階段区間を斜めショートカットに置き換える。"""
+    moves = _states_to_moves(path, start_dir)
+    cells = [(x, y) for (x, y, _) in path]
+    for entry_idx, last_turn_idx in reversed(_find_staircases(moves)):
+        sub = _build_shortcut(moves, cells, entry_idx, last_turn_idx, cfg,
+                              wm, min_clearance_mm)
+        if sub is not None:
+            moves[entry_idx:last_turn_idx + 2] = sub
+    return moves
+
+
 def moves_to_segments(
     moves: List[_Move], cfg: PlannerConfig
 ) -> List[Segment]:
@@ -239,19 +460,26 @@ def moves_to_segments(
 
     n = len(moves)
     for i, mv in enumerate(moves):
-        if mv.kind == "straight":
+        if mv.kind in ("straight", "diag"):
             prev_is_turn = i > 0 and moves[i - 1].kind == "turn"
             next_is_turn = i + 1 < n and moves[i + 1].kind == "turn"
-            cell_mm = DIAG_CELL_MM if mv.d.is_diagonal else CELL_MM
-            dist = mv.cells * cell_mm
-            if prev_is_turn:
-                dist -= _turn_tangent_mm(cfg, moves[i - 1])
-            if next_is_turn:
-                dist -= _turn_tangent_mm(cfg, moves[i + 1])
+            if mv.dist_override is not None:
+                # 斜めショートカット: 前後の接線短縮・斜め距離を全て織り込み済み
+                dist = mv.dist_override
+            else:
+                cell_mm = DIAG_CELL_MM if mv.d.is_diagonal else CELL_MM
+                dist = mv.cells * cell_mm
+                if prev_is_turn:
+                    dist -= _turn_tangent_mm(cfg, moves[i - 1])
+                if next_is_turn:
+                    dist -= _turn_tangent_mm(cfg, moves[i + 1])
             if dist < 1e-6:
                 dist = 0.0
-            v_start = v_slalom if prev_is_turn else 0.0
-            v_end = v_slalom if next_is_turn else 0.0
+            if mv.kind == "diag":
+                v_start = v_end = v_slalom
+            else:
+                v_start = v_slalom if prev_is_turn else 0.0
+                v_end = v_slalom if next_is_turn else 0.0
             # 直進が短すぎて巡航に届かない場合でも台形プロファイルが吸収する。
             if dist > 0.0:
                 segs.append(
@@ -300,6 +528,9 @@ def pattern_from_cells(
     cells: Sequence[Tuple[int, int]],
     start_dir: Direction,
     cfg: Optional[PlannerConfig] = None,
+    wm: Optional[WallMap] = None,
+    diagonal: bool = True,
+    min_clearance_mm: float = 50.0,
 ) -> List[Segment]:
     """マスの列(セル列)から走行区間列(Straight/Slalom)を生成する。
 
@@ -309,6 +540,12 @@ def pattern_from_cells(
     planner.py の既存区間生成(_states_to_moves + moves_to_segments)で
     Straight/Slalom へ展開する。スラロームの接線長短縮・45/90/135°の
     分割(180°=90°×2)・速度割当は plan() と同じロジック。
+
+    交互90°ターンが3つ以上続く「階段」区間(diagonal=True、既定)は、現行
+    verify_loop の斜め走行と同じく「45°スラローム → 斜め直進 → 45°
+    スラローム」のショートカットに置き換える(MazeSolver2015 の
+    loadFromPath と同じ発想)。wm を渡すとショートカット軌跡の壁最小
+    クリアランスが min_clearance_mm 未満なら階段のまま残す。
 
     cells は隣接セルが連続する列(閉ループなら先頭と末尾が一致)。
     同一セルの連続(停止)や非隣接セル間は ValueError。
@@ -322,7 +559,10 @@ def pattern_from_cells(
         dy = cells[i][1] - cells[i - 1][1]
         d = direction_from_delta(dx, dy)
         path.append((cells[i][0], cells[i][1], d))
-    moves = _states_to_moves(path, start_dir)
+    if diagonal:
+        moves = _moves_with_diag(path, start_dir, cfg, wm, min_clearance_mm)
+    else:
+        moves = _states_to_moves(path, start_dir)
     return moves_to_segments(moves, cfg)
 
 

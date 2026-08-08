@@ -343,6 +343,111 @@ class TestPatternFromCells(unittest.TestCase):
         self.assertTrue(any(isinstance(s, Slalom) for s in segs))
 
 
+VERIFY_LOOP_CELLS = [
+    (0, 0), (0, 1), (0, 2), (1, 2), (1, 3), (2, 3), (3, 3),
+    (3, 2), (2, 2), (1, 2), (0, 2), (0, 1), (0, 0),
+]
+
+
+class TestDiagonalShortcut(unittest.TestCase):
+    """pattern_from_cells の斜めショートカット(45°スラローム+斜め直進)。"""
+
+    def test_staircase_becomes_diagonal(self):
+        # 前方階段(N→E,N→E)が「45°スラローム→斜め直進→45°スラローム」になる。
+        segs = pattern_from_cells(VERIFY_LOOP_CELLS, Direction.N)
+        self.assertEqual(len(segs), 10)
+        self.assertEqual(segs[1].angle_deg, 45.0)
+        self.assertEqual(segs[1].dir, "R")
+        self.assertEqual(segs[3].angle_deg, 45.0)
+        self.assertEqual(segs[3].dir, "R")
+        T = 90.0 * math.tan(math.radians(45.0) / 2.0)
+        # 入口直進 = 2セル − (半セル + T) = 232.72
+        self.assertAlmostEqual(segs[0].distance_mm, 2 * CELL_MM - (90.0 + T),
+                               places=6)
+        # 斜め直進 = 270√2 − 2T = 307.28(直進3セル分の角を斜めに切る)
+        self.assertAlmostEqual(segs[2].distance_mm,
+                               270.0 * math.sqrt(2.0) - 2.0 * T, places=6)
+        # 出口直進 = 2セル − (戻りR90の接線90 + 半セル + T) = 142.72
+        self.assertAlmostEqual(segs[4].distance_mm,
+                               2 * CELL_MM - 90.0 - (90.0 + T), places=6)
+        # 斜め直進は 45°スラローム境界速度
+        self.assertEqual(segs[2].v_start_mmps, 360.0)
+        self.assertEqual(segs[2].v_end_mmps, 360.0)
+
+    def test_diagonal_disabled_keeps_staircase(self):
+        # diagonal=False なら従来通り90°スラローム列(斜め直進は出ない)。
+        segs = pattern_from_cells(VERIFY_LOOP_CELLS, Direction.N,
+                                  diagonal=False)
+        straights = [s for s in segs if isinstance(s, Straight)]
+        self.assertNotIn(307.28, [round(s.distance_mm, 2) for s in straights])
+        self.assertTrue(all(isinstance(s, Slalom) and s.angle_deg == 90.0
+                            for s in segs if isinstance(s, Slalom)))
+
+    def test_diagonal_forward_path_geometry(self):
+        # 前方区間(直進232.72 → R45 → 斜め307.28 → R45 → 直進142.72)を
+        # トレースすると (540,630) に達する(戻りR90ターン前)。
+        from planner import _trace_segments
+        segs = pattern_from_cells(VERIFY_LOOP_CELLS, Direction.N)
+        pts = _trace_segments(segs[:5], 90.0, 90.0,
+                              Direction.N.heading_rad)
+        x, y = pts[-1]
+        self.assertAlmostEqual(x, 540.0, places=1)
+        self.assertAlmostEqual(y, 630.0, places=1)
+
+    def test_diagonal_clears_dev_maze(self):
+        # dev迷路(wm)で斜め化すると、斜め直進が残り最小クリアランス≥50mm。
+        from dev_maze import build_dev_maze
+        from planner import _min_clearance, _trace_segments, _wall_segments_mm
+        wm = build_dev_maze()
+        segs = pattern_from_cells(VERIFY_LOOP_CELLS, Direction.N, wm=wm)
+        T = 90.0 * math.tan(math.radians(45.0) / 2.0)
+        diag = [s for s in segs if isinstance(s, Straight)
+                and abs(s.distance_mm - (270.0 * math.sqrt(2.0) - 2.0 * T))
+                < 1e-3]
+        self.assertEqual(len(diag), 1)  # ゲートを通過して斜めが残る
+        pts = _trace_segments(segs[:5], 90.0, 90.0, Direction.N.heading_rad)
+        self.assertGreaterEqual(_min_clearance(pts, _wall_segments_mm(wm)),
+                                50.0)
+
+    def test_k2_staircase_becomes_diagonal(self):
+        # N,N,E,N の単一コーナー(k=2: R90→L90)も斜め化できる。
+        # (0,0)→(0,1)→(0,2)→(1,2)→(1,3): E(1)→N(1) の角を NE 斜めで切る。
+        segs = pattern_from_cells(
+            [(0, 0), (0, 1), (0, 2), (1, 2), (1, 3)], Direction.N)
+        self.assertEqual(len(segs), 5)
+        self.assertEqual(segs[1].angle_deg, 45.0)
+        self.assertEqual(segs[1].dir, "R")   # 北→北東
+        self.assertEqual(segs[3].angle_deg, 45.0)
+        self.assertEqual(segs[3].dir, "L")   # 北東→北
+        T = 90.0 * math.tan(math.radians(45.0) / 2.0)
+        # 斜め直進 = 1セル斜め(180√2) − 2T = 180.0
+        self.assertAlmostEqual(segs[2].distance_mm,
+                               DIAG_CELL_MM - 2.0 * T, places=6)
+        # 入口 2セル− (90+T) = 232.72、出口 1セル − (90+T) = 52.72
+        self.assertAlmostEqual(segs[0].distance_mm, 2 * CELL_MM - (90.0 + T),
+                               places=6)
+        self.assertAlmostEqual(segs[4].distance_mm, CELL_MM - (90.0 + T),
+                               places=6)
+
+    def test_k2_diagonal_reaches_cell_center(self):
+        # k=2 斜め化でも (1,3) マス中心 (270,630) に到達する。
+        from planner import _trace_segments
+        segs = pattern_from_cells(
+            [(0, 0), (0, 1), (0, 2), (1, 2), (1, 3)], Direction.N)
+        pts = _trace_segments(segs, 90.0, 90.0, Direction.N.heading_rad)
+        x, y = pts[-1]
+        self.assertAlmostEqual(x, 270.0, places=1)
+        self.assertAlmostEqual(y, 630.0, places=1)
+
+    def test_simple_l_turn_not_diagonalized(self):
+        # ターン1回のL字は階段でないので斜め化しない(既存挙動を維持)。
+        segs = pattern_from_cells(
+            [(0, 0), (0, 1), (0, 2), (1, 2), (2, 2)], Direction.N)
+        slaloms = [s for s in segs if isinstance(s, Slalom)]
+        self.assertEqual(len(slaloms), 1)
+        self.assertEqual(slaloms[0].angle_deg, 90.0)
+
+
 class TestTimeEstimate(unittest.TestCase):
     """Phase 4a: 台形プロファイル・実時間見積もりの精緻化。"""
 
