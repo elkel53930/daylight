@@ -245,6 +245,27 @@ SEN 応答の `lf`/`rf` は**どちらも前センサ値**(Twilight 4センサ�
   `motion_controller.cpp`・`place_controller.cpp` に**重複定義**されている。
   変更時は3箇所とも直すこと(片方だけだと走行距離とオドメトリがずれる)。
 
+### 衝突検出(2026-08-09〜、実機確認済み)
+
+PATH_FOLLOW 走行中、**位置誤差(dist_to_target)か方位誤差(heading_error)が
+しきい値を超えた状態が継続すると壁衝突とみなし**、モーター停止 + 残り
+セグメント破棄 + `#COLLIDE,<seg>,<dist_mm>,<hdg_err_rad>` を一度だけ通知して
+走行を中断する(path_controller.cpp の aborted_ ガードで再駆動しない)。
+
+**しきい値の変更方法**:
+- ESP32側(主、1kHz で検出): シリアルで
+  `PSET,path_collide_dist_mm,<mm>` / `PSET,path_collide_ang_rad,<rad>` /
+  `PSET,path_collide_ms,<ms>` を送る(RAM上のみ、即反映)。永続化は `PSAVE`。
+  ビルド時デフォルトは `software/mob/params.cpp` の `kDefaultParams`。
+- Python側(verify_cells.py の二次安全網): ファイル冒頭の定数
+  `COLLIDE_DIST_MM` / `COLLIDE_ANG_RAD` / `COLLIDE_CONSECUTIVE` を編集
+  (#T が20Hzなので3連続≈150ms)。
+- **既定値**: dist=150mm / ang=0.7rad(≈40°) / 継続120ms。正常走行の過渡
+  (発進時 dist≈45mm、スラローム中 hdg 最大≈16°=0.28rad)より十分大きい値。
+- ⚠️ **ESP32 側のしきい値を変えたら Python 側の定数も揃えること**。
+  揃わないと、例えば ESP32 を 200mm に上げても Python が 150mm で先に
+  MOT,0,0 を送ってしまう(誤検知の原因)。
+
 ## venv・テストの規約
 
 - 開発用 venv は `software/venv`(共有、`--system-site-packages`)。

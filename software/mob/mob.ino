@@ -21,7 +21,7 @@
 
 // ファームウェアバージョン(VERコマンドで応答)。ロジックに意味のある変更を
 // したら必ず上げること(書き込み確認・動作切り分けに使う)。
-#define FW_VERSION "0.4.1"
+#define FW_VERSION "0.4.2"
 
 // Target wheel speed [m/s] (updated from MOT command via cmd_queue)
 static float target_vr_mps = 0.0f;
@@ -338,6 +338,19 @@ void updatePlaceHold(float dt_s) {
 void updatePathFollow(float dt_s) {
     if (motion_state != MotionState::PATH_FOLLOW) return;
     path_controller.update(dt_s);
+
+    // 衝突検出(2026-08-09): path_controller が位置/角度誤差の持続逸脱で
+    // モーターを停止済み。ここで一度だけ #COLLIDE,<seg>,<dist>,<hdg_err>
+    // を通知する(フラグは take_collision() がクリアする)。
+    if (path_controller.take_collision()) {
+        char m[64];
+        snprintf(m, sizeof(m), "#COLLIDE,%u,%.1f,%.3f\n",
+                 static_cast<unsigned>(path_controller.get_seg_index()),
+                 path_controller.get_dist_to_target_mm(),
+                 path_controller.get_heading_error_rad());
+        enqueue_msg_line(m);
+        return;
+    }
 
     // 壁切れ検出(WALL有効時のみ、1kHz)。側壁センサのヒステリシス立ち上がり/
     // 立ち下がりで #WEDGE,<L|R>,<1=rise|0=fall>,<odo_dist> を出力する。

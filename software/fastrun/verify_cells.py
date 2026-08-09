@@ -5,6 +5,13 @@ pattern_from_cells が生成する区間列(斜めショートカット含む)�
 実行フロー(GCAL → WALL,0 → 壁上面補正でスタート位置確定 → ブザー予告 →
 走行 → #T 監視 → 180°旋回で反転)を再利用する。
 
+衝突検出(2026-08-09): 走行中に位置/角度誤差が目標値から大幅に逸脱したら
+壁衝突とみなして走行を終了する。ESP32 側(path_collide_* パラメータ)が
+1kHz で検出してモーターを停止し #COLLIDE を通知するのが主。ここでも
+#COLLIDE 受信と #T 閾値(COLLIDE_DIST_MM/COLLIDE_ANG_RAD)連続超過の二重で
+監視し、衝突時は走行を中止して要約に報告する(180°旋回は行わない)。
+
+
 使い方:
     verify_cells.py --dry-run                     # 区間だけ表示(動かさない)
     verify_cells.py --cells "0,0,0,1,0,2,1,2,1,3" # 既定速度で実機走行
@@ -37,6 +44,14 @@ from verify_loop import _T_RE, recenter_start  # noqa: E402
 import recenter as recenter_ops  # noqa: E402
 
 LOG_DIR = _HERE / "logs"
+
+# 衝突検出(mob の path_collide_* パラメータと対応させる、2026-08-09)。
+# ESP32 側が 1kHz で位置/角度誤差の持続逸脱を検出して #COLLIDE を通知するの
+# が主。ここでは ①#COLLIDE 受信 ②#T の位置/角度誤差がしきい値を連続で超える
+# の二重で監視し、②はファーム未更新時の二次安全網(20Hz・3連続≈150ms)。
+COLLIDE_DIST_MM = 150.0
+COLLIDE_ANG_RAD = 0.7
+COLLIDE_CONSECUTIVE = 3
 
 # 走行後のスタート位置復帰の向き(パターン終端 heading の基準)。
 # ここではパターンが北向きで終わるため、180°旋回で南向き→北向きへ戻す。
@@ -92,6 +107,8 @@ def run_once(link, cells: List[Tuple[int, int]], cruise: float, slalom: float,
         t0 = time.monotonic()
         reached = False
         done_hold = 0
+        collide_count = 0
+        collision = None  # (seg, dist_mm, hdg_rad)
         while True:
             raw = link.ser.readline()
             if not raw:
@@ -101,9 +118,22 @@ def run_once(link, cells: List[Tuple[int, int]], cruise: float, slalom: float,
                 continue
             line = raw.decode("ascii", errors="replace").strip()
             t = time.monotonic() - t0
+            if line.startswith("#COLLIDE"):
+                # ESP32側の衝突検出(1kHz、path_controller がモーターを停止済み)。
+                parts = line.split(",")
+                c_seg = int(parts[1]) if len(parts) > 1 else -1
+                c_dist = float(parts[2]) if len(parts) > 2 else 0.0
+                c_hdg = float(parts[3]) if len(parts) > 3 else 0.0
+                collision = (c_seg, c_dist, c_hdg)
+                w.writerow([f"{t:.3f}", line[:40], "", "", "", "", "", "", "", ""])
+                print(f"[4/4] #COLLIDE(seg={c_seg}, dist={c_dist:.1f}mm, "
+                      f"hdg_err={c_hdg:.3f}rad) 壁衝突として走行中止")
+                break
             m = _T_RE.match(line)
             if m:
                 seg = int(m.group(1))
+                dist = float(m.group(7))
+                hdg = float(m.group(8))
                 w.writerow([f"{t:.3f}", "#T", seg,
                             m.group(2), m.group(3), m.group(4), m.group(5),
                             f"{float(m.group(6)) * 180 / math.pi:.2f}",
@@ -116,11 +146,26 @@ def run_once(link, cells: List[Tuple[int, int]], cruise: float, slalom: float,
                         break
                 else:
                     done_hold = 0
+                # 二次安全網(#Tベース): 位置/角度誤差がしきい値を連続で超えたら
+                # 衝突とみなし停止(ファーム未更新でも保護する)。
+                if dist > COLLIDE_DIST_MM or abs(hdg) > COLLIDE_ANG_RAD:
+                    collide_count += 1
+                    if collide_count >= COLLIDE_CONSECUTIVE:
+                        collision = (seg, dist, hdg)
+                        print(f"[4/4] #T逸脱(seg={seg}, dist={dist:.1f}mm, "
+                              f"hdg_err={hdg:.3f}rad) 壁衝突として走行中止")
+                        break
+                else:
+                    collide_count = 0
                 continue
             w.writerow([f"{t:.3f}", line[:40], "", "", "", "", "", "", "", ""])
 
     link.stop()
     time.sleep(0.2)
+
+    if collision is not None:
+        print(f"[衝突] seg={collision[0]} で走行中止: "
+              f"dist={collision[1]:.1f}mm, hdg_err={collision[2]:.3f}rad")
 
     # 要約(区間別 max|hdg_err| + 発振(符号反転)回数 + 終端)
     seg_max: dict[str, float] = {}

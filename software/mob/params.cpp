@@ -105,6 +105,13 @@ const Params kDefaultParams = {
     .path_wall_kp = 0.05f,
     .path_wall_present = 150.0f,
     .path_wall_bias_max = 0.10f, // ≈5.7° まで
+
+    // 衝突検出(2026-08-09)。実測の正常値(launch時 dist~45mm、スラローム中の
+    // heading最大~16°=0.28rad)より十分大きい値。dist>150mm か |heading|>0.7rad
+    // が120ms継続で確定。実機で要調整。
+    .path_collide_dist_mm = 150.0f,
+    .path_collide_ang_rad = 0.7f,  // ≈40°
+    .path_collide_ms = 120.0f,
 };
 
 Params params = kDefaultParams;
@@ -162,6 +169,9 @@ const ParamDef PARAM_TABLE[] = {
     {"path_wall_kp", offsetof(Params, path_wall_kp)},
     {"path_wall_present", offsetof(Params, path_wall_present)},
     {"path_wall_bias_max", offsetof(Params, path_wall_bias_max)},
+    {"path_collide_dist_mm", offsetof(Params, path_collide_dist_mm)},
+    {"path_collide_ang_rad", offsetof(Params, path_collide_ang_rad)},
+    {"path_collide_ms", offsetof(Params, path_collide_ms)},
 };
 
 const size_t PARAM_COUNT = sizeof(PARAM_TABLE) / sizeof(PARAM_TABLE[0]);

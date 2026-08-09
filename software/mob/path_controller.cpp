@@ -45,6 +45,11 @@ void PathController::start(const Segment* segments, size_t count) {
     dist_to_target_mm_ = params.path_follow_mm;
     heading_error_rad_ = 0.0f;
 
+    // 衝突検出状態の初期化(PRUNのたびにリセット)
+    aborted_ = false;
+    collision_detected_ = false;
+    collide_ticks_ = 0;
+
     if (seg_count_ > 0) {
         begin_segment(0);
     }
@@ -193,6 +198,15 @@ void PathController::update_odometry() {
 }
 
 void PathController::update(float dt_s) {
+    // 衝突検出後(aborted_)はモーター出力を一切行わない(stop()で停止済みだが、
+    // motion_state が PATH_FOLLOW のままの間は update() が呼ばれ続けるため、
+    // 誤って再駆動しないようガードする)。
+    if (aborted_) {
+        motor_.set_right(0);
+        motor_.set_left(0);
+        return;
+    }
+
     advance_target(dt_s);
     update_odometry();
 
@@ -288,6 +302,29 @@ void PathController::update(float dt_s) {
     }
 
     const float dist_error_mm = dist_to_target_mm_ - params.path_follow_mm;
+
+    // 衝突検出(2026-08-09): 位置誤差(dist)か方位誤差(heading)がしきい値を
+    // 超えた状態が path_collide_ms 継続したら「壁に衝突した」とみなして
+    // 走行を中断する。壁に押し付けられると target は進み続けるのに機体が
+    // 動かないため dist が開く(ストール)、または機体が偏向されて heading
+    // が開く。正常な直進/スラロームの過渡(launch 時の dist とスラローム中の
+    // heading スパイク)は短時間で収まるため、継続時間条件で誤検知を防ぐ。
+    if (params.path_collide_ms > 0.0f) {
+        const bool exceed =
+            dist_to_target_mm_ > params.path_collide_dist_mm ||
+            fabsf(heading_error_rad_) > params.path_collide_ang_rad;
+        if (exceed) {
+            if (++collide_ticks_ >=
+                static_cast<uint32_t>(params.path_collide_ms)) {
+                collision_detected_ = true;
+                aborted_ = true;
+                stop();  // モーター停止・残りセグメント破棄
+                return;
+            }
+        } else {
+            collide_ticks_ = 0;
+        }
+    }
 
     float vbatt = sensors_.get_battery_voltage();
     if (vbatt < 6.0f) vbatt = params.vbatt_nom;  // 起動直後・異常値ガード

@@ -80,6 +80,15 @@ public:
 
     bool all_segments_done() const { return seg_index_ >= seg_count_; }
 
+    // 衝突検出(2026-08-09)。update()が壁衝突を検出したらモーターを停止し、
+    // collision_detected_ を立てる。take_collision()は一度だけ true を返して
+    // フラグをクリアする(呼び出し側は #COLLIDE を通知する)。
+    bool take_collision() {
+        bool v = collision_detected_;
+        collision_detected_ = false;
+        return v;
+    }
+
     // テレメトリ用
     float get_target_x_mm() const { return target_x_mm_; }
     float get_target_y_mm() const { return target_y_mm_; }
@@ -126,6 +135,11 @@ private:
     // テレメトリ用
     float dist_to_target_mm_ = 0.0f;
     float heading_error_rad_ = 0.0f;
+
+    // 衝突検出(2026-08-09)
+    bool aborted_ = false;            // 衝突で走行中断(モーター出力しない)
+    bool collision_detected_ = false; // mob.inoへ#COLLIDEを一度だけ通知
+    uint32_t collide_ticks_ = 0;      // しきい値超過の継続tick数
 
     void begin_segment(size_t index);
     void advance_target(float dt_s);

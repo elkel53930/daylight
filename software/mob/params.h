@@ -108,6 +108,17 @@ struct Params {
     float path_wall_kp;       // (rs-ls)[sensor unit] → heading バイアス [rad]
     float path_wall_present;  // ls,rs がこれ以上で「側壁あり」とみなす
     float path_wall_bias_max; // heading バイアスのクランプ [rad]
+
+    // 衝突検出(2026-08-09追加)。PATH_FOLLOW中、位置誤差(dist_to_target_mm)か
+    // 方位誤差(heading_error_rad)がしきい値を超えた状態が path_collide_ms
+    // 継続したら「壁に衝突した」とみなし、モーターを停止して走行を中断する
+    // (#COLLIDE を通知、path_controller.cpp)。壁に押し付けられてストール・
+    // 偏向されると誤差が開くのを利用する。
+    // 通常の直進/スラロームの過渡(launch時 dist~45mm・スラローム中の
+    // heading 最大~16°=0.28rad)より十分大きい値にしておくこと。0以下なら無効。
+    float path_collide_dist_mm;  // 位置誤差しきい値 [mm]
+    float path_collide_ang_rad;  // 方位誤差しきい値 [rad]
+    float path_collide_ms;       // しきい値超過が継続したら確定する時間 [ms]
 };
 
 // ビルド時デフォルト値(現行の実機チューニング値と一致させること)

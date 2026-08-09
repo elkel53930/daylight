@@ -186,7 +186,7 @@ esp32:esp32`）が必要。ビルドサーバー側の `arduino-cli` が PATH �
 | `PCLEAR` | PATTERN走行パスのバッファをクリア(`PADD`の前に毎回呼ぶ) |
 | `PADD,STRAIGHT,<distance_mm>,<v_start_mmps>,<v_cruise_mmps>,<v_end_mmps>` | PATTERN走行パスへ直進区間を1つ追加(台形速度プロファイル) |
 | `PADD,SLALOM,<v_mmps>,<L\|R>,<radius_mm>,<angle_deg>` | PATTERN走行パスへスラローム旋回区間を1つ追加(定速円弧、L=左/CCW、R=右/CW。角度は度指定、桁数節約のためradではなくdeg) |
-| `PRUN` | `PCLEAR`/`PADD`で組み立てたPATTERN走行パスを仮想ターゲット追従(`path_controller.cpp`)で実行開始。停止は`MOT,0,0` |
+| `PRUN` | `PCLEAR`/`PADD`で組み立てたPATTERN走行パスを仮想ターゲット追従(`path_controller.cpp`)で実行開始。停止は`MOT,0,0`。走行中、位置/角度誤差が目標値から大幅に逸脱した状態が`path_collide_ms`継続すると壁衝突とみなし、モーターを停止して走行を中断し`#COLLIDE,<seg>,<dist_mm>,<hdg_err_rad>`を一度だけ通知する(パラメータ: `path_collide_dist_mm`/`path_collide_ang_rad`/`path_collide_ms`、2026-08-09〜) |
 
 ### パラメータ(PGET/PSET/PSAVE/PLOAD/PRESET)
 
@@ -207,6 +207,17 @@ PRESET                      # RAM値をビルド時デフォルトへ戻す(NVS�
 `Params` にフィールドを追加/削除しても他の調整済み値には影響しない
 (新フィールドは保存キーが無いのでデフォルトのまま動く)。
 一覧・各パラメータの意味は `params.h` のコメント参照。
+
+衝突検出(`PRUN`中の壁衝突で走行中断、2026-08-09〜)のしきい値変更:
+```
+PSET,path_collide_dist_mm,200   # 位置誤差しきい値 [mm](既定150)
+PSET,path_collide_ang_rad,0.8   # 方位誤差しきい値 [rad](既定0.7≈40°)
+PSET,path_collide_ms,150        # 超過継続時間 [ms](既定120)
+PSAVE                           # 永続化(しないと再起動で戻る)
+```
+Python側の二次安全網(`software/fastrun/verify_cells.py` 冒頭の
+`COLLIDE_DIST_MM`/`COLLIDE_ANG_RAD`/`COLLIDE_CONSECUTIVE`)も同じ値に
+揃えること(揃わないと Python が先に MOT,0,0 を送る)。
 
 ### SEN レスポンス形式
 
