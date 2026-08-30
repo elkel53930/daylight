@@ -1,0 +1,27 @@
+# mission.py の設定。CLI 引数が最優先(未指定のときここが使われる)。設計は DESIGN_eiffel_liner.md。
+eiffel:
+  host: 172.20.10.4        # Eiffel 1号機(role=primary、2台を集約)
+  port: 5000
+  timeout_s: 2.0
+
+maze:
+  cols: 16                 # combined.maze_cols を正とし、これは期待値(不一致なら警告)
+  rows: 8
+
+liner:
+  start:
+    cell: [0, 7]           # 迷路ごとに変更(自陣スタート)。現在=北西隅(0,7)南向き
+    heading: S             # N / E / S / W
+
+map_sync:
+  valid_policy: conservative   # strict / conservative(未検出内辺を封鎖=安全側)
+  retries: 5
+  backoff_s: 0.5
+  require_region_valid: true    # 経路上に未検出マスがあれば走らない
+
+drive:
+  port: /dev/ttyUSB0
+  straight_mmps: 700       # verify_cells 実測の確定値
+  slalom_mmps: 550
+  collide_dist_mm: 150     # firmware(PSET path_collide_dist_mm)と必ず揃える
+  collide_ang_rad: 0.7
