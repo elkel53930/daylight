@@ -200,8 +200,10 @@ def recenter_before_drive(link, cam, wm, pose: LinerPose) -> dict:
 # ----- ミッション本体 -----
 
 def run_mission(cfg: dict, start: Tuple[int, int], start_dir: Direction,
-                goal: Tuple[int, int], *, dry_run: bool, recenter_goal: bool) -> int:
-    snap = fetch_map(cfg)
+                goal: Tuple[int, int], *, dry_run: bool, recenter_goal: bool,
+                snap: Optional["eiffel_client.EiffelSnapshot"] = None) -> int:
+    if snap is None:
+        snap = fetch_map(cfg)
     if (snap.cols, snap.rows) != (cfg["maze"]["cols"], cfg["maze"]["rows"]):
         print(f"[WARN] マップサイズ {snap.cols}x{snap.rows} が設定 "
               f"{cfg['maze']['cols']}x{cfg['maze']['rows']} と不一致。Eiffel 側を採用します")
