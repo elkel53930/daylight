@@ -51,6 +51,11 @@ static constexpr uint16_t WALL_EDGE_HIGH = 200;
 static constexpr uint16_t WALL_EDGE_LOW  = 100;
 static bool g_wall_edge_reset = false;
 
+// PRUN完了時のDONE送信フラグ(2026-11-03追加)。
+// path_controllerが全セグメントを完了した際に、一度だけDONEを送信する。
+// PRUNのたびにリセットされる。
+static bool g_path_follow_done_sent = false;
+
 // グローバルなクラスは、上から順に初期化される
 Led led;
 WallSensor wall_sensor;
@@ -290,6 +295,7 @@ void processCommandQueue() {
                 motion_state = MotionState::PATH_FOLLOW;
                 path_controller.start(g_pattern_segments, g_pattern_segment_count);
                 g_wall_edge_reset = true;  // 壁切れ検出器を走行開始時に初期化
+                g_path_follow_done_sent = false;  // DONE送信フラグをリセット(2026-11-03)
                 enqueue_msg_line("#PATH_FOLLOW: pattern start\n");
                 break;
 
@@ -350,6 +356,13 @@ void updatePathFollow(float dt_s) {
                  path_controller.get_heading_error_rad());
         enqueue_msg_line(m);
         return;
+    }
+
+    // PRUN完了検出(2026-11-03追加): 全セグメントが完了したら一度だけDONEを送信。
+    // これにより、Python側は#TテレメトリをポーリングせずDONEを待つだけでよくなる。
+    if (path_controller.all_segments_done() && !g_path_follow_done_sent) {
+        enqueue_msg_line("DONE\n");
+        g_path_follow_done_sent = true;
     }
 
     // 壁切れ検出(WALL有効時のみ、1kHz)。側壁センサのヒステリシス立ち上がり/

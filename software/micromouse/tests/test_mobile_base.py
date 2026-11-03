@@ -38,6 +38,9 @@ class FakeSerial:
         elif line in ("PCLEAR",) or line.startswith("PADD,"):
             # PRUN系のDONE応答
             self._responses.append(b"DONE\n")
+        elif line == "PRUN":
+            # PRUN完了時のDONE応答(2026-11-03追加: mob側で全セグメント完了時にDONE送信)
+            self._responses.append(b"DONE\n")
         elif line == "SEN":
             # デフォルトのSEN応答（テストで上書き可能）
             if not self._responses:
@@ -166,27 +169,9 @@ class TestMobileBaseProtocol(unittest.TestCase):
         - PCLEAR が送信される
         - PADD,STRAIGHT が送信される
         - PRUN が送信される
-        - #T で完了を検出し、MOT,0,0 を送信する
+        - DONE を受信して完了検出
+        - MOT,0,0 を送信して PATH_FOLLOW を抜ける
         """
-        # FakeSerial を拡張して #T テレメトリをエミュレート
-        original_write = self.fake.write
-        prun_sent = [False]
-        t_line_count = [0]
-        
-        def extended_write(data):
-            line = data.decode("ascii").strip()
-            original_write(data)
-            if line == "PRUN":
-                prun_sent[0] = True
-            # PRUN 送信後に #T テレメトリを生成
-            if prun_sent[0] and self.fake._responses:
-                # 既存の応答を先に処理
-                pass
-            elif prun_sent[0] and not self.fake._responses:
-                # #T テレメトリを追加 (seg_index=1 で完了)
-                self.fake._responses.append(b"#T,1,0.0,0.0,0.0,0.0,0.0,0.0,0.0\n")
-        
-        self.fake.write = extended_write
         self.base.forward_with_wall_feedback(100.0)
         
         # 送信されたコマンドを確認

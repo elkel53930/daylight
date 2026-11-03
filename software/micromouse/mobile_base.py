@@ -457,7 +457,7 @@ class MobileBase:
         - モバイルベースが指定距離前進している
         
         不変条件:
-        - #T テレメトリでセグメント完了を検出する
+        - mob 側から DONE を受信して完了を検出する
         - 完了後に MOT,0,0 で PATH_FOLLOW 状態を抜ける
         """
         if distance_mm <= 0.0:
@@ -480,32 +480,9 @@ class MobileBase:
         # 走行開始
         self._send("PRUN\n")
         
-        # #T テレメトリでセグメント完了を待つ
-        # #T,<seg_index>,<tx>,<ty>,<rx>,<ry>,<rtheta>,<dist>,<hdg_err>
-        deadline = time.monotonic() + timeout_s
-        pattern_done = False
-        
-        while time.monotonic() < deadline and not pattern_done:
-            self._check_abort()
-            line = self._read_line()
-            if line is None:
-                continue
-            if line.startswith("SEN,"):
-                frame = parse_sen_line(line)
-                if frame is not None:
-                    self.last_frame = frame
-                continue
-            if line.startswith("#T,"):
-                parts = line.split(",")
-                if len(parts) >= 2:
-                    try:
-                        seg_index = int(parts[1])
-                        # セグメントインデックスが1以上になったら完了
-                        # (0 = 最初のセグメント実行中, 1 = 全セグメント完了)
-                        if seg_index >= 1:
-                            pattern_done = True
-                    except ValueError:
-                        pass
+        # mob 側から DONE を受信して完了を待つ(2026-11-03変更)
+        # mob の updatePathFollow() が全セグメント完了時に DONE を送信する
+        self._wait_for(("DONE",), timeout_s)
         
         # モータ停止して PATH_FOLLOW 状態を抜ける
         self.motors_off()

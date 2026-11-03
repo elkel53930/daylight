@@ -8,7 +8,7 @@ cell_runner.py はそれを mm/rad の物理量に変換し、mobile_base.py に
 mobile_base.py は JOGFWD/JOGTURN などのシリアルコマンドに変換して mob に送信します。
 
 === 壁センサフィードバック ===
-探索走行中の直進では、壁センサフィードバック制御を有効にします。
+探索走行・最短走行の両方で、壁センサフィードバック制御を有効にします。
 これにより、機体が左右にずれた場合に壁センサ値(ls, rs)を読み取り、
 path_controller が自動で機体を中央に寄せる補正を行います。
 
@@ -16,8 +16,11 @@ path_controller が自動で機体を中央に寄せる補正を行います。
 - start_dash(): スタートから最初の判断点まで
 - forward_one_cell(): 1セル前進
 - exit_to_boundary(): センターから次の境界まで
+- run_motion(STRAIGHT): 最短走行の直進区間
 
 実装は mobile_base.forward_with_wall_feedback() を参照。
+mob 側の path_controller が全セグメント完了時に DONE を送信するため、
+Python 側は DONE を待つだけで完了を検出できます(2026-11-03変更)。
 
 === 重要な概念: 判断点 ===
 探索走行では「セル境界」を判断点とします。
@@ -32,7 +35,7 @@ path_controller が自動で機体を中央に寄せる補正を行います。
   - 停止: forward_with_wall_feedback(90mm) (中心で停止)
 
 === 最短走行の幾何 ===
-  - 直進 n セル: JOGFWD n×180mm (壁センサフィードバックなし、最短経路優先)
+  - 直進 n セル: forward_with_wall_feedback(n×180mm) (壁センサフィードバック付き)
   - 旋回: その場 JOGTURN
 
 Twilight solve_maze_threaded.py の generate_action() の 90mm 定数を
@@ -193,14 +196,35 @@ class CellRunner:
     # ---- 最短走行(セル中心 → セル中心) ----
 
     def run_motion(self, motion: Motion) -> None:
+        """最短走行の1区間を実行する。
+        
+        事前条件:
+        - motion が有効な Motion オブジェクト
+        - STRAIGHT の場合、motion.cells > 0
+        
+        事後条件:
+        - STRAIGHT: 壁センサフィードバック付きで指定距離前進
+        - TURN_*: その場旋回
+        
+        不変条件:
+        - STRAIGHT では forward_with_wall_feedback() を使用して
+          壁センサフィードバック(path_wall_kp)を有効にする
+        - シミュレータでは forward() にフォールバック
+        """
         if motion.type == MotionType.STRAIGHT:
             if motion.cells <= 0:
                 raise ValueError(f"invalid straight cells: {motion.cells}")
-            self.base.stop_at(
-                self.config.speed_run_speed_mmps,
-                self.config.speed_run_accel_mmps2,
-                motion.cells * self.config.cell_size_mm,
-            )
+            distance = motion.cells * self.config.cell_size_mm
+            speed = self.config.speed_run_speed_mmps
+            accel = self.config.speed_run_accel_mmps2
+            
+            # 壁センサフィードバック付きで前進(2026-11-03変更)
+            # 最短走行でも自己位置補正のため壁センサフィードバックを有効化
+            if hasattr(self.base, 'forward_with_wall_feedback'):
+                self.base.forward_with_wall_feedback(distance, speed, accel)
+            else:
+                # シミュレータ用のフォールバック
+                self.base.stop_at(speed, accel, distance)
         elif motion.type == MotionType.TURN_LEFT:
             self.turn_left()
         elif motion.type == MotionType.TURN_RIGHT:
