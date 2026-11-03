@@ -11,13 +11,15 @@
 | `camera/` | CSIカメラの動作確認・Discord投稿スクリプト(手動実行) | なし |
 | `beacon/` | 起動時のDiscord IP通知 | (cron等で個別運用、`beacon/README.md`参照) |
 | `vision/` | カメラ画像認識ライブラリ(黄ボール検出・赤壁エッジ検出) | なし |
+| `micromouse/` | マイクロマウス自律走行アプリ(迷路探索・最短走行。新mobプロトコルへ適応済み) | なし(手動実行) |
 | `mob/` | 外部ESP32上で動くモーター制御ファームウェア(Arduino/C++) | 対象外(ハードウェア無しでテスト不可) |
 
 各ディレクトリの詳細は個別の `README.md` を参照。
 
-`micromouse/`・`manual_controller/` は2026-08-02に削除(ESP32側の移動系
-制御ロジックを根本から作り直すため、依存していたPythonスクリプトごと削除。
-`CLAUDE.md`参照)。
+`manual_controller/` は2026-08-02に削除(ESP32側の移動系制御ロジックを
+根本から作り直すため、依存していたPythonスクリプトごと削除。`CLAUDE.md`
+参照)。`micromouse/` も同日に削除されたが、後日復元し、新プロトコル
+(`JOGFWD`/`JOGTURN`/`MOT`)へ適応させている。
 
 ## 開発用venvの方針
 

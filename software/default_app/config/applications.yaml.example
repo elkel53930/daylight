@@ -9,8 +9,9 @@
 #       - /home/k-iida/dev/daylight/software/camera/camera_test.py
 #     priority: 20
 #
-# micromouse/manual_controllerは2026-08-02にESP32制御ロジックの再設計に
-# 伴い削除した(software/mob/README.md参照)。作り直し次第ここに戻す。
+# manual_controllerは2026-08-02にESP32制御ロジックの再設計に伴い削除した
+# (software/mob/README.md参照)。micromouseも同日削除されたが、後に復元し
+# 新プロトコル(JOGFWD/JOGTURN/MOT)へ適応済み。
 # Motion Testはその再設計中のHOLD/TURN/PATTERNコマンドを実機でOLED越しに
 # 試すツール(software/mob/motion_test.py、2026-08-02追加。当初turn_test.py
 # という名前だったが、その場旋回だけでなく並進も試せるため改名した)。

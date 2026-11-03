@@ -6,14 +6,21 @@
 ⚠️ **2026-08-02、`software/mob/` の移動系制御(FWD/STOP/TURN/JOGFWD/
 JOGBACK/JOGTURN/LFWD/LBACK/LTURNL/LTURNR/LSTOP/QSTP)と、それに依存していた
 `software/micromouse/`・`software/manual_controller/` を丸ごと削除し、
-その場旋回を中心に制御ロジックを根本から作り直し中**(モータードライバ・
+その場旋回を中心に制御ロジックを根本から作り直した**(モータードライバ・
 IMU・エンコーダ等の低レベル層はそのまま)。以下のドキュメント中、削除済み
-コマンド・ディレクトリへの言及は歴史的経緯として残しているが、実際には
-存在しない。現状の移動系コマンドは `MOT`(速度制御)・`DUTY`(生duty)・
-`HOLD`(その場静止制御、`place_controller.cpp`)・`TURN`(超信地旋回)・
-`JOGFWD`/`JOGBACK`/`JOGTURN`(精密な微小移動、2026-08-04再導入、到達でDONE)。
-`micromouse_implementation_report.md`(リポジトリ直下)は削除前の実装の
-歴史的記録として残っているが、コード自体はもう無い。
+コマンド・ディレクトリへの言及は歴史的経緯として残している。現状の移動系
+コマンドは `MOT`(速度制御)・`DUTY`(生duty)・`HOLD`(その場静止制御、
+`place_controller.cpp`)・`TURN`(超信地旋回)・`JOGFWD`/`JOGBACK`/`JOGTURN`
+(精密な微小移動、2026-08-04再導入、到達でDONE)・`PCLEAR`/`PADD`/`PRUN`
+(パス走行)。
+
+**2026-11-03: `software/micromouse/` は削除前の master から復元し、新プロ
+トコルへ適応させた**。`mobile_base.py` の `forward`/`stop_at`/`turn` は
+それぞれ `JOGFWD`(stop_at は到達後 `MOT,0,0`)/`JOGTURN` にマッピングし、
+`SANG`/`RANG`/`RDST`/`GCAL` の前には `MOT,0,0` で保持を解除する。旧
+`FWD`/`STOP`/`TURN`/`QSTP`/`L*` は使わない。`manual_controller/` は削除の
+まま。`micromouse_implementation_report.md`(リポジトリ直下)は削除前の
+実装の歴史的記録。
 
 ## プロジェクト像(2026-08-04、ユーザーが明確化 ⚠️最重要)
 
@@ -53,7 +60,8 @@ software/
   mob/          ESP32-S3 ファームウェア(Arduino/C++、モータ・センサ制御)
 ```
 
-(`micromouse/`・`manual_controller/` は2026-08-02に削除。上記の注記参照)
+(`manual_controller/` は2026-08-02に削除。`micromouse/` は同日削除されたが
+2026-11-03に復元・新プロトコル適応済み。上記の注記参照)
 
 参考実装(前身機): https://github.com/elkel53930/robosweep_twilight
 — mob のシリアルプロトコルはほぼ共通。迷路アルゴリズム・走行ループの
@@ -293,7 +301,7 @@ PATH_FOLLOW 走行中、**位置誤差(dist_to_target)か方位誤差(heading_er
 - リポジトリ側 `ui/README.md` の `/opt/ui` デプロイ手順・`ui_server.service`
   は理想形/参考であり、実機の現状とは別物(2026-07-18 時点)。
 
-## micromouse・manual_controller(削除済み、2026-08-02)
+## micromouse・manual_controller(経緯)
 
 `software/micromouse/`(マイクロマウス自律走行)と `software/manual_controller/`
 (ゲームパッド遠隔操作)は、依存していた mob の移動系コマンド(FWD/STOP/TURN/
@@ -301,6 +309,9 @@ JOG系/LATCH系/QSTP)ごと2026-08-02に削除した。ESP32側の制御ロジ�
 「その場に静止する」→「180°その場旋回」から根本的に作り直すため
 (`software/mob/README.md`のコマンド一覧・`place_controller.cpp`参照)。
 
+- **`micromouse/` は2026-11-03に削除前の master から復元し、新プロトコル
+  (`JOGFWD`/`JOGBACK`/`JOGTURN`/`MOT`)へ適応させた**。詳細は冒頭の注記と
+  `software/micromouse/README.md` を参照。`manual_controller/` は削除のまま。
 - 設計・チューニングの詳細な経緯は `micromouse_implementation_report.md`
   (リポジトリ直下)と git 履歴(`git log -- software/micromouse
   software/manual_controller`)に残っている。作り直す際の参考にすること。
@@ -311,7 +322,7 @@ JOG系/LATCH系/QSTP)ごと2026-08-02に削除した。ESP32側の制御ロジ�
   (再校正の手間を省くため)。
 - `default_app` のメニュー(`/etc/robot-ui/applications.yaml`、実機・root
   所有)から Micromouse / Pattern Test / Manual Control のエントリは削除済み。
-  Camera Test のみ残っている。
+  Camera Test のみ残っている(アプリを戻す場合は再登録する)。
 
 ## その他の運用メモ
 
