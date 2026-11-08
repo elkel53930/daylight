@@ -26,10 +26,10 @@ class MicromouseConfig:
     # --- 迷路(競技規則) ---
     maze_size: int = 16
     cell_size_mm: float = 180.0
-    goal_x_min: int = 1
-    goal_x_max: int = 1
-    goal_y_min: int = 1
-    goal_y_max: int = 1
+    goal_x_min: int = 5
+    goal_x_max: int = 5
+    goal_y_min: int = 0
+    goal_y_max: int = 0
 
     # --- 探索走行 ---
     sensing_distance_mm: float = 90.0
@@ -49,6 +49,9 @@ class MicromouseConfig:
     max_exploration_steps: int = 1000
     sensor_retry: int = 3
     sensor_max_consecutive_failures: int = 5
+
+    # --- カメラ位置補正 ---
+    camera_recenter_enabled: bool = True
 
     # --- その他 ---
     log_dir: str = str(Path(__file__).parent / "logs")

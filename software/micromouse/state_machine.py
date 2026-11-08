@@ -1,13 +1,16 @@
 """マイクロマウスのミッション状態機械.
 
 状態遷移:
-    IDLE → CALIBRATION → MICROMOUSE_START → EXPLORATION → GOAL_REACHED
-        → RETURN_TO_START → PATH_PLANNING → SPEED_RUN → FINISHED
+    IDLE → CALIBRATION → RECENTERING → MICROMOUSE_START → EXPLORATION → FINISHED
     任意の状態 → ERROR / EMERGENCY_STOP
 
 探索走行の距離補正:
     FWD の DONE 受信後、次のコマンド発行直前にエンコーダ位置を取得し、
     残距離を計算してから FWD/STOP を発行する。
+
+カメラ位置補正:
+    スタート区画で走り出す前に、カメラで前壁の赤エッジを検出し、
+    ヨー角と前後位置を補正する。
 """
 
 from __future__ import annotations
@@ -25,16 +28,31 @@ from errors import AbortRequested, MobileBaseError
 from path_planner import path_to_motions, plan_cell_path
 from wall_detector import SensorFrame, WallDetector
 
+try:
+    from camera_recenter import recenter_start, Direction as RecenterDirection
+    CAMERA_RECENTER_AVAILABLE = True
+except (ImportError, AttributeError):
+    CAMERA_RECENTER_AVAILABLE = False
+    RecenterDirection = None
+
+
+def walls_from_maze(maze, x, y):
+    """maze から壁情報を取得する."""
+    from maze import WallState, Direction as MazeDirection
+    walls = {}
+    for d, name in [(MazeDirection.NORTH, "north"), (MazeDirection.EAST, "east"),
+                    (MazeDirection.SOUTH, "south"), (MazeDirection.WEST, "west")]:
+        walls[name] = maze.wall(x, y, d) == WallState.WALL
+    return walls
+
 
 class MissionState(Enum):
     IDLE = "IDLE"
     CALIBRATION = "CALIBRATION"
+    RECENTERING = "RECENTERING"
     MICROMOUSE_START = "MICROMOUSE_START"
     EXPLORATION = "EXPLORATION"
     GOAL_REACHED = "GOAL_REACHED"
-    RETURN_TO_START = "RETURN_TO_START"
-    PATH_PLANNING = "PATH_PLANNING"
-    SPEED_RUN = "SPEED_RUN"
     FINISHED = "FINISHED"
     ERROR = "ERROR"
     EMERGENCY_STOP = "EMERGENCY_STOP"
@@ -244,6 +262,25 @@ class MicromouseMission:
         try:
             self._set_state(MissionState.CALIBRATION)
             self._calibrate()
+
+            # カメラ位置補正(設定で有効かつモジュールが利用可能な場合)
+            if self.config.camera_recenter_enabled and CAMERA_RECENTER_AVAILABLE:
+                self._set_state(MissionState.RECENTERING)
+                # スタート位置の壁情報を取得(外周壁は既知)
+                walls = walls_from_maze(self.maze, 0, 0)
+                current_heading = RecenterDirection[self.pose.heading.name]
+                results = recenter_start(self.base, current_heading, walls, log_fn=self._log)
+                for r in results:
+                    self._log(
+                        event="recenter_result",
+                        axis=r.axis,
+                        success=r.success,
+                        message=r.message,
+                        yaw_deg=r.yaw_deg,
+                        offset_mm=r.offset_mm,
+                    )
+                    if not r.success:
+                        self._log(event="recenter_warning", axis=r.axis, message=r.message)
 
             self._set_state(MissionState.MICROMOUSE_START)
             frame = self._read_sensors_checked()

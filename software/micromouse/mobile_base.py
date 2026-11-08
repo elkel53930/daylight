@@ -157,6 +157,10 @@ class MobileBase:
         """RANG: ジャイロ積分角度をリセット."""
         self._command_and_wait_done("RANG\n", timeout_s=3.0)
 
+    def set_angle(self, angle_rad: float) -> None:
+        """SANG: ジャイロ積分角度を任意値に設定."""
+        self._command_and_wait_done(f"SANG,{angle_rad:.6f}\n", timeout_s=3.0)
+
     def wall_led(self, enabled: bool) -> None:
         """壁センサLEDの有効化. 応答無し."""
         self._send(f"WALL,{1 if enabled else 0}\n")
