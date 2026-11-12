@@ -44,9 +44,21 @@ const Params kDefaultParams = {
     .turn_max_mps = 0.15f,
     .turn_min_mps = 0.06f,
     .turn_tol_rad = 0.01f,
-    .turn_settle_s = 0.08f,
+    .turn_settle_s = 0.15f,
     .turn_max_retry = 3.0f,
     .turn_accel = 4.0f,
+
+    // その場旋回の台形プロファイル+FF(mob/place_controller互換、2026-11-12)
+    // mobで検証した値を基準に、旧motion_controller(車輪速度PID)へ速度目標を
+    // 渡す前提でスケール。max=4.0rad/sは車輪速度換算≈0.152m/s(旧上限0.15相当)。
+    .turn_prof_max = 4.0f,
+    .turn_prof_acc = 20.0f,
+    .turn_prof_kp = 0.6f,
+    .turn_prof_ki = 0.3f,
+    .turn_prof_kd = 0.02f,
+    .turn_prof_vmax = 0.20f,
+    .turn_prof_fine = 0.20f,
+    .turn_prof_done = 1.5f,
 
     // 直進の角度・角速度フィードバック
     .angle_fb_gain = 0.5f,
@@ -100,6 +112,15 @@ const ParamDef PARAM_TABLE[] = {
     {"turn_settle_s", offsetof(Params, turn_settle_s)},
     {"turn_max_retry", offsetof(Params, turn_max_retry)},
     {"turn_accel", offsetof(Params, turn_accel)},
+
+    {"turn_prof_max", offsetof(Params, turn_prof_max)},
+    {"turn_prof_acc", offsetof(Params, turn_prof_acc)},
+    {"turn_prof_kp", offsetof(Params, turn_prof_kp)},
+    {"turn_prof_ki", offsetof(Params, turn_prof_ki)},
+    {"turn_prof_kd", offsetof(Params, turn_prof_kd)},
+    {"turn_prof_vmax", offsetof(Params, turn_prof_vmax)},
+    {"turn_prof_fine", offsetof(Params, turn_prof_fine)},
+    {"turn_prof_done", offsetof(Params, turn_prof_done)},
 
     {"angle_fb_gain", offsetof(Params, angle_fb_gain)},
     {"rate_fb_gain", offsetof(Params, rate_fb_gain)},

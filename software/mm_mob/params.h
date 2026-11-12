@@ -60,6 +60,18 @@ struct Params {
     float turn_max_retry;
     float turn_accel;
 
+    // その場旋回の台形プロファイル+FF(mob/place_controller互換、2026-11-12)
+    // updateTurn が目標角を台形に進め、物理FF(ω*WHEEL_BASE/2) + 角度PID +
+    // 角速度D で追従する。旧turn_*はこのプロファイル方式では未使用。
+    float turn_prof_max;   // 巡航角速度 [rad/s]
+    float turn_prof_acc;   // 角加速度 [rad/s^2]
+    float turn_prof_kp;    // 角度追従P [m/s per rad]
+    float turn_prof_ki;    // 角度追従I [m/s per (rad*s)]
+    float turn_prof_kd;    // 角速度誤差D [m/s per (rad/s)]
+    float turn_prof_vmax;  // 出力車輪速度クランプ [m/s]
+    float turn_prof_fine;  // 積分を有効化する残角 [rad]
+    float turn_prof_done;  // プロファイル完了後の整定移行タイムアウト [s]
+
     // 直進の角度・角速度フィードバック(mob.ino updateForward等)
     float angle_fb_gain;
     float rate_fb_gain;

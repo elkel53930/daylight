@@ -3,3 +3,6 @@
 
 # arduino-cli コア・ライブラリコンパイルキャッシュ
 .build_cache/
+
+# 旋回診断ログ(高レートテレメトリ取得時のCSV)
+turn_diag_*.csv

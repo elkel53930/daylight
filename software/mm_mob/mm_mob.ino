@@ -85,6 +85,13 @@ static bool turn_settling = false;      // 整定確認フェーズ中
 static float turn_settle_elapsed_s = 0.0f;
 static uint8_t turn_retry_count = 0;    // 再サーボ回数
 static float turn_integ = 0.0f;         // PID積分項 [rad*s]（リトライ含め1回のTURNコマンド内で保持）
+// 台形目標角プロファイル(mob/place_controller互換、2026-11-12)
+static float turn_start_angle_rad = 0.0f;    // 旋回開始時の角度(プロファイル基準)
+static float turn_target_angle_rad = 0.0f;   // 現在の目標角度(プロファイルで進行)
+static float turn_omega_mag_radps = 0.0f;    // 目標角速度の大きさ[rad/s]
+static float turn_omega_signed_radps = 0.0f; // 符号付き目標角速度[rad/s]
+static float turn_dir = 1.0f;                // +1: 左(CCW), -1: 右(CW)
+static float turn_prof_done_elapsed_s = 0.0f; // プロファイル完了後の経過時間[s]
 
 // 低速動作コマンド（L*）状態
 enum class LatchMode : uint8_t {
@@ -525,8 +532,13 @@ void handleTurnCommand(float target_rad) {
     stop_elapsed_s = 0.0f;
 
     // 角度制御の基準を確定
-    const float turn_start_angle_rad = sensors.get_angle();
+    turn_start_angle_rad = sensors.get_angle();
     turn_goal_angle_rad = turn_start_angle_rad + target_rad;
+    turn_target_angle_rad = turn_start_angle_rad;
+    turn_omega_mag_radps = 0.0f;
+    turn_omega_signed_radps = 0.0f;
+    turn_dir = (target_rad >= 0.0f) ? 1.0f : -1.0f;
+    turn_prof_done_elapsed_s = 0.0f;
     turn_speed_cmd_mps = 0.0f;
     turn_settling = false;
     turn_settle_elapsed_s = 0.0f;
@@ -1009,6 +1021,40 @@ void updateTurn(float dt_s) {
     const float now_ang = sensors.get_angle();
     const float err = turn_goal_angle_rad - now_ang;   // +: 左回り目標が残っている
 
+    // --- 台形目標角プロファイル(mob/place_controller互換、2026-11-12) ---
+    // 目標角を角加速度一定で加速→減速させ、目標付近で角速度が0になるよう
+    // 進める。旧実装は残角PIDの速度指令のみで最低速度クランプ(60mm/s)が
+    // あり、目標手前で減速しきれずオーバーシュートしやすかった。mobでは
+    // 「目標角そのものを滑らかに減速させ、FFで追従」することで抑えている。
+    const float total_angle = fabsf(turn_goal_angle_rad - turn_start_angle_rad);
+    const float traveled = fabsf(turn_target_angle_rad - turn_start_angle_rad);
+    const float remaining = total_angle - traveled;
+    const float decel_angle = (params.turn_prof_acc > 1e-6f)
+        ? (turn_omega_mag_radps * turn_omega_mag_radps) / (2.0f * params.turn_prof_acc)
+        : 0.0f;
+    float omega_next;
+    if (remaining <= decel_angle) {
+        omega_next = turn_omega_mag_radps - params.turn_prof_acc * dt_s;
+        if (omega_next < 0.0f) omega_next = 0.0f;
+    } else {
+        omega_next = turn_omega_mag_radps + params.turn_prof_acc * dt_s;
+        if (omega_next > params.turn_prof_max) omega_next = params.turn_prof_max;
+    }
+    turn_omega_mag_radps = omega_next;
+
+    float next_target = turn_target_angle_rad + turn_dir * turn_omega_mag_radps * dt_s;
+    if (turn_dir >= 0.0f) {
+        if (next_target > turn_goal_angle_rad) next_target = turn_goal_angle_rad;
+    } else {
+        if (next_target < turn_goal_angle_rad) next_target = turn_goal_angle_rad;
+    }
+    turn_target_angle_rad = next_target;
+    turn_omega_signed_radps = turn_dir * turn_omega_mag_radps;
+
+    const bool profile_done =
+        (turn_omega_mag_radps <= 1e-5f) &&
+        (fabsf(turn_target_angle_rad - turn_goal_angle_rad) <= 1e-5f);
+
     // 整定確認フェーズ: 一旦停止して待ち、慣性で流れた分を再確認する
     if (turn_settling) {
         turn_settle_elapsed_s += dt_s;
@@ -1016,7 +1062,6 @@ void updateTurn(float dt_s) {
         if (fabsf(err) <= params.turn_tol_rad || turn_retry_count >= params.turn_max_retry) {
             turn_settling = false;
             // 旋回目標角を維持しつつ慣性を減衰させてからDONEを返す
-            // (リトライ上限で残った誤差もホールド中のFBで引き戻される)
             motion_state = MotionState::STOP_HOLD;
             stop_hold_elapsed_s = 0.0f;
             stop_hold_target_angle_rad = turn_goal_angle_rad;
@@ -1036,73 +1081,84 @@ void updateTurn(float dt_s) {
         target_vr_mps = 0.0f;
         target_vl_mps = 0.0f;
         motion.stop();
+        return;
+    }
+
+    // プロファイル完了後も許容に入らない場合の無限待ち防止(タイムアウトで整定へ)
+    if (profile_done) {
+        turn_prof_done_elapsed_s += dt_s;
+        if (turn_prof_done_elapsed_s >= params.turn_prof_done) {
+            turn_retry_count = static_cast<uint8_t>(params.turn_max_retry);
+            turn_settling = true;
+            turn_settle_elapsed_s = 0.0f;
+            motion.stop();
+            return;
+        }
     } else {
-        // PID制御で「理想速度」を作る。
-        // P: 残角に比例(大きいほど速く)。
-        // I: 整定待ち後もリトライ上限で許容差を超えたまま終わる残留誤差を解消。
-        // D: 実測角速度(gyro_z)へのフィードバックで、目標接近時の
-        //    ブレーキ不足によるオーバーシュートを抑える
-        //    (err = goal - now_ang なので d(err)/dt = -gyro_z)。
-        //
-        // I・Dとも params.turn_fine_rad 以下(最終アプローチ)でのみ有効化
-        // する条件付き制御にしている。理由: 巡航中(残角が大きい間)は
-        // gzが6〜8rad/s程度まで達するため、D単独で
-        // params.turn_kd×gz ≈ 0.4m/s もの制動項になり、Pがまだ
-        // 十分な速度を要求している最中でもcmdが最低速度まで落ちてしまう
-        // (2026-07-22 実機ログで確認: 残角0.7rad=40°でもcmdが60まで低下)。
-        // これが減速タイミングを乱し、無条件Dにしたところ180°旋回で
-        // オーバーシュートが悪化(-17.6°→-20.7°)した原因と考えられる。
-        // 残角が小さい最終アプローチでのみDを効かせることで、巡航中は
-        // Pだけの素直な減速プロファイルを保ちつつ、目標間際の
-        // オーバーシュート抑制効果だけを残す狙い。
-        const bool turn_fine_phase = (fabsf(err) <= params.turn_fine_rad);
-        if (turn_fine_phase) {
-            turn_integ += err * dt_s;
-        }
-        // アンチワインドアップ: 積分項単独で最大速度を超えないようクランプ
-        if (params.turn_ki > 0.0f) {
-            const float integ_max = params.turn_max_mps / params.turn_ki;
-            if (turn_integ > integ_max) turn_integ = integ_max;
-            if (turn_integ < -integ_max) turn_integ = -integ_max;
-        }
+        turn_prof_done_elapsed_s = 0.0f;
+    }
 
-        const float gyro_z = sensors.get_gyro_z();
-        const float d_term = turn_fine_phase ? (-params.turn_kd * gyro_z) : 0.0f;
-        const float pid_out = params.turn_kp * err
-                             + params.turn_ki * turn_integ
-                             + d_term;
+    // --- 追従制御: 物理FF(ω*WHEEL_BASE/2) + 角度PID + 角速度誤差D ---
+    const float angle_err = turn_target_angle_rad - now_ang;
+    const bool fine = (fabsf(err) <= params.turn_prof_fine);
+    if (fine) {
+        turn_integ += angle_err * dt_s;
+    } else {
+        turn_integ = 0.0f;
+    }
+    if (params.turn_prof_ki > 0.0f) {
+        const float integ_max = params.turn_prof_vmax / params.turn_prof_ki;
+        if (turn_integ > integ_max) turn_integ = integ_max;
+        if (turn_integ < -integ_max) turn_integ = -integ_max;
+    }
 
-        float v_target = fabsf(pid_out);
-        if (v_target > params.turn_max_mps) v_target = params.turn_max_mps;
-        if (v_target < params.turn_min_mps) v_target = params.turn_min_mps;
+    const float gyro_z = sensors.get_gyro_z();
+    const float rate_err = turn_omega_signed_radps - gyro_z;
+    // 車輪間距離 76mm(sensors.h WHEEL_BASE)の半分 = 38mm = 0.038m。
+    // 角速度[rad/s] -> 車輪速度[m/s] の物理FF換算。
+    const float wb_half_m = 0.038f;
 
-        // 加減速をなめらかにする（slew rate limit）
-        const float dv_max = params.turn_accel * dt_s;
-        turn_speed_cmd_mps = slew_rate_limit(turn_speed_cmd_mps, v_target, dv_max);
+    float v_cmd = wb_half_m * turn_omega_signed_radps
+                + params.turn_prof_kp * angle_err
+                + params.turn_prof_ki * turn_integ
+                + params.turn_prof_kd * rate_err;
+    if (v_cmd > params.turn_prof_vmax) v_cmd = params.turn_prof_vmax;
+    if (v_cmd < -params.turn_prof_vmax) v_cmd = -params.turn_prof_vmax;
 
-        const float target_rel = err; // 現在から見た残り角度
-        motion.turn_in_place(turn_speed_cmd_mps, target_rel);
+    // 微小指令デッドバンド(2026-11-12、実機で目標付近が若干発振気味だった対策)。
+    // 目標付近では角度誤差・角速度誤差が微小になり、車輪速度PIDへ数mm/s相当の
+    // 差分指令を出し続けると、ギアのバックラッシ/摩擦で微振動(唸り)になる。
+    // プロファイル完了後は一定以下の指令を0にして、整定判定に委ねる。
+    if (profile_done && fabsf(v_cmd) < 0.010f) {
+        v_cmd = 0.0f;
+    }
 
-        // デバッグ用
-        target_vr_mps = (err >= 0.0f) ? +turn_speed_cmd_mps : -turn_speed_cmd_mps;
-        target_vl_mps = (err >= 0.0f) ? -turn_speed_cmd_mps : +turn_speed_cmd_mps;
+    turn_speed_cmd_mps = fabsf(v_cmd);
+    // 回転方向は「指令車輪速度 v_cmd の符号」で決める。以前は残角(angle_err)の
+    // 符号で決めていたため、減速中に実角度がプロファイル目標をわずかに追い越す
+    // と符号が反転し、FF(一定方向)と食い違って大きな逆転duty(±190)が断続的に
+    // 出て機械的にガタついた(2026-11-12、200Hzログで確認)。
+    const float dir_ref = (v_cmd >= 0.0f) ? +1.0f : -1.0f;
+    motion.turn_in_place(turn_speed_cmd_mps, dir_ref);
 
-        {
-            static int dbg_count = 0;
-            dbg_count++;
-            if (dbg_count >= 50) {  // 20Hz
-                dbg_count = 0;
-                // #V,cmd,vr,vl,ur,ul,gz,ang,rem (remはTURNのみ残り角[rad])
-                char msg[64];
-                snprintf(msg, sizeof(msg),
-                         "#V,%.0f,%.0f,%.0f,%d,%d,%.2f,%.3f,%.3f\n",
-                         turn_speed_cmd_mps * 1000.0f,
-                         motion.get_vr_filt_mps() * 1000.0f,
-                         motion.get_vl_filt_mps() * 1000.0f,
-                         motion.get_duty_r(), motion.get_duty_l(),
-                         gyro_z, now_ang, err);
-                enqueue_msg_line(msg);
-            }
+    target_vr_mps = (dir_ref >= 0.0f) ? +turn_speed_cmd_mps : -turn_speed_cmd_mps;
+    target_vl_mps = (dir_ref >= 0.0f) ? -turn_speed_cmd_mps : +turn_speed_cmd_mps;
+
+    {
+        static int dbg_count = 0;
+        dbg_count++;
+        if (dbg_count >= 50) {  // 20Hz
+            dbg_count = 0;
+            // #V,cmd,vr,vl,ur,ul,gz,ang,rem (remはTURNのみ残り角[rad])
+            char msg[64];
+            snprintf(msg, sizeof(msg),
+                     "#V,%.0f,%.0f,%.0f,%d,%d,%.2f,%.3f,%.3f\n",
+                     turn_speed_cmd_mps * 1000.0f,
+                     motion.get_vr_filt_mps() * 1000.0f,
+                     motion.get_vl_filt_mps() * 1000.0f,
+                     motion.get_duty_r(), motion.get_duty_l(),
+                     gyro_z, now_ang, err);
+            enqueue_msg_line(msg);
         }
     }
 }
