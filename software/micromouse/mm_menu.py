@@ -51,13 +51,12 @@ def draw_main(selected: int, goal, note: str = "") -> Image.Image:
     img = _img()
     d = ImageDraw.Draw(img)
     d.text((2, 1), "MICROMOUSE", fill="white")
-    d.text((2, 13), f"Goal ({goal[0]},{goal[1]})", fill="white")
-    items = ["Set Goal", "Start Run"]
+    top = note if note else f"Goal ({goal[0]},{goal[1]})"
+    d.text((2, 12), top[:16], fill="white")
+    items = ["Set Goal", "Start Run", "Quit"]
     for i, it in enumerate(items):
         prefix = ">" if i == selected else " "
-        d.text((2, 28 + i * 12), f"{prefix}{it}", fill="white")
-    if note:
-        d.text((2, 52), note[:16], fill="white")
+        d.text((2, 26 + i * 11), f"{prefix}{it}", fill="white")
     return img
 
 
@@ -112,6 +111,22 @@ def edit_goal(client: UIClient, goal) -> tuple:
         time.sleep(0.05)
 
 
+def _safe_stop_motors() -> None:
+    """念のための最終停止(MOT,0,0)。走行終了後にシリアルを開き直して送る。"""
+    try:
+        import serial
+
+        s = serial.Serial("/dev/ttyUSB0", 3000000, timeout=0.2)
+        try:
+            s.write(b"MOT,0,0\n")
+            s.flush()
+            time.sleep(0.1)
+        finally:
+            s.close()
+    except Exception:
+        pass
+
+
 def start_run(client: UIClient) -> str:
     """保存済みゴール座標で探索走行を実行し、最終状態の短い文字列を返す。"""
     config = MicromouseConfig.load()
@@ -132,9 +147,13 @@ def start_run(client: UIClient) -> str:
     result = "----"
     try:
         ui = OledUI(priority=5)
-        # 安全: ブザー→2秒待ってから動かす
+        # 安全: ブザー→2秒待ってから動かす。走行中はLで強制停止できる旨を表示。
         try:
             ui.client.play(MELODY_START)
+        except Exception:
+            pass
+        try:
+            ui.show_message("MICROMOUSE", "starting...", "", "L:Stop run")
         except Exception:
             pass
         time.sleep(2.0)
@@ -149,7 +168,9 @@ def start_run(client: UIClient) -> str:
                 ui.close()
         except Exception:
             pass
-        # メニューUIへ復帰
+        # 走行終了/中断時にモーター停止を確実にする
+        _safe_stop_motors()
+        # メニューUIへ復帰(アプリは継続。終了はメニューのQuit/長押し)
         client.connect(priority=5)
 
     try:
@@ -166,21 +187,26 @@ def menu_loop(client: UIClient) -> None:
     prev = {"left": "released", "right": "released"}
     while True:
         b = client.get_buttons()
-        if _rising(prev, b, "right", "long_pressed"):
+        # メインメニューではL長押し/R長押しのどちらでも終了(default_appへ戻る)
+        if _rising(prev, b, "right", "long_pressed") or _rising(
+            prev, b, "left", "long_pressed"
+        ):
             prev = b
-            return  # 終了(default_appへ戻る)
+            return
         if _short_released(prev, b, "right"):
             prev = b
             if selected == 0:
                 goal = edit_goal(client, goal)
                 note = ""
-            else:
+            elif selected == 1:
                 note = "running..."
                 client.display(draw_main(selected, goal, note))
                 note = start_run(client)
+            else:
+                return  # Quit
             continue
         if _short_released(prev, b, "left"):
-            selected = (selected + 1) % 2
+            selected = (selected + 1) % 3
         prev = b
         client.display(draw_main(selected, goal, note))
         time.sleep(0.05)

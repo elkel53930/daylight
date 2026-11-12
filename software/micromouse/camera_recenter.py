@@ -36,6 +36,22 @@ from camera_model import (
 )
 from wall_bottom import detect_red_band_bottom_edge
 
+try:
+    from errors import AbortRequested
+except ImportError:  # pragma: no cover
+    class AbortRequested(Exception):
+        pass
+
+
+def _check_abort(base) -> None:
+    """走行中のユーザー中断(Lボタン等)を検出したらモーター停止して送出."""
+    ac = getattr(base, "abort_check", None)
+    if ac is not None and ac():
+        try:
+            base.emergency_stop()
+        finally:
+            raise AbortRequested("aborted by user")
+
 CROP_FRAC = 0.3
 MAX_RESIDUAL_PX = 2.0
 N_CAPTURES = 5
@@ -151,6 +167,7 @@ def _measure(cam: OnboardCamera) -> Optional[Measurement]:
 def _measure_in_range(base, cam: OnboardCamera, log) -> Optional[Measurement]:
     """壁が較正範囲に入るまで JOG で寄せて再測定する(Eiffel方式)."""
     for attempt in range(MAX_RANGE_STEPS + 1):
+        _check_abort(base)
         m = _measure(cam)
         if m is None:
             log(event="measure", stage=f"attempt{attempt}", result="none")
@@ -199,6 +216,7 @@ def _align_yaw(base, cam: OnboardCamera, target_rad: float, log) -> Tuple[bool, 
     """測定→TURN を反復して物理的に壁へ正対し、停止後に SANG で絶対方位を貼る."""
     last: Optional[Measurement] = None
     for _ in range(YAW_MAX_ITER):
+        _check_abort(base)
         m = _measure_in_range(base, cam, log)
         if m is None:
             return False, last
@@ -224,6 +242,7 @@ def _center_position(base, cam: OnboardCamera, log) -> Tuple[bool, Optional[Meas
     """JOGで前後位置をマス中心(壁90mm)へ寄せる."""
     last: Optional[Measurement] = None
     for _ in range(POS_MAX_ITER):
+        _check_abort(base)
         m = _measure_in_range(base, cam, log)
         if m is None:
             return False, last

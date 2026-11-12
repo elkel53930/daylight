@@ -200,6 +200,7 @@ class OledUI:
                 f"cell ({pose.x},{pose.y}) {pose.heading.name[0]}",
                 f"step {mission.step_count}",
                 batt,
+                "L:Stop run",  # 走行中はLで中断(緊急停止してメニューへ)
             ]
         )
         if state == MissionState.EXPLORATION and mission.step_count == 0:
