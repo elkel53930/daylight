@@ -53,3 +53,4 @@ software/micromouse/config/micromouse.yaml
 
 # ビルドサーバーのホスト名・ユーザー名等、公開したくないローカル設定
 software/mob/Makefile.local
+software/mm_mob/Makefile.local

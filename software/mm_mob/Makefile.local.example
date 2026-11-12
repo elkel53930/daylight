@@ -1,0 +1,10 @@
+# このファイルを Makefile.local としてコピーし、実際の値を書く。
+# Makefile.local は .gitignore 対象なのでコミットされない
+# (ビルドサーバーのホスト名・ユーザー名を公開したくないため)。
+#
+#   cp Makefile.local.example Makefile.local
+#
+# BUILD_HOST が未設定、または到達できない場合は常にローカルビルドに
+# フォールバックする。
+
+BUILD_HOST := user@buildserver.local

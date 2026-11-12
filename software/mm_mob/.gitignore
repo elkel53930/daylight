@@ -1,0 +1,5 @@
+# arduino-cli ビルド成果物 (差分ビルド用オブジェクトファイル)
+.build/
+
+# arduino-cli コア・ライブラリコンパイルキャッシュ
+.build_cache/
