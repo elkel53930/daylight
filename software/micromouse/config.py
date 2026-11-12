@@ -26,10 +26,10 @@ class MicromouseConfig:
     # --- 迷路(競技規則) ---
     maze_size: int = 16
     cell_size_mm: float = 180.0
-    goal_x_min: int = 5
-    goal_x_max: int = 5
-    goal_y_min: int = 0
-    goal_y_max: int = 0
+    goal_x_min: int = 8
+    goal_x_max: int = 8
+    goal_y_min: int = 8
+    goal_y_max: int = 8
 
     # --- 探索走行 ---
     sensing_distance_mm: float = 90.0

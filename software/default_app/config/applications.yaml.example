@@ -40,3 +40,11 @@ applications:
       - python3
       - /opt/robot/apps/motor_test.py
     priority: 20
+
+  # マイクロマウス(ゴール座標設定 + 探索走行開始)。
+  # 実機では default_app がこのエントリを child として起動する。
+  - name: Micromouse
+    command:
+      - python3
+      - /opt/robot/apps/micromouse/mm_menu.py
+    priority: 20

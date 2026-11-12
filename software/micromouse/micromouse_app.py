@@ -31,6 +31,7 @@ from typing import Optional
 sys.path.insert(0, str(Path(__file__).parent))
 
 from config import MicromouseConfig
+from goal_store import load_goal
 from maze import load_maze_text
 from state_machine import MicromouseMission, MissionState
 
@@ -281,6 +282,11 @@ def main() -> int:
     args = ap.parse_args()
 
     config = MicromouseConfig.load(args.config)
+
+    # メニューで設定したゴール座標(goal.json)を優先する。無ければ既定(8,8)。
+    gx, gy = load_goal()
+    config.goal_x_min = config.goal_x_max = gx
+    config.goal_y_min = config.goal_y_max = gy
 
     ui = None
     if not args.no_ui:
