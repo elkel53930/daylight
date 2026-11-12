@@ -205,6 +205,8 @@ class OledUI:
         )
         if state == MissionState.EXPLORATION and mission.step_count == 0:
             self._play(MELODY_START)
+        elif state == MissionState.GOAL_REACHED:
+            self._play(MELODY_GOAL)
         elif state == MissionState.FINISHED:
             self._play(MELODY_FINISH)
         elif state in (MissionState.ERROR, MissionState.EMERGENCY_STOP):
@@ -241,12 +243,13 @@ def make_base(args, config: MicromouseConfig, abort_check):
     )
 
 
-def run_mission(args, config: MicromouseConfig, ui) -> tuple[MissionState, str]:
+def run_mission(args, config: MicromouseConfig, ui, *, maze=None) -> tuple[MissionState, str]:
     logger = RunLogger(Path(config.log_dir))
     base = make_base(args, config, ui.abort_requested)
     mission = MicromouseMission(
         base,
         config,
+        maze=maze,
         observer=lambda state, info: ui.show_state(state, info, mission),
         log_fn=logger.log,
         confirm_speed_run=ui.confirm_speed_run,

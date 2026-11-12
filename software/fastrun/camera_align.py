@@ -220,6 +220,13 @@ class OnboardCamera:
             self._cam.stop()
         except Exception:
             pass
+        # close()しないとカメラデバイスが解放されず、2回目以降の
+        # Picamera2初期化が "Camera __init__ sequence did not complete." で
+        # 失敗する(2026-11-12、micromouseの往復で実測)。
+        try:
+            self._cam.close()
+        except Exception:
+            pass
         if self._servo is not None:
             self._servo.close()
 

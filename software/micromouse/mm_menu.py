@@ -50,13 +50,13 @@ def _img():
 def draw_main(selected: int, goal, note: str = "") -> Image.Image:
     img = _img()
     d = ImageDraw.Draw(img)
-    d.text((2, 1), "MICROMOUSE", fill="white")
+    d.text((2, 0), "MICROMOUSE", fill="white")
     top = note if note else f"Goal ({goal[0]},{goal[1]})"
-    d.text((2, 12), top[:16], fill="white")
-    items = ["Set Goal", "Start Run", "Quit"]
+    d.text((2, 10), top[:16], fill="white")
+    items = ["Set Goal", "Start Run", "Reset Maze", "Quit"]
     for i, it in enumerate(items):
         prefix = ">" if i == selected else " "
-        d.text((2, 26 + i * 11), f"{prefix}{it}", fill="white")
+        d.text((2, 22 + i * 10), f"{prefix}{it}", fill="white")
     return img
 
 
@@ -127,12 +127,21 @@ def _safe_stop_motors() -> None:
         pass
 
 
-def start_run(client: UIClient) -> str:
-    """保存済みゴール座標で探索走行を実行し、最終状態の短い文字列を返す。"""
+def start_run(client: UIClient, maze):
+    """保存済みゴール座標で探索走行を実行する.
+
+    戻り値: (最終状態の短い文字列, 更新後の迷路オブジェクト)。
+    迷路はアプリ終了まで保持される(ミッション間で共有)。
+    """
     config = MicromouseConfig.load()
     gx, gy = load_goal()
     config.goal_x_min = config.goal_x_max = gx
     config.goal_y_min = config.goal_y_max = gy
+
+    if maze is None:
+        from maze import Maze
+
+        maze = Maze(config.maze_size)
 
     args = types.SimpleNamespace(sim=None, port=config.port, baud=None)
 
@@ -157,7 +166,7 @@ def start_run(client: UIClient) -> str:
         except Exception:
             pass
         time.sleep(2.0)
-        final, _err = run_mission(args, config, ui)
+        final, _err = run_mission(args, config, ui, maze=maze)
         result = final.value
     except Exception as e:  # UI切断・走行例外でもメニューへ戻す
         print(f"run error: {e}")
@@ -177,13 +186,14 @@ def start_run(client: UIClient) -> str:
         client.play(MELODY_FINISH if result == "FINISHED" else MELODY_ERROR)
     except Exception:
         pass
-    return result
+    return result, maze
 
 
 def menu_loop(client: UIClient) -> None:
     goal = load_goal()
     selected = 0
     note = ""
+    maze_state = None  # アプリ終了まで保持(Reset Mazeでクリア)
     prev = {"left": "released", "right": "released"}
     while True:
         b = client.get_buttons()
@@ -201,12 +211,19 @@ def menu_loop(client: UIClient) -> None:
             elif selected == 1:
                 note = "running..."
                 client.display(draw_main(selected, goal, note))
-                note = start_run(client)
+                note, maze_state = start_run(client, maze_state)
+            elif selected == 2:
+                maze_state = None
+                note = "maze reset"
+                try:
+                    client.play("c")
+                except Exception:
+                    pass
             else:
                 return  # Quit
             continue
         if _short_released(prev, b, "left"):
-            selected = (selected + 1) % 3
+            selected = (selected + 1) % 4
         prev = b
         client.display(draw_main(selected, goal, note))
         time.sleep(0.05)

@@ -219,16 +219,20 @@ class Maze:
     @classmethod
     def from_dict(cls, data: dict) -> "Maze":
         maze = cls(int(data["size"]))
+        maze.load_from_dict(data)
+        return maze
+
+    def load_from_dict(self, data: dict) -> None:
+        """既存インスタンスへ迷路データを復元する(参照を保持したまま)."""
         walls = data["walls"]
         visited = data["visited"]
-        if len(walls) != maze.size or len(visited) != maze.size:
+        if len(walls) != self.size or len(visited) != self.size:
             raise ValueError("maze data size mismatch")
-        for y in range(maze.size):
-            for x in range(maze.size):
+        for y in range(self.size):
+            for x in range(self.size):
                 for d in range(4):
-                    maze._walls[y][x][d] = WallState(walls[y][x][d])
-                maze._visited[y][x] = bool(visited[y][x])
-        return maze
+                    self._walls[y][x][d] = WallState(walls[y][x][d])
+                self._visited[y][x] = bool(visited[y][x])
 
     # ---- デバッグ表示 ----
 

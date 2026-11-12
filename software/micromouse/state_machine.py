@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import asdict
 from enum import Enum
@@ -53,6 +54,7 @@ class MissionState(Enum):
     MICROMOUSE_START = "MICROMOUSE_START"
     EXPLORATION = "EXPLORATION"
     GOAL_REACHED = "GOAL_REACHED"
+    RETURN_TO_START = "RETURN_TO_START"
     FINISHED = "FINISHED"
     ERROR = "ERROR"
     EMERGENCY_STOP = "EMERGENCY_STOP"
@@ -70,6 +72,7 @@ class MicromouseMission:
         base,
         config: MicromouseConfig,
         *,
+        maze: Optional[Maze] = None,
         observer: Optional[Callable[[MissionState, dict], None]] = None,
         log_fn: Optional[Callable[[dict], None]] = None,
         confirm_speed_run: Optional[Callable[[], bool]] = None,
@@ -86,13 +89,63 @@ class MicromouseMission:
             front_threshold=config.wall_front_threshold,
         )
         self.runner = CellRunner(base, config)
-        self.maze = Maze(config.maze_size)
+        # 迷路はアプリ内で共有できる(ミッション間で保持)。未指定なら新規。
+        self.maze = maze if maze is not None else Maze(config.maze_size)
         self.goal = config.goal_region()
         self.explorer = Explorer(self.maze, self.goal.cells())
         self.pose = Pose(0, 0, Direction.NORTH)
         self.state = MissionState.IDLE
         self.step_count = 0
         self.error_message = ""
+        # 往復用の迷路バックアップ(メモリ上のみ、ファイル保存はしない)
+        self.maze_backup_at_goal = None
+        self.maze_backup_at_start = None
+
+    def _backup_maze(self) -> dict:
+        return self.maze.to_dict()
+
+    def _restore_maze(self, data: Optional[dict]) -> None:
+        if data is None:
+            return
+        # 参照を保ったまま復元する(呼び出し側が同じMazeを保持しているため)
+        self.maze.load_from_dict(data)
+
+    def _turn_to_heading(self, target_rad: float, tol_deg: float = 1.0, tries: int = 4) -> None:
+        """ジャイロ絶対角で target_rad へその場旋回する."""
+        for _ in range(tries):
+            cur = self.base.read_angle()
+            if cur is None:
+                return
+            err = target_rad - cur
+            while err > math.pi:
+                err -= 2.0 * math.pi
+            while err < -math.pi:
+                err += 2.0 * math.pi
+            if abs(math.degrees(err)) <= tol_deg:
+                return
+            self.base.turn(err)
+            time.sleep(0.15)
+
+    def _recenter_here(self) -> None:
+        """現在セルでカメラ位置補正(XY)。"""
+        if not (self.config.camera_recenter_enabled and CAMERA_RECENTER_AVAILABLE):
+            self._log(event="recenter_skipped", reason="disabled or unavailable")
+            return
+        self._set_state(MissionState.RECENTERING)
+        walls = walls_from_maze(self.maze, self.pose.x, self.pose.y)
+        current_heading = RecenterDirection[self.pose.heading.name]
+        results = recenter_start(self.base, current_heading, walls, log_fn=self._log)
+        for r in results:
+            self._log(
+                event="recenter_result",
+                axis=r.axis,
+                success=r.success,
+                message=r.message,
+                yaw_deg=r.yaw_deg,
+                offset_mm=r.offset_mm,
+            )
+            if not r.success:
+                self._log(event="recenter_warning", axis=r.axis, message=r.message)
 
     def _set_state(self, state: MissionState, **info) -> None:
         self.state = state
@@ -263,24 +316,8 @@ class MicromouseMission:
             self._set_state(MissionState.CALIBRATION)
             self._calibrate()
 
-            # カメラ位置補正(設定で有効かつモジュールが利用可能な場合)
-            if self.config.camera_recenter_enabled and CAMERA_RECENTER_AVAILABLE:
-                self._set_state(MissionState.RECENTERING)
-                # スタート位置の壁情報を取得(外周壁は既知)
-                walls = walls_from_maze(self.maze, 0, 0)
-                current_heading = RecenterDirection[self.pose.heading.name]
-                results = recenter_start(self.base, current_heading, walls, log_fn=self._log)
-                for r in results:
-                    self._log(
-                        event="recenter_result",
-                        axis=r.axis,
-                        success=r.success,
-                        message=r.message,
-                        yaw_deg=r.yaw_deg,
-                        offset_mm=r.offset_mm,
-                    )
-                    if not r.success:
-                        self._log(event="recenter_warning", axis=r.axis, message=r.message)
+            # カメラ位置補正(スタート)
+            self._recenter_here()
 
             self._set_state(MissionState.MICROMOUSE_START)
             frame = self._read_sensors_checked()
@@ -295,9 +332,33 @@ class MicromouseMission:
             self._set_state(MissionState.EXPLORATION)
             self._resume_from_center(self.goal.cells())
             self._explore_to(self.goal.cells())
+            # ゴール到達(observerがBGMを鳴らす)
             self._set_state(
                 MissionState.GOAL_REACHED, cell=(self.pose.x, self.pose.y)
             )
+            # ゴール時点の迷路データをバックアップ(メモリ)
+            self.maze_backup_at_goal = self._backup_maze()
+            self._log(event="maze_backup_goal", cell=(self.pose.x, self.pose.y))
+
+            # 帰還前にゴール地点でカメラ補正してから (0,0) へ向かう。
+            # 帰還途中で中断されたらゴール時点のバックアップへレストアする。
+            try:
+                self._recenter_here()
+                self._set_state(MissionState.RETURN_TO_START)
+                self._resume_from_center([(0, 0)])
+                self._explore_to([(0, 0)])
+                # スタート(0,0)到着時のカメラ補正は不要(次回スタート時に実施する)。
+                # 次回走行のため北向き(絶対0)へ戻す
+                self._turn_to_heading(0.0)
+                self.pose = Pose(self.pose.x, self.pose.y, Direction.NORTH)
+            except AbortRequested:
+                self._restore_maze(self.maze_backup_at_goal)
+                self._log(event="maze_restored_on_abort", from_goal=True)
+                raise
+
+            # スタート(0,0)帰還後の迷路データをバックアップ
+            self.maze_backup_at_start = self._backup_maze()
+            self._log(event="maze_backup_start", cell=(self.pose.x, self.pose.y))
 
             self._set_state(MissionState.FINISHED, cell=(self.pose.x, self.pose.y))
             return self.state
