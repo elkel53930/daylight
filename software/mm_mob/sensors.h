@@ -68,7 +68,7 @@ private:
     uint32_t calib_timer_ms_;           // キャリブレーションタイマー
     
     // ロボット物理パラメータ
-    static constexpr float WHEEL_DIAMETER = 23.4f;     // ホイール直径（mm）
+    static constexpr float WHEEL_DIAMETER = 21.5f;     // ホイール直径（mm）(2026-11-12: mm_mobのみ22.0→21.5へ変更、実測距離に合わせる)
     static constexpr float GEAR_RATIO = 1.0f;          // エンコーダ:ホイールの ギア比(直結)
     static constexpr float ENCODER_RESOLUTION = 16384.0f; // エンコーダ分解能（14bit）
     static constexpr float WHEEL_BASE = 76.0f;         // 車輪間距離（mm）

@@ -1,18 +1,14 @@
-"""カメラによる位置補正.
+"""カメラによる位置補正(fastrun/Eiffel経路走行と同等方式).
 
-機体の位置・姿勢をカメラで補正する。壁のある方向に旋回し、赤エッジを検出して
-ヨー角と前後位置を補正する。
+マイクロマウスのスタート時などに、壁上面の赤エッジをカメラで検出し、
+ヨー(向き)と前後位置をマス中心へ補正する。
 
-機能:
-- recenter_axis: 指定方向の壁に対して1軸を補正
-- recenter_cell: X/Y/XY軸の補正を実行
-
-手順:
-1. 補正対象の壁の方向を決定(X方向=Y軸の壁、Y方向=X軸の壁)
-2. その方向に旋回
-3. カメラで赤エッジ検出 → ヨー角・前後位置を推定
-4. TURN/FWD/STOP で補正
-5. 元の向きに戻る
+Eiffel経路走行(fastrun/liner_center.center_axis)に合わせた方式:
+- 対象壁にジャイロ絶対角で正対
+- レンジゲート: 壁が較正範囲(75〜115mm)外なら JOG で寄せて再測定
+- ヨー: 測定→TURN を反復して物理的に正対(deadband 0.8°)→ MOT,0,0 → SANG
+- 位置: JOGFWD/JOGBACK で精密移動(低速・到達停止)、再測定しながら収束
+- クリーンフレーム過半数を要求(単発の誤検出を排除)
 """
 
 from __future__ import annotations
@@ -27,19 +23,32 @@ from typing import Optional, Tuple
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "fastrun"))
+_FASTRUN_DIR = str(Path(__file__).resolve().parent.parent / "fastrun")
+if _FASTRUN_DIR not in sys.path:
+    sys.path.append(_FASTRUN_DIR)  # 先頭に入れるとmicromouseのexplorer/mazeを隠すため末尾
 
 from camera_align import OnboardCamera, CALIB_HEIGHT
-from camera_model import estimate, forward_offset_mm, is_row_in_range
+from camera_model import (
+    estimate,
+    forward_offset_mm,
+    is_row_in_range,
+    row_range_state,
+)
 from wall_bottom import detect_red_band_bottom_edge
 
 CROP_FRAC = 0.3
 MAX_RESIDUAL_PX = 2.0
-YAW_TOL_DEG = 1.0
-OFFSET_TOL_MM = 3.0
-MAX_YAW_CORRECTION_DEG = 15.0
-MAX_OFFSET_CORRECTION_MM = 30.0
 N_CAPTURES = 5
+
+YAW_DEADBAND_DEG = 0.8
+YAW_GATE_DEG = 15.0
+YAW_MAX_ITER = 5
+
+RANGE_ADJUST_MM = 15.0
+MAX_RANGE_STEPS = 4
+CENTER_TOL_MM = 4.0
+POS_MAX_ITER = 3
+MAX_OFFSET_MM = 45.0
 
 
 class Axis(Enum):
@@ -54,17 +63,18 @@ class Direction(Enum):
     SOUTH = 2
     WEST = 3
 
-    def turn_rad_to(self, other: "Direction") -> float:
-        """この方向から other への旋回角[rad]を返す(正=左/CCW)."""
-        diff = (other.value - self.value) % 4
-        if diff == 0:
-            return 0.0
-        elif diff == 1:
-            return -math.pi / 2
-        elif diff == 2:
-            return math.pi
-        else:
-            return math.pi / 2
+
+@dataclass(frozen=True)
+class Measurement:
+    row_calib: float
+    slope_deg: float
+    res_px: float
+    n_clean: int
+    in_range: bool
+    ok: bool
+    dist_mm: float
+    yaw_deg: float
+    offset_mm: float
 
 
 @dataclass(frozen=True)
@@ -76,7 +86,26 @@ class RecenterResult:
     message: str
 
 
-def _capture_and_estimate(cam: OnboardCamera) -> Optional[Tuple[float, float, float]]:
+def _wall_angle_rad(d: Direction) -> float:
+    """壁に正対したときの絶対方位[rad] (北=0, 西=+90, 東=-90, 南=180)."""
+    return {
+        Direction.NORTH: 0.0,
+        Direction.WEST: math.pi / 2,
+        Direction.EAST: -math.pi / 2,
+        Direction.SOUTH: math.pi,
+    }[d]
+
+
+def _norm_rad(a: float) -> float:
+    while a > math.pi:
+        a -= 2.0 * math.pi
+    while a < -math.pi:
+        a += 2.0 * math.pi
+    return a
+
+
+def _measure(cam: OnboardCamera) -> Optional[Measurement]:
+    """複数フレームを撮り、クリーンなフレームの中央値で (距離, ヨー, offset) を返す."""
     rows = []
     slopes = []
     ress = []
@@ -101,100 +130,118 @@ def _capture_and_estimate(cam: OnboardCamera) -> Optional[Tuple[float, float, fl
     row_med = float(np.median(rows))
     slope_med = float(np.median(slopes))
     res_med = float(np.median(ress))
-    return row_med, slope_med, res_med
-
-
-def recenter_axis(
-    base,
-    cam: OnboardCamera,
-    current_heading: Direction,
-    wall_direction: Direction,
-    *,
-    log_fn=None,
-) -> RecenterResult:
-    """指定方向の壁に対して1軸を補正する.
-
-    Args:
-        base: MobileBase
-        cam: OnboardCamera
-        current_heading: 現在の機体の向き
-        wall_direction: 壁がある方向(この方向の壁に対して補正)
-        log_fn: ログ関数
-
-    Returns:
-        RecenterResult
-    """
-    def log(**record):
-        if log_fn:
-            log_fn(event="recenter_axis", **record)
-
-    wall_direction_name = wall_direction.name.lower()
-    log(message=f"start axis={wall_direction_name}")
-
-    # 壁の方向に旋回
-    turn_rad = current_heading.turn_rad_to(wall_direction)
-    if abs(turn_rad) > 0.01:
-        base.turn(turn_rad)
-        log(message=f"turned {turn_rad:+.3f}rad to face {wall_direction_name}")
-        time.sleep(0.3)
-
-    # カメラで補正
-    result = _capture_and_estimate(cam)
-    if result is None:
-        log(message="no wall detected")
-        # 元の向きに戻る
-        if abs(turn_rad) > 0.01:
-            base.turn(-turn_rad)
-        return RecenterResult(
-            axis=wall_direction_name,
-            yaw_deg=0,
-            offset_mm=0,
-            success=False,
-            message="no wall detected",
-        )
-
-    row_med, slope_med, res_med = result
-    dist, yaw_deg = estimate(row_med, slope_med)
-    offset_mm = forward_offset_mm(row_med)
-    log(message=f"measured: dist={dist:.0f}mm yaw={yaw_deg:+.1f}deg offset={offset_mm:+.1f}mm")
-
-    # ヨー補正
-    if abs(yaw_deg) > YAW_TOL_DEG and abs(yaw_deg) <= MAX_YAW_CORRECTION_DEG:
-        correction_rad = -math.radians(yaw_deg)
-        base.turn(correction_rad)
-        log(message=f"yaw corrected: {-yaw_deg:+.1f}deg")
-        time.sleep(0.2)
-        # 再測定
-        result2 = _capture_and_estimate(cam)
-        if result2 is not None:
-            row_med, _, _ = result2
-            offset_mm = forward_offset_mm(row_med)
-
-    # 前後補正
-    if abs(offset_mm) > OFFSET_TOL_MM and abs(offset_mm) <= MAX_OFFSET_CORRECTION_MM:
-        move = -offset_mm
-        speed = getattr(base, "config", None)
-        speed_mmps = speed.explore_speed_mmps if speed else 100.0
-        accel_mmps2 = speed.explore_accel_mmps2 if speed else 500.0
-        if move > 0:
-            base.forward(speed_mmps, accel_mmps2, move)
-        else:
-            base.stop_at(speed_mmps, accel_mmps2, -move)
-        log(message=f"offset corrected: move {move:+.1f}mm")
-
-    # 元の向きに戻る
-    if abs(turn_rad) > 0.01:
-        base.turn(-turn_rad)
-        log(message=f"turned back {-turn_rad:+.3f}rad")
-
-    log(message=f"axis {wall_direction_name} done")
-    return RecenterResult(
-        axis=wall_direction_name,
-        yaw_deg=yaw_deg,
-        offset_mm=offset_mm,
-        success=True,
-        message=f"yaw={yaw_deg:+.1f}deg offset={offset_mm:+.1f}mm",
+    dist, yaw = estimate(row_med, slope_med)
+    offset = forward_offset_mm(row_med)
+    in_range = is_row_in_range(row_med)
+    majority = len(rows) >= (N_CAPTURES + 1) // 2
+    ok = majority and in_range
+    return Measurement(
+        row_calib=row_med,
+        slope_deg=slope_med,
+        res_px=res_med,
+        n_clean=len(rows),
+        in_range=in_range,
+        ok=ok,
+        dist_mm=dist,
+        yaw_deg=yaw,
+        offset_mm=offset,
     )
+
+
+def _measure_in_range(base, cam: OnboardCamera, log) -> Optional[Measurement]:
+    """壁が較正範囲に入るまで JOG で寄せて再測定する(Eiffel方式)."""
+    for attempt in range(MAX_RANGE_STEPS + 1):
+        m = _measure(cam)
+        if m is None:
+            log(event="measure", stage=f"attempt{attempt}", result="none")
+            return None
+        log(
+            event="measure",
+            stage=f"attempt{attempt}",
+            in_range=m.in_range,
+            ok=m.ok,
+            n_clean=m.n_clean,
+            dist=round(m.dist_mm, 1),
+            yaw=round(m.yaw_deg, 2),
+            offset=round(m.offset_mm, 1),
+            row=round(m.row_calib, 1),
+        )
+        if m.ok or attempt >= MAX_RANGE_STEPS:
+            return m
+        state = row_range_state(m.row_calib)
+        if state == "far":
+            base.jog_forward(RANGE_ADJUST_MM)
+        elif state == "near":
+            base.jog_backward(RANGE_ADJUST_MM)
+        else:
+            # 範囲内だがクリーン不足(汚染): それ以上寄せず返す
+            return m
+        time.sleep(0.2)
+    return None
+
+
+def _turn_to_abs(base, target_rad: float, log, tol_deg: float = 1.0, tries: int = 4) -> Optional[float]:
+    """ジャイロ絶対角で target_rad へ超信地旋回(Eiffelのturn_to相当)."""
+    cur = None
+    for _ in range(tries):
+        cur = base.read_angle()
+        if cur is None:
+            return None
+        err = _norm_rad(target_rad - cur)
+        if abs(math.degrees(err)) <= tol_deg:
+            return cur
+        base.turn(err)
+        time.sleep(0.15)
+    return base.read_angle()
+
+
+def _align_yaw(base, cam: OnboardCamera, target_rad: float, log) -> Tuple[bool, Optional[Measurement]]:
+    """測定→TURN を反復して物理的に壁へ正対し、停止後に SANG で絶対方位を貼る."""
+    last: Optional[Measurement] = None
+    for _ in range(YAW_MAX_ITER):
+        m = _measure_in_range(base, cam, log)
+        if m is None:
+            return False, last
+        last = m
+        if abs(m.yaw_deg) <= YAW_DEADBAND_DEG:
+            break
+        if abs(m.yaw_deg) > YAW_GATE_DEG:
+            log(event="yaw", message=f"too large {m.yaw_deg:+.1f}deg -> skip")
+            return False, m
+        base.turn(-math.radians(m.yaw_deg))
+        time.sleep(0.2)
+
+    # 停止してからSANG(ジャイロ角のみ書き換えるので物理整合は上で済ませる)
+    base.motors_off()
+    time.sleep(0.1)
+    base.set_angle(target_rad)
+    time.sleep(0.1)
+    m2 = _measure_in_range(base, cam, log)
+    return True, (m2 or last)
+
+
+def _center_position(base, cam: OnboardCamera, log) -> Tuple[bool, Optional[Measurement]]:
+    """JOGで前後位置をマス中心(壁90mm)へ寄せる."""
+    last: Optional[Measurement] = None
+    for _ in range(POS_MAX_ITER):
+        m = _measure_in_range(base, cam, log)
+        if m is None:
+            return False, last
+        last = m
+        off = m.offset_mm
+        if abs(off) <= CENTER_TOL_MM:
+            return True, m
+        if abs(off) > MAX_OFFSET_MM:
+            log(event="offset", message=f"too large {off:+.1f}mm -> skip")
+            return False, m
+        if off > 0:
+            # 中心より前(壁に近い) -> 後退
+            base.jog_backward(off)
+        else:
+            base.jog_forward(-off)
+        time.sleep(0.15)
+    m = _measure_in_range(base, cam, log)
+    return (m is not None), (m or last)
 
 
 def recenter_cell(
@@ -206,148 +253,59 @@ def recenter_cell(
     *,
     log_fn=None,
 ) -> list[RecenterResult]:
-    """セルの位置補正を実行する(fastrun/liner_center.py の center_axis と同等).
+    """セルの位置補正(X/Y/XY)を実行する.
 
-    2測定・2一発補正(オープンループ):
-      (1) 壁の方向に旋回
-      (2) 【測定1】下端エッジで角度(ヨー)を測り、-yaw だけ TURN で一発旋回
-      (3) SANG で絶対方位を確定
-      (4) 【測定2】下端エッジで前後距離オフセットを測り、JOGFWD/JOGBACK で移動
-      (5) 次の壁の方向へ連続旋回
-
-    Args:
-        base: MobileBase
-        cam: OnboardCamera
-        current_heading: 現在の機体の向き
-        walls: 壁情報 {"north": bool, "east": bool, "south": bool, "west": bool}
-        axis: 補正する軸(X=x/y方向の壁、Y=y方向の壁、XY=両方)
-        log_fn: ログ関数
-
-    Returns:
-        RecenterResult のリスト
+    walls: {"north":bool,"east":bool,"south":bool,"west":bool}
     """
-    results = []
-    total_turn_rad = 0.0  # 累積旋回角
+    def log(**record):
+        if log_fn:
+            record.setdefault("event", "recenter_cell")
+            log_fn(**record)
 
-    # 補正対象の壁の方向を決定
-    target_directions = []
+    results: list[RecenterResult] = []
+    heading0 = base.read_angle()  # 元の向き(補正後に戻る)
 
+    target_directions: list[Direction] = []
     if axis in (Axis.X, Axis.XY):
-        for wall_dir in [Direction.EAST, Direction.WEST]:
-            wall_name = wall_dir.name.lower()
-            if walls.get(wall_name, False):
-                target_directions.append(wall_dir)
+        for d in [Direction.EAST, Direction.WEST]:
+            if walls.get(d.name.lower(), False):
+                target_directions.append(d)
                 break
-
     if axis in (Axis.Y, Axis.XY):
-        for wall_dir in [Direction.NORTH, Direction.SOUTH]:
-            wall_name = wall_dir.name.lower()
-            if walls.get(wall_name, False):
-                target_directions.append(wall_dir)
+        for d in [Direction.NORTH, Direction.SOUTH]:
+            if walls.get(d.name.lower(), False):
+                target_directions.append(d)
                 break
 
-    if not target_directions:
-        return results
+    for d in target_directions:
+        name = d.name.lower()
+        target_rad = _wall_angle_rad(d)
+        log(event="face", wall=name, target_deg=round(math.degrees(target_rad), 1))
+        _turn_to_abs(base, target_rad, log)
+        base.motors_off()
+        time.sleep(0.1)
 
-    # 各壁に対して連続旋回で補正
-    for wall_dir in target_directions:
-        wall_name = wall_dir.name.lower()
+        ok_yaw, m_yaw = _align_yaw(base, cam, target_rad, log)
+        ok_pos, m_pos = _center_position(base, cam, log)
 
-        # 現在の向きから壁の方向への旋回角を計算
-        turn_rad = current_heading.turn_rad_to(wall_dir)
-        actual_turn_rad = turn_rad - total_turn_rad
+        yaw = m_yaw.yaw_deg if m_yaw is not None else 0.0
+        offset = m_pos.offset_mm if m_pos is not None else 0.0
+        success = bool(ok_yaw and ok_pos)
+        results.append(
+            RecenterResult(
+                axis=name,
+                yaw_deg=yaw,
+                offset_mm=offset,
+                success=success,
+                message=f"yaw={yaw:+.1f}deg offset={offset:+.1f}mm",
+            )
+        )
+        log(event="axis_done", wall=name, success=success)
 
-        # 旋回
-        if abs(actual_turn_rad) > 0.01:
-            base.turn(actual_turn_rad)
-            log_fn and log_fn(event="recenter_cell", message=f"turned {actual_turn_rad:+.3f}rad to face {wall_name}")
-            time.sleep(0.3)
-
-        total_turn_rad = turn_rad
-
-        # 【測定1】ヨーを測定
-        result1 = _capture_and_estimate(cam)
-        if result1 is None:
-            log_fn and log_fn(event="recenter_cell", message=f"no wall detected at {wall_name} (measure1)")
-            results.append(RecenterResult(
-                axis=wall_name,
-                yaw_deg=0,
-                offset_mm=0,
-                success=False,
-                message="no wall detected (measure1)",
-            ))
-            continue
-
-        row_med1, slope_med1, res_med1 = result1
-        dist1, yaw_deg1 = estimate(row_med1, slope_med1)
-        offset_mm1 = forward_offset_mm(row_med1)
-        log_fn and log_fn(event="recenter_cell", message=f"measure1: dist={dist1:.0f}mm yaw={yaw_deg1:+.1f}deg at {wall_name}")
-
-        # ヨー補正（範囲内の場合）
-        yaw_corrected = False
-        if abs(yaw_deg1) > YAW_TOL_DEG and abs(yaw_deg1) <= MAX_YAW_CORRECTION_DEG:
-            correction_rad = -math.radians(yaw_deg1)
-            base.turn(correction_rad)
-            total_turn_rad += correction_rad
-            log_fn and log_fn(event="recenter_cell", message=f"yaw corrected: {-yaw_deg1:+.1f}deg")
-            time.sleep(0.3)
-            yaw_corrected = True
-
-            # SANG で絶対方位を確定（現在の向きを目標方位に設定）
-            # target_angle = 壁の方向の絶対角度
-            target_angle_rad = {
-                Direction.NORTH: 0.0,
-                Direction.EAST: -math.pi / 2,
-                Direction.SOUTH: math.pi,
-                Direction.WEST: math.pi / 2,
-            }[wall_dir]
-            base.set_angle(target_angle_rad)
-            log_fn and log_fn(event="recenter_cell", message=f"SANG set to {math.degrees(target_angle_rad):+.1f}deg")
-            time.sleep(0.1)
-
-        # 【測定2】正対後に距離を測定
-        result2 = _capture_and_estimate(cam)
-        if result2 is None:
-            log_fn and log_fn(event="recenter_cell", message=f"no wall detected at {wall_name} (measure2)")
-            results.append(RecenterResult(
-                axis=wall_name,
-                yaw_deg=yaw_deg1,
-                offset_mm=offset_mm1,
-                success=yaw_corrected,
-                message="no wall detected (measure2)",
-            ))
-            continue
-
-        row_med2, slope_med2, res_med2 = result2
-        dist2, yaw_deg2 = estimate(row_med2, slope_med2)
-        offset_mm2 = forward_offset_mm(row_med2)
-        log_fn and log_fn(event="recenter_cell", message=f"measure2: dist={dist2:.0f}mm yaw={yaw_deg2:+.1f}deg offset={offset_mm2:+.1f}mm at {wall_name}")
-
-        # 前後補正
-        if abs(offset_mm2) > OFFSET_TOL_MM and abs(offset_mm2) <= MAX_OFFSET_CORRECTION_MM:
-            move = -offset_mm2
-            speed = getattr(base, "config", None)
-            speed_mmps = speed.explore_speed_mmps if speed else 100.0
-            accel_mmps2 = speed.explore_accel_mmps2 if speed else 500.0
-            if move > 0:
-                base.forward(speed_mmps, accel_mmps2, move)
-            else:
-                base.stop_at(speed_mmps, accel_mmps2, -move)
-            log_fn and log_fn(event="recenter_cell", message=f"offset corrected: move {move:+.1f}mm")
-
-        results.append(RecenterResult(
-            axis=wall_name,
-            yaw_deg=yaw_deg1,
-            offset_mm=offset_mm2,
-            success=True,
-            message=f"yaw={yaw_deg1:+.1f}deg offset={offset_mm2:+.1f}mm",
-        ))
-
-    # 最後に元の向きに戻る
-    return_turn_rad = -total_turn_rad
-    if abs(return_turn_rad) > 0.01:
-        base.turn(return_turn_rad)
-        log_fn and log_fn(event="recenter_cell", message=f"turned back {return_turn_rad:+.3f}rad to original heading")
+    # 元の向き(北)へ戻す
+    if heading0 is not None:
+        _turn_to_abs(base, heading0, log)
+        base.motors_off()
 
     return results
 
@@ -357,8 +315,7 @@ def recenter_start(base, current_heading: Direction, walls: dict, *, log_fn=None
     cam = None
     try:
         cam = OnboardCamera()
-        results = recenter_cell(base, cam, current_heading, walls, Axis.XY, log_fn=log_fn)
-        return results
+        return recenter_cell(base, cam, current_heading, walls, Axis.XY, log_fn=log_fn)
     except Exception as e:
         return [RecenterResult("xy", 0, 0, False, f"camera init failed: {e}")]
     finally:

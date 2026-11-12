@@ -113,6 +113,25 @@ class MobileBase:
         """TURN: その場旋回. 正=左(CCW)."""
         self._command_and_wait_done(f"TURN,{angle_rad:.6f}\n")
 
+    def jog_forward(self, distance_mm: float) -> None:
+        """JOGFWD: 低速で指定距離前進(到達でDONE, 停止). 精密位置補正用."""
+        if distance_mm <= 0:
+            return
+        self._command_and_wait_done(f"JOGFWD,{distance_mm:.1f}\n")
+
+    def jog_backward(self, distance_mm: float) -> None:
+        """JOGBACK: 低速で指定距離後退(到達でDONE, 停止). 精密位置補正用."""
+        if distance_mm <= 0:
+            return
+        self._command_and_wait_done(f"JOGBACK,{distance_mm:.1f}\n")
+
+    def read_angle(self, timeout_s: float = 2.0) -> Optional[float]:
+        """SEN を要求してジャイロ積分角度[rad]を取得. 取得できなければ None."""
+        frame = self.read_sensors(timeout_s)
+        if frame is not None:
+            return frame.odo_ang_rad
+        return None
+
     def quick_stop(self) -> float:
         """QSTP: 最大減速度で停止. 元目標までの残距離[mm]を返す."""
         self._send("QSTP\n")

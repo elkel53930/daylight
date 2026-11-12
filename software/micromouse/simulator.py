@@ -126,6 +126,28 @@ class SimMobileBase:
             self.heading = self.heading.left()
         self.odo_ang_rad += angle_rad
 
+    def jog_forward(self, distance_mm: float) -> None:
+        if distance_mm <= 0:
+            return
+        self._record(f"JOGFWD,{distance_mm:.1f}")
+        self._move(distance_mm)
+
+    def jog_backward(self, distance_mm: float) -> None:
+        if distance_mm <= 0:
+            return
+        self._record(f"JOGBACK,{distance_mm:.1f}")
+        dx, dy = self.heading.vector
+        self.x_mm -= dx * distance_mm
+        self.y_mm -= dy * distance_mm
+        self.odo_dist_mm += distance_mm
+
+    def read_angle(self, timeout_s: float = 2.0) -> Optional[float]:
+        return self.odo_ang_rad
+
+    def set_angle(self, angle_rad: float) -> None:
+        self._record(f"SANG,{angle_rad:.4f}")
+        self.odo_ang_rad = angle_rad
+
     def quick_stop(self) -> float:
         self._record("QSTP")
         return 0.0
